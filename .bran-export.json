@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "afa4600ff03a4eea93d8dd0258db5d2dd73b9129",
+  "source_commit": "10d762d3b0c4e22d157568399950412ebe66890e",
   "public_repository": "alphazede/bran",
   "files": [
     {
@@ -61,8 +61,8 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "bytes": 6540,
-      "sha256": "c68cdd93b0b2bcb503aa49c4edc6ab43493fdef9553fb5dfd6547666aa6df882"
+      "bytes": 5774,
+      "sha256": "3a03238e1e72e9b2560477591914e219bd66fb2e650be3f47c46a059bb467a9d"
     },
     {
       "path": "assets/brand/bran-repository-raven.png",
