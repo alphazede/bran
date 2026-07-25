@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "inputs": {
+    "schema": { "byte_len": 21, "lanes": [101, 102, 103] },
+    "parser": { "byte_len": 18, "lanes": [201, 202, 203] },
+    "profile": { "byte_len": 7, "lanes": [301, 302, 303] },
+    "config": { "byte_len": 24, "lanes": [401, 402, 403] },
+    "package_defaults": { "byte_len": 15, "lanes": [501, 502, 503] },
+    "ignore": { "byte_len": 11, "lanes": [601, 602, 603] }
+  },
+  "entries": [
+    {
+      "path": "src/lib.rs",
+      "identity": { "byte_len": 72, "lanes": [702, 703, 704] },
+      "source_bytes": 72,
+      "metadata_status": "warning"
+    }
+  ],
+  "diagnostics": [
+    {
+      "kind": "unsupported-input",
+      "path": "assets/logo.png",
+      "reason": "binary input is outside the configured source metadata registry"
+    }
+  ],
+  "file_count": 1,
+  "total_bytes": 72,
+  "observed_bytes": [
+    { "path": "src/lib.rs", "bytes": 72 }
+  ]
+}

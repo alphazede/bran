@@ -1,0 +1,90 @@
+{
+  "$schema": "https://alphazede.github.io/bran/schemas/derived-state-rebuild-v1.json",
+  "schema_version": "1.0.0",
+  "description": "Derived-state self-healing contract: rebuild only BRAN-owned derived artifacts (index, cache, snapshot, report, generated-validator) from unchanged inputs; refuse automatic source, metadata, classification, configuration, policy, or source-link repair.",
+  "requirements": ["AC-6", "DES-3", "DES-5", "CONTRACT-9", "SEIT-7"],
+  "artifact_kinds": ["index", "cache", "snapshot", "report", "generated-validator"],
+  "derived_path_markers": [
+    ".bran/index/...",
+    ".bran/cache/...",
+    ".bran/snapshot/...",
+    ".bran/report/...",
+    ".bran/validator/...",
+    ".bran/index.json",
+    ".bran/cache.json",
+    ".bran/snapshot.json",
+    ".bran/report.json",
+    ".bran/generated-validator"
+  ],
+  "forbidden_categories": [
+    "source",
+    "metadata",
+    "classification",
+    "configuration",
+    "policy",
+    "source-link"
+  ],
+  "rebuild_contract": {
+    "deterministic": true,
+    "order_independent": true,
+    "input_unchanged_required": true,
+    "prior_artifact_preserved_on_failure": true,
+    "refusal_is_read_only": true
+  },
+  "test_cases": [
+    {
+      "id": "positive-deterministic-index",
+      "scenario": "Corrupted index rebuilt from unchanged inputs",
+      "inputs": [
+        {"key": "a.txt", "content_hash": "abc123"},
+        {"key": "b.txt", "content_hash": "def456"}
+      ],
+      "expected": "deterministic output identical across rebuilds"
+    },
+    {
+      "id": "positive-absent-cache",
+      "scenario": "Absent cache artifact rebuilt into existence",
+      "expected": "file created with deterministic content"
+    },
+    {
+      "id": "positive-rollback-preservation",
+      "scenario": "Failed rebuild preserves prior usable artifact",
+      "expected": "prior bytes unchanged after rollback"
+    },
+    {
+      "id": "negative-source-refused",
+      "scenario": "Source path (src/main.rs) refused without mutation",
+      "expected": "ForbiddenCategory or NotDerivedArtifact; no file written"
+    },
+    {
+      "id": "negative-config-refused",
+      "scenario": "Config path (Cargo.toml) refused without mutation",
+      "expected": "ForbiddenCategory; no file written"
+    },
+    {
+      "id": "negative-metadata-refused",
+      "scenario": "Metadata path (.git/HEAD) refused without mutation",
+      "expected": "ForbiddenCategory; no file written"
+    },
+    {
+      "id": "negative-policy-refused",
+      "scenario": "Policy path (policy/rules.json) refused without mutation",
+      "expected": "ForbiddenCategory; no file written"
+    },
+    {
+      "id": "negative-empty-inputs",
+      "scenario": "Empty inputs refused with InvalidInputs",
+      "expected": "DerivedRebuildRefusal::InvalidInputs"
+    },
+    {
+      "id": "negative-lookalike-refused",
+      "scenario": "Substring/suffix lookalikes (random/index.json, .bran/indexevil/file, x/.bran/index/file) refused without mutation",
+      "expected": "NotDerivedArtifact; no file written"
+    },
+    {
+      "id": "negative-traversal-refused",
+      "scenario": "Parent traversal and absolute paths (../.bran/index/file, /.bran/index/file) refused without mutation",
+      "expected": "NotDerivedArtifact; no file written"
+    }
+  ]
+}

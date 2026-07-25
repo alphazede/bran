@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/source-metadata-report/v1/schema.json",
+  "title": "BRAN Source Metadata Report",
+  "description": "Portable output from bounded source metadata parsing. Facts remain candidates or ambiguous evidence; this report does not verify inferred meaning.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_path", "facts", "warnings", "proposals"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "source_path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "facts": {
+      "type": "array",
+      "maxItems": 4096,
+      "description": "Lexicographically ordered by key, value, provenance, confidence, then state.",
+      "items": { "$ref": "#/$defs/fact" }
+    },
+    "warnings": { "$ref": "#/$defs/messages" },
+    "proposals": {
+      "allOf": [{ "$ref": "#/$defs/messages" }],
+      "description": "Deterministic syntax-correct metadata suggestions only; never automatic source edits."
+    }
+  },
+  "$defs": {
+    "messages": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "description": "Unique strings in lexical order.",
+      "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value", "provenance", "confidence", "state"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "value": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "provenance": {
+          "enum": ["markdown-frontmatter", "commented-yaml", "language", "git-state", "package-default", "filename", "symbol", "import", "test", "dependency", "boundary-classification"]
+        },
+        "confidence": { "enum": ["low", "medium", "high"] },
+        "state": { "enum": ["candidate", "ambiguous"] }
+      }
+    }
+  }
+}

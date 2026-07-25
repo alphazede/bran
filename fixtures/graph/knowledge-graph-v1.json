@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0.0",
+  "nodes": [
+    {
+      "id": "external:runtime-loader",
+      "role": "external",
+      "provenance": {
+        "source": "source-analysis",
+        "locator": "src/support.rs:runtime-loader-reference"
+      },
+      "confidence": 35,
+      "facts": {
+        "semantic_bytes": 31,
+        "fields": [
+          {
+            "key": "coverage",
+            "values": ["partial"]
+          },
+          {
+            "key": "subsystem",
+            "values": ["runtime"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "file:src/lib.rs",
+      "role": "entrypoint",
+      "provenance": {
+        "source": "repository-scanner",
+        "locator": "src/lib.rs"
+      },
+      "confidence": 100,
+      "facts": {
+        "semantic_bytes": 25,
+        "fields": [
+          {
+            "key": "status",
+            "values": ["active"]
+          },
+          {
+            "key": "subsystem",
+            "values": ["core"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "file:src/support.rs",
+      "role": "symbol",
+      "provenance": {
+        "source": "repository-scanner",
+        "locator": "src/support.rs"
+      },
+      "confidence": 100,
+      "facts": {
+        "semantic_bytes": 25,
+        "fields": [
+          {
+            "key": "status",
+            "values": ["active"]
+          },
+          {
+            "key": "subsystem",
+            "values": ["core"]
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:src/lib.rs:depends:src/support.rs",
+      "source": "file:src/lib.rs",
+      "target": "file:src/support.rs",
+      "provenance": {
+        "source": "rust-import",
+        "locator": "src/lib.rs:mod-support"
+      },
+      "confidence": 100,
+      "certainty": "known",
+      "relationship": "dependency"
+    },
+    {
+      "id": "edge:src/support.rs:references:runtime-loader",
+      "source": "file:src/support.rs",
+      "target": "external:runtime-loader",
+      "provenance": {
+        "source": "source-analysis",
+        "locator": "src/support.rs:runtime-loader-reference"
+      },
+      "confidence": 35,
+      "certainty": "unknown",
+      "relationship": "reachability"
+    }
+  ]
+}

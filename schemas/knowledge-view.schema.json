@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/knowledge-view/v1/schema.json",
+  "title": "BRAN Knowledge View",
+  "description": "Portable compiled Knowledge View. selected_bytes is the sum of canonical_item_bytes using UTF-8 records label:byte_length:value newline in fixed ID, group, provenance source/locator, projected name/value order; a missing group is g:- newline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "spec", "items", "groups", "selected_bytes", "truncated"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "spec": { "$ref": "#/$defs/spec" },
+    "items": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/item" } },
+    "groups": { "type": "array", "maxItems": 4096, "description": "Lexically ordered by group name.", "items": { "$ref": "#/$defs/group" } },
+    "selected_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+    "truncated": { "type": "boolean" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9./:_-]+$" },
+    "role": { "enum": ["document", "section", "symbol", "external", "entrypoint", "test", "generated", "archived"] },
+    "semantic_key": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "semantic_value": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "locator"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "locator": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      }
+    },
+    "semantic_selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value"],
+      "properties": { "key": { "$ref": "#/$defs/semantic_key" }, "value": { "$ref": "#/$defs/semantic_value" } }
+    },
+    "source": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "all" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "node_ids"], "properties": { "kind": { "const": "node-ids" }, "node_ids": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "roles"], "properties": { "kind": { "const": "roles" }, "roles": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/role" } } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "contains"], "properties": { "kind": { "const": "provenance-source-contains" }, "contains": { "type": "string", "minLength": 1, "maxLength": 256 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "semantic"], "properties": { "kind": { "const": "semantic-field-value" }, "semantic": { "$ref": "#/$defs/semantic_selector" } } }
+      ]
+    },
+    "filter": {
+      "description": "Recursive filter with a portable semantic maximum of 16 levels and 128 total clauses; serializers and validators must reject deeper or larger trees before compilation.",
+      "x-max-depth": 16,
+      "x-max-total-clauses": 128,
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "all" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "role"], "properties": { "kind": { "const": "role" }, "role": { "$ref": "#/$defs/role" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "enum": ["id-prefix", "provenance-source-contains", "provenance-locator-contains"] }, "value": { "type": "string", "minLength": 1, "maxLength": 256 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "minimum"], "properties": { "kind": { "const": "minimum-confidence" }, "minimum": { "type": "integer", "minimum": 0, "maximum": 100 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "semantic"], "properties": { "kind": { "const": "semantic-field-value" }, "semantic": { "$ref": "#/$defs/semantic_selector" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "clauses"], "properties": { "kind": { "enum": ["all-of", "any-of"] }, "clauses": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/filter" } } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "clause"], "properties": { "kind": { "const": "not" }, "clause": { "$ref": "#/$defs/filter" } } }
+      ]
+    },
+    "sort": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["node-id", "role-then-node-id", "provenance-source-then-node-id", "confidence-descending-then-node-id"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "key"], "properties": { "kind": { "const": "semantic-field-then-node-id" }, "key": { "$ref": "#/$defs/semantic_key" } } }
+      ]
+    },
+    "grouping": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["none", "role", "provenance-source"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "key"], "properties": { "kind": { "const": "semantic-field" }, "key": { "$ref": "#/$defs/semantic_key" } } }
+      ]
+    },
+    "field": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["node-id", "role", "provenance-source", "provenance-locator", "confidence"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "key"], "properties": { "kind": { "const": "semantic-field" }, "key": { "$ref": "#/$defs/semantic_key" } } }
+      ]
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "filter", "sort", "grouping", "fields", "presentation", "max_items", "max_bytes"],
+      "properties": {
+        "source": { "$ref": "#/$defs/source" },
+        "filter": { "$ref": "#/$defs/filter" },
+        "sort": { "$ref": "#/$defs/sort" },
+        "grouping": { "$ref": "#/$defs/grouping" },
+        "fields": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/field" } },
+        "presentation": { "enum": ["markdown", "json", "terminal", "obsidian"] },
+        "max_items": { "type": "integer", "minimum": 0, "maximum": 4096 },
+        "max_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+      }
+    },
+    "projected_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "name", "value"],
+      "properties": {
+        "field": { "$ref": "#/$defs/field" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "value": { "type": "string", "maxLength": 4096 }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "group", "provenance", "fields", "canonical_item_bytes"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "group": { "oneOf": [{ "type": "null" }, { "type": "string", "maxLength": 4096 }] },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "fields": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/projected_field" } },
+        "canonical_item_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "node_ids"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 4096 },
+        "node_ids": { "type": "array", "maxItems": 4096, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+      }
+    }
+  }
+}

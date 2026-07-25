@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/graph-query-result/v1/schema.json",
+  "title": "BRAN Graph Query Result",
+  "description": "Portable bounded query output with explicit incompleteness, retained evidence, and uncertainty-aware reachability.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query_kind", "status", "truncated", "bounds", "items"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "query_kind": { "enum": ["find", "consumers", "impact", "reachability", "zombie-candidates", "guided-trail"] },
+    "status": { "enum": ["complete", "partial", "found", "missing", "unreachable"] },
+    "truncated": { "type": "boolean", "description": "True when caller bounds prevented complete traversal or collection." },
+    "bounds": { "$ref": "#/$defs/bounds" },
+    "missing_id": { "$ref": "#/$defs/id" },
+    "items": {
+      "type": "array",
+      "maxItems": 1000000,
+      "description": "Deterministically ordered by the selected query contract, with stable node or edge ids as tie-breakers.",
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9./:_-]+$" },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_results", "max_depth"],
+      "properties": {
+        "max_results": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "max_depth": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "locator"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "locator": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      }
+    },
+    "fact_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "values"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "values": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "provenance", "confidence", "semantic_bytes", "facts"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "role": { "enum": ["document", "section", "symbol", "external", "entrypoint", "test", "generated", "archived"] },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "semantic_bytes": { "type": "integer", "minimum": 0, "maximum": 8192 },
+        "facts": { "type": "array", "maxItems": 32, "description": "Ordered by key.", "items": { "$ref": "#/$defs/fact_field" } }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source", "target", "provenance", "confidence", "certainty", "relationship"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/id" },
+        "target": { "$ref": "#/$defs/id" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "certainty": { "enum": ["known", "dynamic", "unknown", "missing-target"] },
+        "relationship": { "enum": ["unspecified", "dependency", "implementation", "replacement", "supersedes", "validation", "reachability", "contradiction", "conflict"] }
+      }
+    },
+    "reachability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "reason"],
+      "properties": {
+        "classification": { "enum": ["active", "supporting", "test-only", "generated", "unreachable", "unknown"] },
+        "reason": { "enum": ["entrypoint", "known-path", "test-role", "generated-role", "no-known-path", "uncertain-edge", "depth-bound", "partial-coverage"] },
+        "depth": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "uncertain_edge": { "$ref": "#/$defs/edge" }
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node"],
+      "properties": {
+        "node": { "$ref": "#/$defs/node" },
+        "via_edge": { "$ref": "#/$defs/edge" },
+        "depth": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "reachability": { "$ref": "#/$defs/reachability" }
+      }
+    }
+  }
+}

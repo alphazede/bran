@@ -1,0 +1,58 @@
+schema_version: "1"
+
+frontmatter:
+  required:
+    - type
+    - title
+    - okf_status
+    - tags
+  optional:
+    - freshness
+    - resource
+    - public_boundary
+  allowed:
+    - type
+    - title
+    - okf_status
+    - tags
+    - freshness
+    - resource
+    - public_boundary
+  canonical_docs_frontmatter_state: legacy_baseline
+
+coverage:
+  - canonical
+  - legacy
+  - excluded
+  - unclassified
+
+document_coverage:
+  native_bundle:
+    - README.md
+  canonical_documents:
+    - docs/integrations/agent-setup.md
+    - skill/use-bran/SKILL.md
+  legacy_documents:
+    - examples/headless/README.md
+  bridge_targets:
+    - LICENSE-APACHE
+    - LICENSE-MIT
+
+tags:
+  allowed:
+    - developer
+    - public
+
+status:
+  allowed:
+    - draft
+    - active
+    - deprecated
+
+public_boundary:
+  values:
+    - public
+    - private
+    - internal
+  path_allowlist:
+    - .

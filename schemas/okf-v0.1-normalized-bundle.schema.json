@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/okf-v0.1-normalized-bundle/schema.json",
+  "title": "BRAN normalized OKF v0.1 bundle evidence",
+  "description": "Normalized evidence only. This schema preserves producer extensions and does not resolve Markdown links or parse source Markdown/YAML.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "docs"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "docs": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/document" }
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "source", "body", "frontmatter"],
+      "properties": {
+        "path": { "type": "string" },
+        "source": { "type": "string" },
+        "body": { "type": "string" },
+        "frontmatter": { "$ref": "#/$defs/frontmatter" }
+      }
+    },
+    "frontmatter": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["raw", "parsed", "status"],
+      "properties": {
+        "raw": { "type": "string" },
+        "parsed": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "object", "additionalProperties": { "$ref": "#/$defs/yamlValue" } }
+          ]
+        },
+        "status": {
+          "oneOf": [
+            { "const": "ok" },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["malformed"],
+              "properties": { "malformed": { "type": "string" } }
+            }
+          ]
+        }
+      }
+    },
+    "yamlValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "null" },
+            "__yaml_value__": { "type": "null" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "bool" },
+            "__yaml_value__": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "number" },
+            "__yaml_value__": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "string" },
+            "__yaml_value__": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "sequence" },
+            "__yaml_value__": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/yamlValue" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "mapping" },
+            "__yaml_value__": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/yamlValue" }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

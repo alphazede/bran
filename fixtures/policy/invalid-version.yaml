@@ -1,0 +1,3 @@
+# Fixture: unsupported schema_version.
+# RepositoryPolicy::load must reject this with PolicyError::UnsupportedVersion.
+schema_version: "99"

@@ -1,0 +1,15 @@
+# Frozen normalized fixture syntax consumed only by profile.rs conformance tests.
+name=strict-gap-strict-selected
+selected_profile=bran-strict
+doc.path=concepts/strict-gap.md
+doc.source=---\ntype: Concept\n---\nNo strict readiness evidence.\n
+doc.body=No strict readiness evidence.\n
+frontmatter.raw=---\ntype: Concept\n---\n
+frontmatter.status=ok
+frontmatter.type=string:Concept
+expected.okf.status=pass
+expected.okf.codes=
+expected.strict.status=fail
+expected.strict.codes=title,status,tag,freshness,authority,citation-source,relationship,public-boundary
+expected.selected_exit=1
+expected.selection_code=

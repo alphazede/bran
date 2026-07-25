@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0.0",
+  "source_path": "src/lib.rs",
+  "facts": [
+    {
+      "key": "filename",
+      "value": "declared.rs",
+      "provenance": "commented-yaml",
+      "confidence": "high",
+      "state": "ambiguous"
+    },
+    {
+      "key": "important_boundary",
+      "value": "true",
+      "provenance": "boundary-classification",
+      "confidence": "medium",
+      "state": "candidate"
+    },
+    {
+      "key": "language",
+      "value": "rust",
+      "provenance": "language",
+      "confidence": "high",
+      "state": "candidate"
+    },
+    {
+      "key": "owner",
+      "value": "platform",
+      "provenance": "package-default",
+      "confidence": "medium",
+      "state": "candidate"
+    },
+    {
+      "key": "symbol",
+      "value": "current",
+      "provenance": "symbol",
+      "confidence": "medium",
+      "state": "candidate"
+    },
+    {
+      "key": "type",
+      "value": "service",
+      "provenance": "commented-yaml",
+      "confidence": "high",
+      "state": "candidate"
+    }
+  ],
+  "warnings": [
+    "ambiguous-fact:filename:declared.rs",
+    "metadata-on-touch:review commented metadata before editing"
+  ],
+  "proposals": [
+    "// ---\n// type: TODO\n// public_boundary: TODO\n// ---"
+  ]
+}

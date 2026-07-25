@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/bran-cli", "crates/bran-core", "crates/bran-tui"]
+resolver = "2"

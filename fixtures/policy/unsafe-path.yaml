@@ -1,0 +1,5 @@
+# Fixture: used both as a path-escape test subject and as valid loadable content.
+# The policy loader rejects paths containing ".." (ParentDir) components.
+# Absolute repository roots are accepted.
+# When loaded from a safe path, the content below is valid and parses without error.
+schema_version: "1"

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/release-manifest/v1/schema.json",
+  "title": "Bran exact-release manifest",
+  "description": "Non-circular release manifest contract. assets holds exactly seven hashed files (five platform archives + SHA256SUMS + SHA256SUMS.sig) in any order. manifest_asset is the const 'bran-release-manifest.json' with no self-digest inside. Build order: archives, SHA256SUMS (covers archives), SHA256SUMS.sig (signs sums), manifest (records digests/metadata, distributed unhashed). source_commit and provenance.source_commit are 40-hex git SHA-1; lockfile_sha256, asset sha256, checksums.sha256 are 64-hex. Asset order insignificant. key_fingerprint is exactly 40 or 64 lowercase hex; signed_at is the strict UTC subset exactly YYYY-MM-DDTHH:MM:SSZ (ASCII digits/separators only; year 0001-9999, real proleptic Gregorian/leap-day; pattern enforces no year 0000 / invalid m/d / non-leap Feb29 / Feb30 / 24h / 60minsec, format kept for Draft2020-12; hours 00-23, min/sec 00-59). Schema cannot bind dynamic tag/name/URL equality; x-semantic-oracle is the mandatory stdlib checker.",
+  "x-semantic-oracle": "tools/ci/release_contract_check.py",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tag",
+    "repository",
+    "source_commit",
+    "lockfile_sha256",
+    "immutable",
+    "manifest_asset",
+    "assets",
+    "checksums",
+    "signature",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "repository": {
+      "const": "alphazede/bran"
+    },
+    "source_commit": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "lockfile_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "immutable": {
+      "const": true
+    },
+    "manifest_asset": {
+      "const": "bran-release-manifest.json"
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/linuxX86Asset" },
+          { "$ref": "#/$defs/linuxArmAsset" },
+          { "$ref": "#/$defs/macosX86Asset" },
+          { "$ref": "#/$defs/macosArmAsset" },
+          { "$ref": "#/$defs/windowsX86Asset" },
+          { "$ref": "#/$defs/checksumsAsset" },
+          { "$ref": "#/$defs/signatureAsset" }
+        ]
+      },
+      "allOf": [
+        { "contains": { "$ref": "#/$defs/linuxX86Asset" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/linuxArmAsset" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/macosX86Asset" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/macosArmAsset" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/windowsX86Asset" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/checksumsAsset" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/signatureAsset" }, "minContains": 1, "maxContains": 1 }
+      ]
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "algorithm", "sha256"],
+      "properties": {
+        "asset": { "const": "SHA256SUMS" },
+        "algorithm": { "const": "sha256" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "format", "key_fingerprint", "signed_at"],
+      "properties": {
+        "asset": { "const": "SHA256SUMS.sig" },
+        "format": { "const": "openpgp" },
+        "key_fingerprint": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "signed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:(?:0[13578]|1[02]))-(?:0[1-9]|[12][0-9]|3[01])|(?:(?:0[469]|11))-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:04|08|12|16|20|24|28|32|36|40|44|48|52|56|60|64|68|72|76|80|84|88|92|96)00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "predicate_type",
+        "source_repository",
+        "source_commit",
+        "lockfile_sha256",
+        "build_type"
+      ],
+      "properties": {
+        "format": { "const": "https://slsa.dev/provenance/v1" },
+        "predicate_type": { "const": "https://slsa.dev/provenance/v1" },
+        "source_repository": { "const": "alphazede/bran" },
+        "source_commit": { "$ref": "#/$defs/git_sha" },
+        "lockfile_sha256": { "$ref": "#/$defs/sha256" },
+        "build_type": {
+          "type": "string",
+          "pattern": "^https://"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "url", "sha256", "media_type"],
+      "properties": {
+        "name": { "type": "string" },
+        "url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/alphazede/bran/releases/download/bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)/[^/]+$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "media_type": { "type": "string", "pattern": "\\S" }
+      }
+    },
+    "linuxX86Asset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "pattern": "^bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-x86_64-unknown-linux-gnu\\.tar\\.gz$" } } }
+      ]
+    },
+    "linuxArmAsset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "pattern": "^bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-aarch64-unknown-linux-gnu\\.tar\\.gz$" } } }
+      ]
+    },
+    "macosX86Asset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "pattern": "^bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-x86_64-apple-darwin\\.tar\\.gz$" } } }
+      ]
+    },
+    "macosArmAsset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "pattern": "^bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-aarch64-apple-darwin\\.tar\\.gz$" } } }
+      ]
+    },
+    "windowsX86Asset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "pattern": "^bran-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-x86_64-pc-windows-msvc\\.zip$" } } }
+      ]
+    },
+    "checksumsAsset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "const": "SHA256SUMS" } } }
+      ]
+    },
+    "signatureAsset": {
+      "allOf": [
+        { "$ref": "#/$defs/asset" },
+        { "properties": { "name": { "const": "SHA256SUMS.sig" } } }
+      ]
+    }
+  }
+}

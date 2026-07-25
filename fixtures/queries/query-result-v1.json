@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0.0",
+  "query_kind": "impact",
+  "status": "partial",
+  "truncated": true,
+  "bounds": {
+    "max_results": 2,
+    "max_depth": 1
+  },
+  "items": [
+    {
+      "node": {
+        "id": "file:src/lib.rs",
+        "role": "entrypoint",
+        "provenance": {
+          "source": "repository-scanner",
+          "locator": "src/lib.rs"
+        },
+        "confidence": 100,
+        "semantic_bytes": 25,
+        "facts": [
+          {
+            "key": "status",
+            "values": ["active"]
+          },
+          {
+            "key": "subsystem",
+            "values": ["core"]
+          }
+        ]
+      },
+      "via_edge": {
+        "id": "edge:src/lib.rs:depends:src/support.rs",
+        "source": "file:src/lib.rs",
+        "target": "file:src/support.rs",
+        "provenance": {
+          "source": "rust-import",
+          "locator": "src/lib.rs:mod-support"
+        },
+        "confidence": 100,
+        "certainty": "known",
+        "relationship": "dependency"
+      },
+      "depth": 1,
+      "reachability": {
+        "classification": "active",
+        "reason": "entrypoint",
+        "depth": 0
+      }
+    },
+    {
+      "node": {
+        "id": "external:runtime-loader",
+        "role": "external",
+        "provenance": {
+          "source": "source-analysis",
+          "locator": "src/support.rs:runtime-loader-reference"
+        },
+        "confidence": 35,
+        "semantic_bytes": 31,
+        "facts": [
+          {
+            "key": "coverage",
+            "values": ["partial"]
+          },
+          {
+            "key": "subsystem",
+            "values": ["runtime"]
+          }
+        ]
+      },
+      "via_edge": {
+        "id": "edge:src/support.rs:references:runtime-loader",
+        "source": "file:src/support.rs",
+        "target": "external:runtime-loader",
+        "provenance": {
+          "source": "source-analysis",
+          "locator": "src/support.rs:runtime-loader-reference"
+        },
+        "confidence": 35,
+        "certainty": "unknown",
+        "relationship": "reachability"
+      },
+      "depth": 1,
+      "reachability": {
+        "classification": "unknown",
+        "reason": "partial-coverage",
+        "depth": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/repository-policy/schema.json",
+  "title": "BRAN repository policy",
+  "description": "Versioned native repository-policy contract.  The schema governs .bran/policy.yaml shape; enforcement and deterministic diagnostics live in bran-core.  Source/link/citation integrity, packet supersession, and body preservation are always-on native invariants implemented in later modules, not policy enable/disable flags.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {
+      "description": "BRAN policy schema version.  Only version \"1\" is supported.",
+      "type": "string",
+      "const": "1"
+    },
+    "frontmatter": {
+      "description": "Required and allowed frontmatter fields for concept documents.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "optional": {
+          "description": "Optional frontmatter fields for concept documents.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "preserved_canonical_keys": {
+          "description": "Frontmatter keys preserved as-is across canonical-document migration.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "canonical_docs_frontmatter_state": {
+          "description": "Migration state for canonical-document frontmatter validation.",
+          "type": "string",
+          "enum": ["legacy_baseline", "strict"]
+        }
+      }
+    },
+    "coverage": {
+      "description": "Coverage classes recognised by the validator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["canonical", "legacy", "excluded", "unclassified"]
+      }
+    },
+    "document_coverage": {
+      "description": "Document coverage classification with explicit document lists.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "roots": {
+          "description": "Repository-relative scan roots.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "native_bundle": {
+          "description": "BRAN-native bundle documents.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "canonical_documents": {
+          "description": "Canonical repository knowledge documents.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "legacy_documents": {
+          "description": "Legacy documents tracked for migration.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "excluded_documents": {
+          "description": "Documents excluded from validation.  Repository-relative path keys map to non-empty reason strings.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "bridge_targets": {
+          "description": "Bridge-target document paths for public-boundary transitions.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "source_links": {
+      "description": "Source-link policy (prefix requirements).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require_prefix": { "type": "string" }
+      }
+    },
+    "tags": {
+      "description": "Tag membership policy.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "status": {
+      "description": "Document status values.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["draft", "active", "deprecated"]
+          }
+        }
+      }
+    },
+    "public_boundary": {
+      "description": "Public/private boundary classification with repository-relative path allowlist.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "values": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "path_allowlist": {
+          "description": "Repository-relative paths allowed to cross the public boundary.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "exact_allowlist": {
+          "description": "Exact one-based line SHA-256 allowances for deterministic public-boundary findings. Paths must also be document_coverage bridge targets.",
+          "type": "object",
+          "maxProperties": 256,
+          "additionalProperties": {
+            "type": "object",
+            "minProperties": 1,
+            "propertyNames": {
+              "enum": [
+                "private_home_path",
+                "credential_assignment",
+                "private_network_literal",
+                "internal_agent_path",
+                "proprietary_scoring_language"
+              ]
+            },
+            "additionalProperties": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": { "pattern": "^[1-9][0-9]*$" },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "asset": "bran/assets/brand/bran-repository-raven.png",
+  "owner_supplied": true,
+  "generated_by": "ChatGPT",
+  "owner_supplied_date": "2026-07-19",
+  "sha256": "4f6f1c4a4d82b6ef661d80602831c562c0d824daa36c009394c40dcdef1b4a2d",
+  "format": "1402x1122 RGB PNG",
+  "license": "Owner authorized inclusion under the repository dual MIT OR Apache-2.0 licensing.",
+  "embedded_c2pa_provenance": {
+    "status": "intentionally preserved",
+    "generator": "gpt-image 2.0",
+    "embedded_c2pa_created_date": "2026-07-18",
+    "digital_source_type": "trainedAlgorithmicMedia"
+  }
+}

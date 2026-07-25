@@ -1,0 +1,22 @@
+# Minimal cargo-deny 0.19.0 configuration for BRAN Slice 1.1 Packet C1.
+# Explicitly allow only MIT and Apache-2.0. No speculative exceptions.
+
+[licenses]
+allow = ["MIT", "Apache-2.0"]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Ignore private/unpublished workspace crates for license aggregation checks.
+ignore = true
+
+[bans]
+# Deny wildcard dependencies (e.g. "*").
+wildcards = "deny"
+
+[sources]
+# Deny unknown registries and git sources.
+unknown-registry = "deny"
+unknown-git = "deny"
+# Allow only the canonical crates.io registry.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

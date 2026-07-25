@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/profile-result/schema.json",
+  "title": "BRAN dual-profile validation result",
+  "description": "This schema is the planned future wire projection of ValidationResult. Both profile outcomes are exposed. selected_profile alone controls selected_passed and exit_code, which are projected/computed from ValidationResult methods (selected_passed(), exit_code()) rather than stored Rust fields. Link targets remain unvalidated.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["okf_compatibility", "bran_strict", "selected_profile", "selected_passed", "exit_code", "selected_profile_error"],
+  "properties": {
+    "okf_compatibility": { "$ref": "#/$defs/okfOutcome" },
+    "bran_strict": { "$ref": "#/$defs/strictOutcome" },
+    "selected_profile": { "type": "string" },
+    "selected_passed": { "type": "boolean" },
+    "exit_code": { "enum": [0, 1] },
+    "selected_profile_error": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/diagnostic" }
+      ]
+    }
+  },
+  "$defs": {
+    "okfOutcome": {
+      "allOf": [
+        { "$ref": "#/$defs/profileOutcome" },
+        { "properties": { "profile": { "const": "okf-v0.1" } } }
+      ]
+    },
+    "strictOutcome": {
+      "allOf": [
+        { "$ref": "#/$defs/profileOutcome" },
+        { "properties": { "profile": { "const": "bran-strict" } } }
+      ]
+    },
+    "profileOutcome": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["profile", "status", "diagnostics"],
+      "properties": {
+        "profile": { "type": "string" },
+        "status": { "enum": ["pass", "fail"] },
+        "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "code", "message"],
+      "properties": {
+        "path": { "type": "string" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

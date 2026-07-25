@@ -1,0 +1,4 @@
+Body text must be preserved exactly.
+It has multiple lines and must survive roundtrip without rewrite.
+Reference to declared target happens via edge-supplied wikilink after body.
+This also exercises unknown frontmatter preservation in the journey.

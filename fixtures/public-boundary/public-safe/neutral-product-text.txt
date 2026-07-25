@@ -1,0 +1,1 @@
+Release notes describe stable behavior, supported inputs, and predictable outputs.

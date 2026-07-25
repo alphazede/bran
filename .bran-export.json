@@ -1,0 +1,656 @@
+{
+  "schema_version": 1,
+  "source_repository": "alphazede/bran-dev",
+  "source_commit": "afa4600ff03a4eea93d8dd0258db5d2dd73b9129",
+  "public_repository": "alphazede/bran",
+  "files": [
+    {
+      "path": ".bran/policy.yaml",
+      "mode": "100644",
+      "bytes": 856,
+      "sha256": "09800066556b08e36b3dae0c6775a304d728ace1db37de5ab10fe4d3adb3999c"
+    },
+    {
+      "path": ".branignore",
+      "mode": "100644",
+      "bytes": 86,
+      "sha256": "fc3aedc03fe42a12f036c337a579efa7b47775a6f415d99e020f212cc38d4643"
+    },
+    {
+      "path": ".github/workflows/bran-fast.yml",
+      "mode": "100644",
+      "bytes": 696,
+      "sha256": "75002eee19da62eeb11dbc9c86eb67d6fde08635d3277e41298e887305f92128"
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "bytes": 100,
+      "sha256": "e045528ae5373d1e7bbcd287702e6e7c0ccb096d2076acf9a7e6c9c708aefeab"
+    },
+    {
+      "path": "Cargo.lock",
+      "mode": "100644",
+      "bytes": 6486,
+      "sha256": "7305ad8cdf4a72f852943c840893720a9781c1445ed955d5fb9b019fb8d680a1"
+    },
+    {
+      "path": "Cargo.toml",
+      "mode": "100644",
+      "bytes": 96,
+      "sha256": "3322881f7489b12e80a2b7a727cec3d2173f9615f03dc6fbb5a28490037f6da3"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "bytes": 137,
+      "sha256": "00447fc2c4e2b8ce5d6cbb6b373ba96f0e24305822f6d96c1fe597b3a871ac5b"
+    },
+    {
+      "path": "LICENSE-APACHE",
+      "mode": "100644",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "mode": "100644",
+      "bytes": 1053,
+      "sha256": "7a867942b7765e2a399005c907be111a6c21d8c3a554b7573633f9d60509be4e"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "bytes": 6540,
+      "sha256": "c68cdd93b0b2bcb503aa49c4edc6ab43493fdef9553fb5dfd6547666aa6df882"
+    },
+    {
+      "path": "assets/brand/bran-repository-raven.png",
+      "mode": "100644",
+      "bytes": 1974398,
+      "sha256": "4f6f1c4a4d82b6ef661d80602831c562c0d824daa36c009394c40dcdef1b4a2d"
+    },
+    {
+      "path": "assets/brand/bran-repository-raven.provenance.json",
+      "mode": "100644",
+      "bytes": 579,
+      "sha256": "6915decc902887869b493da312ef542b9c4aeca92f95f18f6221fa9034f4aecb"
+    },
+    {
+      "path": "assets/tui/raven-narrow.txt",
+      "mode": "100644",
+      "bytes": 327,
+      "sha256": "8966de8acca15ef37827299bcec2a28e461faf62ad3058d989b3d498ac53e37c"
+    },
+    {
+      "path": "assets/tui/raven-plain.txt",
+      "mode": "100644",
+      "bytes": 116,
+      "sha256": "986006304b228fbd013991defdf8c331304faad4985e13e193fe5180a2a5f949"
+    },
+    {
+      "path": "assets/tui/raven-provenance.json",
+      "mode": "100644",
+      "bytes": 429,
+      "sha256": "19da415de0b05bcb19b93296e37aa3963cc4b37b3b2d1cdd8e790320834b9cdd"
+    },
+    {
+      "path": "assets/tui/raven-wide.txt",
+      "mode": "100644",
+      "bytes": 1021,
+      "sha256": "b5664fca2f3818fec427ba177606b3d55b5e720b45759964eac41a29ba3914ba"
+    },
+    {
+      "path": "benches/context_packet.rs",
+      "mode": "100644",
+      "bytes": 14397,
+      "sha256": "b33d4d1616a12c3a23e4aac2b010e1070d273f4a3d9f6d3ec04ee80b2736d22f"
+    },
+    {
+      "path": "benches/knowledge_graph.rs",
+      "mode": "100644",
+      "bytes": 6671,
+      "sha256": "e96e478b568db572722307c7957617eeaeb414087af0f7097e4549ccbcd1cb7e"
+    },
+    {
+      "path": "benches/repository_scan.rs",
+      "mode": "100644",
+      "bytes": 7778,
+      "sha256": "b2fe96c68a3bedc97a3077c0fab14ae06db8c206d4198b7a6750da5d0d4bd651"
+    },
+    {
+      "path": "crates/bran-cli/Cargo.toml",
+      "mode": "100644",
+      "bytes": 361,
+      "sha256": "1d7e9c92ca413491d206c42e116bee36cc32f1789a928e04849585c8822892af"
+    },
+    {
+      "path": "crates/bran-cli/src/main.rs",
+      "mode": "100644",
+      "bytes": 303969,
+      "sha256": "0828f6a16e80b3f375a2af5fb7b0d27a1155d6919a67eef4ba0e1c2116bdd232"
+    },
+    {
+      "path": "crates/bran-core/Cargo.toml",
+      "mode": "100644",
+      "bytes": 401,
+      "sha256": "8518066ea4382211fdadf1aaf8ad7281a0de406ef1e630b8c0d04d70bcd19754"
+    },
+    {
+      "path": "crates/bran-core/src/adapters/connected.rs",
+      "mode": "100644",
+      "bytes": 41012,
+      "sha256": "e8b0a5dae90e6edbf1ee89553a7c3efee311c51a910d35616121a6ea18bbe5dd"
+    },
+    {
+      "path": "crates/bran-core/src/adapters/mod.rs",
+      "mode": "100644",
+      "bytes": 848,
+      "sha256": "333db65248c077cb4ce6e1a058cc627225cb75320f542502b297bba67e16b16a"
+    },
+    {
+      "path": "crates/bran-core/src/adapters/provider/mod.rs",
+      "mode": "100644",
+      "bytes": 52658,
+      "sha256": "302a9908246982698cfb4865c4025658df231980523663ff0746386c797a2254"
+    },
+    {
+      "path": "crates/bran-core/src/adapters/sqz.rs",
+      "mode": "100644",
+      "bytes": 36089,
+      "sha256": "96ba1d63a9db35cb9006248384eeac8188902103f8862ed8f430d03917f850c3"
+    },
+    {
+      "path": "crates/bran-core/src/agent/coordinator.rs",
+      "mode": "100644",
+      "bytes": 102379,
+      "sha256": "96948a8bb47499b251267654edfd513f7c3b02084b1bff393ca208ec6d56e75d"
+    },
+    {
+      "path": "crates/bran-core/src/agent/delegate.rs",
+      "mode": "100644",
+      "bytes": 8796,
+      "sha256": "a084b13823e5b60a4e4d472a866767c9aa96dd477619e9d908209bfd2d8170e8"
+    },
+    {
+      "path": "crates/bran-core/src/agent/mod.rs",
+      "mode": "100644",
+      "bytes": 35262,
+      "sha256": "3bdc312356d8fdf156c7eb3f7b09161793e2ab952f1fb2e936ec651100f2add3"
+    },
+    {
+      "path": "crates/bran-core/src/agent/receipt.rs",
+      "mode": "100644",
+      "bytes": 32228,
+      "sha256": "1be6db8e9acdf9bf79acc70f8735db9255989f4ec0f51c869e224e3240ea8fae"
+    },
+    {
+      "path": "crates/bran-core/src/agent/result_store.rs",
+      "mode": "100644",
+      "bytes": 14699,
+      "sha256": "9d54a91bf4a994ad57112ebfb5bcfd7c797eedbacd6423b3e8b4df650a1d183b"
+    },
+    {
+      "path": "crates/bran-core/src/agent/runtime.rs",
+      "mode": "100644",
+      "bytes": 17781,
+      "sha256": "e0fc6b3ba16cb59f8cce459ea4eea256ae57b1d8e93c05fe7fbbb6141e492d4b"
+    },
+    {
+      "path": "crates/bran-core/src/agent/synthetic.rs",
+      "mode": "100644",
+      "bytes": 7000,
+      "sha256": "e63bc6d932f7dd0e8eff2299bb39f182865f74dc26857a3f6c887b80ebf82491"
+    },
+    {
+      "path": "crates/bran-core/src/boundary.rs",
+      "mode": "100644",
+      "bytes": 14555,
+      "sha256": "88f6465645dc4181816569b9653ac14b2d1d5345096f8ccaf0c1bcae29c31076"
+    },
+    {
+      "path": "crates/bran-core/src/bundle.rs",
+      "mode": "100644",
+      "bytes": 14894,
+      "sha256": "c60da2f7b9ba2912ce6e25054549b2c53fa8d7ab1642a4e6a053bcb871d544fb"
+    },
+    {
+      "path": "crates/bran-core/src/derived_state.rs",
+      "mode": "100644",
+      "bytes": 28933,
+      "sha256": "0ad8fb41c223f0a57b87bde7a8838911fcc9587d2ff5cb95a9313bcc17cb9fd3"
+    },
+    {
+      "path": "crates/bran-core/src/export/mod.rs",
+      "mode": "100644",
+      "bytes": 28482,
+      "sha256": "4ffc3752682049af4cca5a91e2f05e49ef3ed69579ca234482fc2dc39b718f8b"
+    },
+    {
+      "path": "crates/bran-core/src/graph/mod.rs",
+      "mode": "100644",
+      "bytes": 41696,
+      "sha256": "21526fe09c8ccb62e16b440b4f5308f10637e84f1f801052b83161f1c53cc852"
+    },
+    {
+      "path": "crates/bran-core/src/graph/model.rs",
+      "mode": "100644",
+      "bytes": 62635,
+      "sha256": "b7365803fe861e887c56a436825dc7c405ee8693f337cad4033b5c8ca5468427"
+    },
+    {
+      "path": "crates/bran-core/src/graph/query.rs",
+      "mode": "100644",
+      "bytes": 87238,
+      "sha256": "17cda68c7695f759c386035f76fe188b0bc64c6dcb3bf5420344a20e4582b368"
+    },
+    {
+      "path": "crates/bran-core/src/lib.rs",
+      "mode": "100644",
+      "bytes": 24783,
+      "sha256": "720e3f787d0d046c603e5935d0601aa642d57d8b64e72c8e7f029b7a52c736de"
+    },
+    {
+      "path": "crates/bran-core/src/metadata/mod.rs",
+      "mode": "100644",
+      "bytes": 47391,
+      "sha256": "9996f2935c1d72b06147eab8e228c167e0a77bf7a3d2b59f1c96bd54f2ff223f"
+    },
+    {
+      "path": "crates/bran-core/src/migration.rs",
+      "mode": "100644",
+      "bytes": 47298,
+      "sha256": "2f735b2923584379bae8029e9c09ea056ef548a34730c591cf96a8384ade111b"
+    },
+    {
+      "path": "crates/bran-core/src/packet/mod.rs",
+      "mode": "100644",
+      "bytes": 136769,
+      "sha256": "c62849b135be43e375349f365b371b5075a7819a0a566dd038786103f3b0769a"
+    },
+    {
+      "path": "crates/bran-core/src/policy.rs",
+      "mode": "100644",
+      "bytes": 96968,
+      "sha256": "7b9dcc0e9d4717891e208498474a27c50ee783eb8751630218adeb03bb633763"
+    },
+    {
+      "path": "crates/bran-core/src/profile.rs",
+      "mode": "100644",
+      "bytes": 164523,
+      "sha256": "643c6cf2509a5c5382a22a1517d51e1c0fc47e381d56103b3dddbe702cb29808"
+    },
+    {
+      "path": "crates/bran-core/src/repair/mod.rs",
+      "mode": "100644",
+      "bytes": 25545,
+      "sha256": "0959d9ce528a581ca261f564b26f657fe944b2bdc0e614236fe114433fb3ed54"
+    },
+    {
+      "path": "crates/bran-core/src/scan/digest.rs",
+      "mode": "100644",
+      "bytes": 2079,
+      "sha256": "8db3603bd7b1cd964b97e055f8609c6d7f07fa7ef151a653d73b8ae3b05f54f3"
+    },
+    {
+      "path": "crates/bran-core/src/scan/graph_input.rs",
+      "mode": "100644",
+      "bytes": 11234,
+      "sha256": "df7fdd885409c49e920fed620fa1586d64679fc6f874025a9c95dfe12b312b9a"
+    },
+    {
+      "path": "crates/bran-core/src/scan/ignore.rs",
+      "mode": "100644",
+      "bytes": 7266,
+      "sha256": "13d307a5bdfa0ebc334967a028b724ae5370dac58090a2984fb0c7e1dd9a58b0"
+    },
+    {
+      "path": "crates/bran-core/src/scan/mod.rs",
+      "mode": "100644",
+      "bytes": 53496,
+      "sha256": "fd0aebcbaa0d8632fdd014f12b5d9292632fd3ed824d5797d20e37c27af3e221"
+    },
+    {
+      "path": "crates/bran-core/src/scan/transaction.rs",
+      "mode": "100644",
+      "bytes": 33902,
+      "sha256": "4b2550160b338c656787b5e7006888c2da134f31f300d9a9aae3735a0e3a0632"
+    },
+    {
+      "path": "crates/bran-core/src/schema.rs",
+      "mode": "100644",
+      "bytes": 6214,
+      "sha256": "5adeb727cbb79521d6a8086e5e5e093ad47956098f729c5f005099e842215059"
+    },
+    {
+      "path": "crates/bran-core/src/view/mod.rs",
+      "mode": "100644",
+      "bytes": 35036,
+      "sha256": "401851a70312fcc3cb14bdcc8a214a19d152e96c7062923274d1cf199a0529f9"
+    },
+    {
+      "path": "crates/bran-tui/Cargo.toml",
+      "mode": "100644",
+      "bytes": 136,
+      "sha256": "664a60537cd4ceeeb7323dfbffdb9ad18e5a3cf4758b13d6699fcbb438244480"
+    },
+    {
+      "path": "crates/bran-tui/src/diagnostics.rs",
+      "mode": "100644",
+      "bytes": 5234,
+      "sha256": "3fe9d661f484a348f8f5978944c53b8175274352d966fa3448d669bb2183d553"
+    },
+    {
+      "path": "crates/bran-tui/src/domain.rs",
+      "mode": "100644",
+      "bytes": 16929,
+      "sha256": "d6711e83a027e090292a58898f5b4c0fab0dcfdb500247388b6ba3db46231915"
+    },
+    {
+      "path": "crates/bran-tui/src/lib.rs",
+      "mode": "100644",
+      "bytes": 26850,
+      "sha256": "5c2c6da7e362ead7d7b64b01e7f2723e2b482f0f7d186f3e7fe2514fdc8db396"
+    },
+    {
+      "path": "crates/bran-tui/src/render.rs",
+      "mode": "100644",
+      "bytes": 5738,
+      "sha256": "c4b435593bff96547f5816fb533a953144a4d9b05d51af76b2f79a061cac086a"
+    },
+    {
+      "path": "crates/bran-tui/src/settings.rs",
+      "mode": "100644",
+      "bytes": 24445,
+      "sha256": "8bce76d049d67add7e4d7cffde72ab913bdd69f2089f2587dc536002e5fa9c2e"
+    },
+    {
+      "path": "deny.toml",
+      "mode": "100644",
+      "bytes": 621,
+      "sha256": "7e586736a7627ee1313a83a6176bd4c02ac8f6e5fb68387b29a0ac88a38b6e14"
+    },
+    {
+      "path": "docs/integrations/agent-setup.md",
+      "mode": "100644",
+      "bytes": 4405,
+      "sha256": "6d6e874ea6f601eef0aa1574a15b45fbe78a2b42c5014319164873e175e8fb8d"
+    },
+    {
+      "path": "examples/headless/README.md",
+      "mode": "100644",
+      "bytes": 1096,
+      "sha256": "d63dc0c69ae6a729853fd843fcf9585f740dd38626cadf85841c80e7ebec2efe"
+    },
+    {
+      "path": "examples/obsidian/usage.rs",
+      "mode": "100644",
+      "bytes": 1086,
+      "sha256": "71f4708c48fa2f76912f5cf93bb0cc350fab73572e38f8bc2e78b0d0ba1f65c9"
+    },
+    {
+      "path": "fixtures/conformance/bran-policy-parity.fixture",
+      "mode": "100644",
+      "bytes": 4420,
+      "sha256": "7635cbc3360073e013a0d4fb7fd74b6f9869e4f33edcb5b2bd1377062495d2cf"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.1-index-invalid.fixture",
+      "mode": "100644",
+      "bytes": 114,
+      "sha256": "32ed7108732a1eecc3c139077725535963bbd41aae79356b524eb3f20e64c399"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.1-index-valid.fixture",
+      "mode": "100644",
+      "bytes": 96,
+      "sha256": "0c86c7b5b1fcb0672c6d709168942032d4ff0b61bddaeb8c0f51ad8dfe2f458c"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.1-log-invalid.fixture",
+      "mode": "100644",
+      "bytes": 158,
+      "sha256": "28340a338de39eb49a8ee072f0dc8b7600bc5f7f5252e99e9541a65ccf9af16b"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.1-log-valid.fixture",
+      "mode": "100644",
+      "bytes": 88,
+      "sha256": "24bff5202be999a46737153a06593bb64b90884142aa490028e1bd7dabee09cf"
+    },
+    {
+      "path": "fixtures/conformance/strict-gap-strict-selected.fixture",
+      "mode": "100644",
+      "bytes": 607,
+      "sha256": "ee662c78c55d5d21e05e6c99e092cee5690b7629a26a94cc9fd2498ae89be672"
+    },
+    {
+      "path": "fixtures/derived-state/rebuild-v1.json",
+      "mode": "100644",
+      "bytes": 3277,
+      "sha256": "04b59dde1d2de6e4e6c285cfb83572577e809364694d9470cf8584ef62dacfb5"
+    },
+    {
+      "path": "fixtures/graph/knowledge-graph-v1.json",
+      "mode": "100644",
+      "bytes": 2197,
+      "sha256": "f72521170acad362e80c523b6431248b3aaabc1bf2926632ab5ceffe095b5afa"
+    },
+    {
+      "path": "fixtures/graph/structural-graph-snapshot-v1.json",
+      "mode": "100644",
+      "bytes": 2659,
+      "sha256": "253e99ec92f28a192c3a6637c93438c2a94a7e11ec1e76fabe52ffd2c1e4a5dc"
+    },
+    {
+      "path": "fixtures/obsidian/p3-body.txt",
+      "mode": "100644",
+      "bytes": 247,
+      "sha256": "1c579b0065902496b678baadce97bed96ddfc108d44259aa828055feaa98484a"
+    },
+    {
+      "path": "fixtures/packets/context-packet-sqz-v1.json",
+      "mode": "100644",
+      "bytes": 2083,
+      "sha256": "73a9269aab0de2a5f6d5b757aabe0dc753599f961bd548097d6606ac1a474cfd"
+    },
+    {
+      "path": "fixtures/policy/invalid-version.yaml",
+      "mode": "100644",
+      "bytes": 140,
+      "sha256": "b0af4f57cea1d8b206ebf92332638ebbe637e557e8c3804daab20ec100fdca1c"
+    },
+    {
+      "path": "fixtures/policy/unsafe-path.yaml",
+      "mode": "100644",
+      "bytes": 303,
+      "sha256": "a6fc9e8335ca86aa9533139b9996e945cdd60a80b7ceccb27ed35c90f8565b78"
+    },
+    {
+      "path": "fixtures/policy/valid-v1.yaml",
+      "mode": "100644",
+      "bytes": 1266,
+      "sha256": "6b138571c62d478fe7bad2f94c73cc13d9f75edfd40d4c3ee1c115911cf10925"
+    },
+    {
+      "path": "fixtures/public-boundary/public-safe/neutral-product-text.txt",
+      "mode": "100644",
+      "bytes": 83,
+      "sha256": "a64fa8b908985143c35911796835e63dfb09886d37f6d8df426e1fa198d347a7"
+    },
+    {
+      "path": "fixtures/public-boundary/rejected/synthetic-canaries.txt",
+      "mode": "100644",
+      "bytes": 94,
+      "sha256": "388bda101883ec9fe7445c8c18e50254e559eb5dd978b9c5030d6ed7caf1193b"
+    },
+    {
+      "path": "fixtures/queries/query-result-v1.json",
+      "mode": "100644",
+      "bytes": 2226,
+      "sha256": "42875059ab95fcd6de003699bac3d3162e063c0fac658467445662245dc50583"
+    },
+    {
+      "path": "fixtures/release/valid-exact-release-manifest.json",
+      "mode": "100644",
+      "bytes": 2900,
+      "sha256": "5e47f7482fbcdd38ddf7d8e32f25e2bb83cefef8c3b1e948472ac4317be694da"
+    },
+    {
+      "path": "fixtures/repair/rollback-v1.json",
+      "mode": "100644",
+      "bytes": 1865,
+      "sha256": "ad8ede9667df7b0e258b68178c41363f736f7dab41b1828e7b699291261b63bf"
+    },
+    {
+      "path": "fixtures/scanner/scan-snapshot-v1.json",
+      "mode": "100644",
+      "bytes": 900,
+      "sha256": "fcaac991435d998d8356ba51a888ee6572c183af64b383c9a31811ac3400d73f"
+    },
+    {
+      "path": "fixtures/source-metadata/metadata-report-v1.json",
+      "mode": "100644",
+      "bytes": 1237,
+      "sha256": "d3f695a9ff07b715f34d0db9fffbe4fcc79a81e2c9c73178b2fb1c3df2398907"
+    },
+    {
+      "path": "fixtures/views/compiled-view-v1.json",
+      "mode": "100644",
+      "bytes": 1808,
+      "sha256": "d5479e697b21c8e8174af5a08bf7354296b87ad435a2ebc2d34d80479b01e76f"
+    },
+    {
+      "path": "schemas/bran-profile-result.schema.json",
+      "mode": "100644",
+      "bytes": 2096,
+      "sha256": "cb3a3bfcd515ba4488ac147e789a8d86fb9d9341d456f8e4c7be934e8dc4f1a4"
+    },
+    {
+      "path": "schemas/bran-release-manifest.schema.json",
+      "mode": "100644",
+      "bytes": 7321,
+      "sha256": "cba9b364722a0d68abb25eb54dbd6ef8b79333b377c639357d66165702bbf0d6"
+    },
+    {
+      "path": "schemas/bran-repository-policy.schema.json",
+      "mode": "100644",
+      "bytes": 5767,
+      "sha256": "0d158f03bef9d88e5caf5f5ced916a7c5164b08c3ce0c780fc4be25a973521a1"
+    },
+    {
+      "path": "schemas/context-packet-receipt.schema.json",
+      "mode": "100644",
+      "bytes": 2370,
+      "sha256": "5b0bb6bbf97ec8e84eebc8a249ff98c71098db096b7bff60536f99261dd8a1f2"
+    },
+    {
+      "path": "schemas/graph-query-result.schema.json",
+      "mode": "100644",
+      "bytes": 4680,
+      "sha256": "03edd06e3953acc4963b31f4902b8454c75ff540f5034915da668ca98634348d"
+    },
+    {
+      "path": "schemas/knowledge-graph.schema.json",
+      "mode": "100644",
+      "bytes": 3545,
+      "sha256": "5140d37b018c248a2c35371a42fba98e1ddbcc62aae440115875ccb45fe636c8"
+    },
+    {
+      "path": "schemas/knowledge-view.schema.json",
+      "mode": "100644",
+      "bytes": 8112,
+      "sha256": "44de5370ab5fb2f03031d723ee0d795ad100450442dfe4fdb0935160b7858e10"
+    },
+    {
+      "path": "schemas/okf-v0.1-normalized-bundle.schema.json",
+      "mode": "100644",
+      "bytes": 3647,
+      "sha256": "f9361110b76a4b3e9a4cf4606aa51c5465a53e1f0d40e0b8b3af15e54e31cc04"
+    },
+    {
+      "path": "schemas/repository-scan-snapshot.schema.json",
+      "mode": "100644",
+      "bytes": 3756,
+      "sha256": "604547e877f5d327050b8e0eddb8beadaa67101868d00a021aefd32c21e65cfa"
+    },
+    {
+      "path": "schemas/source-metadata-report.schema.json",
+      "mode": "100644",
+      "bytes": 1992,
+      "sha256": "ef6736fda490001bcc331a6dbc577e7fbb4b9f1e6f96ed70667537c12471065d"
+    },
+    {
+      "path": "schemas/sqz-receipt.schema.json",
+      "mode": "100644",
+      "bytes": 4774,
+      "sha256": "10e693226ac26d27936e943aa9878757b00355486d42ae99bac315640bac4dbb"
+    },
+    {
+      "path": "schemas/structural-graph-snapshot.schema.json",
+      "mode": "100644",
+      "bytes": 5813,
+      "sha256": "31e3330831ba4c77f4d16d1bf1f3d63561cab1341d5c06b09c8277dcfab1b34a"
+    },
+    {
+      "path": "skill/use-bran/SKILL.md",
+      "mode": "100644",
+      "bytes": 1214,
+      "sha256": "22c330b917abdf57e33b97ec44088b8278b61a7d1e0388672f358ae01b9258aa"
+    },
+    {
+      "path": "tools/ci/build-release.sh",
+      "mode": "100755",
+      "bytes": 4290,
+      "sha256": "97b70095b0a16e8eb186fb24d2cfbd3bce14063b331c1b746e4582f6c74a1577"
+    },
+    {
+      "path": "tools/ci/check.sh",
+      "mode": "100755",
+      "bytes": 4872,
+      "sha256": "3dbbcf9e9feeac7e84f9344620fff59810d4cd37f3de7d61456537bbdaf37163"
+    },
+    {
+      "path": "tools/ci/public_boundary_check.py",
+      "mode": "100644",
+      "bytes": 9024,
+      "sha256": "1d43fc6615ef2b25ee27aa165a7b45779f8c0f0530a868de89ca740bfcd65c5d"
+    },
+    {
+      "path": "tools/ci/public_export.py",
+      "mode": "100644",
+      "bytes": 19157,
+      "sha256": "82629365b0fc24ab7c4077c7c45305e6010065745d9fedf0baa4946cf68d9bed"
+    },
+    {
+      "path": "tools/ci/release-check.sh",
+      "mode": "100755",
+      "bytes": 1093,
+      "sha256": "29360f0ac6fe9701eb42c3357428f135d8f62028aeb2fa2a7bccd9290de8aac5"
+    },
+    {
+      "path": "tools/ci/release_contract_check.py",
+      "mode": "100644",
+      "bytes": 11801,
+      "sha256": "36f0aa9098e350410d057cc1fe387d3e053816ab56c5658d6cdebbad5da1ccb2"
+    },
+    {
+      "path": "tools/ci/release_seal.py",
+      "mode": "100755",
+      "bytes": 22511,
+      "sha256": "32063c65aaff99ddc39ed47fb07ace8b30a022d9f3e177ce35469978ab5fb302"
+    },
+    {
+      "path": "tools/ci/test-budget.json",
+      "mode": "100644",
+      "bytes": 8932,
+      "sha256": "9937ae287e49aaca8bee5ff77cb4c30529290362f36ecd747c39b34bae2cf3c2"
+    },
+    {
+      "path": "tools/ci/test_budget_check.py",
+      "mode": "100644",
+      "bytes": 33505,
+      "sha256": "ff60cd69b4a5e7994004095441491fe24b3635159676ea4133955006b9187f1c"
+    }
+  ]
+}

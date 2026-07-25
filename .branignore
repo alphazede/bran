@@ -1,0 +1,2 @@
+# BRAN's policy is source; everything else below .bran is local runtime state.
+.bran/

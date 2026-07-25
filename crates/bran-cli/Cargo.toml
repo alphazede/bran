@@ -1,0 +1,14 @@
+[package]
+name = "bran-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bran-core = { path = "../bran-core", version = "0.1.0" }
+bran-tui = { path = "../bran-tui", version = "0.1.0" }
+crossterm = { version = "=0.29.0", default-features = false, features = ["events", "windows"] }
+
+[[bin]]
+name = "bran"
+path = "src/main.rs"

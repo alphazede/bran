@@ -1,0 +1,55 @@
+# BRAN repository-policy v1 fixture — complete amended DES-1/DES-8/DES-9/DES-10 shape.
+# Consumed by bran-core policy::tests.  Must round-trip through
+# parse_policy_yaml and RepositoryPolicy::load with all typed fields
+# populated.  Retains existing fields and exercises every additive extension.
+schema_version: "1"
+frontmatter:
+  required:
+    - type
+    - okf_status
+  optional:
+    - name
+  allowed:
+    - tags
+  preserved_canonical_keys:
+    - name
+    - description
+    - allowed-tools
+  canonical_docs_frontmatter_state: "legacy_baseline"
+coverage:
+  - canonical
+  - legacy
+  - excluded
+  - unclassified
+document_coverage:
+  roots:
+    - "."
+  native_bundle:
+    - "docs/bran/index.md"
+  canonical_documents:
+    - "AGENTS.md"
+    - "docs/plans/AGENTS.md"
+  legacy_documents:
+    - "TECHNICAL_DEBT.md"
+  excluded_documents:
+    "tools/bran/fixtures/test.md": "Deterministic BRAN test fixture, not canonical repository knowledge."
+  bridge_targets:
+    - "docs/public/bridge.md"
+source_links:
+  require_prefix: "https://github.com/alphazede/"
+tags:
+  allowed:
+    - internal
+    - public
+status:
+  allowed:
+    - draft
+    - active
+    - deprecated
+public_boundary:
+  values:
+    - public
+    - private
+  path_allowlist:
+    - "docs/public"
+    - "schemas"

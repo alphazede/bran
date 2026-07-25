@@ -1,0 +1,67 @@
+{
+  "packet_receipt": {
+    "schema_version": "1.0.0",
+    "seed_ids": [
+      "file:src/lib.rs"
+    ],
+    "admitted_dependency_ids": [
+      "file:src/support.rs"
+    ],
+    "selected_ids": [
+      "file:src/lib.rs",
+      "file:src/support.rs"
+    ],
+    "omitted_ids": [
+      "external:runtime-loader"
+    ],
+    "dependency_closure_truncated": false,
+    "dependency_max_depth": 4,
+    "dependency_max_nodes": 16,
+    "raw_bytes": 320,
+    "estimated_tokens": 80,
+    "token_estimate_method": "bytes-divided-by-four-ceiling",
+    "effective_max_items": 3,
+    "effective_max_bytes": 1024,
+    "runtime_token_ceiling": null,
+    "truncated": true
+  },
+  "sqz_receipt": {
+    "schema_version": "1.0.0",
+    "configured_identity": {
+      "source": "approved-cargo-install:sqz-cli=1.1.1+patched-compatible-deps",
+      "version": "sqz 1.1.1",
+      "sha256": "03c8de9c55f22e3c3e33852972a2a12a8e436d8861736db71c9441804075e722"
+    },
+    "returned_identity": {
+      "source": "approved-cargo-install:sqz-cli=1.1.1+patched-compatible-deps",
+      "version": "sqz 1.1.1",
+      "sha256": "03c8de9c55f22e3c3e33852972a2a12a8e436d8861736db71c9441804075e722"
+    },
+    "policy": "public-on",
+    "status": "applied",
+    "failure_reason": null,
+    "monotonic_call_latency_ns": 125000,
+    "raw_bytes": 320,
+    "candidate_compressed_bytes": 144,
+    "returned_bytes": 144,
+    "raw_token_estimate_bytes_divided_by_four_ceiling": 80,
+    "candidate_token_estimate_bytes_divided_by_four_ceiling": 36,
+    "returned_token_estimate_bytes_divided_by_four_ceiling": 36,
+    "actual_input_tokens": null,
+    "actual_output_tokens": null,
+    "fidelity_status": "passed",
+    "required_fidelity_anchor_ids": [
+      "required.lib-entrypoint",
+      "required.support-contract"
+    ],
+    "missing_fidelity_anchor_ids": [],
+    "dlp_status": "passed",
+    "dlp_findings": [],
+    "requested_max_output_bytes": 200,
+    "effective_max_output_bytes": 200,
+    "sqz_id": {
+      "algorithm": "sha256",
+      "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://alphazede.github.io/bran/schemas/repair-rollback-v1.json",
+  "schema_version": "1.0.0",
+  "description": "Rollback contract: on validator failure after staged apply, restore exact pre-apply bytes or remove newly-created file. Never claim success before validation.",
+  "requirements": ["AC-3", "AC-4", "DES-5", "SEIT-5"],
+  "lifecycle": "proposed -> applied -> validation-failed -> restored",
+  "receipt_field": "revalidation",
+  "receipt_value_on_failure": "proposed -> applied -> validation-failed -> restored",
+  "contract": {
+    "pre_existing_target": "restore original bytes from same-directory backup via atomic rename",
+    "absent_target_before_apply": "remove the newly-created target file, restoring non-existence",
+    "io_partial_failure": "return IoPartialWrite with validator and rollback failure detail; filesystem state uncertain, requires operator inspection/recovery",
+    "never_claims_success_before_validation": true
+  },
+  "test_cases": [
+    {
+      "id": "positive-existing-rollback",
+      "scenario": "Existing file replaced; validator fails; original bytes restored byte-for-byte",
+      "expected": "file content equals pre-apply snapshot; receipt revalidation = proposed -> applied -> validation-failed -> restored"
+    },
+    {
+      "id": "positive-absent-rollback",
+      "scenario": "Absent target created by apply; validator fails; target removed",
+      "expected": "target does not exist after rollback; receipt revalidation = proposed -> applied -> validation-failed -> restored"
+    },
+    {
+      "id": "negative-partial-rollback-failure",
+      "scenario": "Backup rename fails during rollback; error preserved as IoPartialWrite",
+      "expected": "IoPartialWrite containing both validator and rollback failure details; filesystem state uncertain, requires operator inspection/recovery"
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0.0",
+  "spec": {
+    "source": {
+      "kind": "semantic-field-value",
+      "semantic": {
+        "key": "subsystem",
+        "value": "core"
+      }
+    },
+    "filter": {
+      "kind": "all-of",
+      "clauses": [
+        {
+          "kind": "semantic-field-value",
+          "semantic": {
+            "key": "status",
+            "value": "active"
+          }
+        },
+        {
+          "kind": "minimum-confidence",
+          "minimum": 80
+        }
+      ]
+    },
+    "sort": {
+      "kind": "semantic-field-then-node-id",
+      "key": "subsystem"
+    },
+    "grouping": {
+      "kind": "semantic-field",
+      "key": "subsystem"
+    },
+    "fields": [
+      {
+        "kind": "node-id"
+      },
+      {
+        "kind": "role"
+      },
+      {
+        "kind": "semantic-field",
+        "key": "subsystem"
+      }
+    ],
+    "presentation": "obsidian",
+    "max_items": 1,
+    "max_bytes": 1024
+  },
+  "items": [
+    {
+      "id": "file:src/lib.rs",
+      "group": "core",
+      "provenance": {
+        "source": "repository-scanner",
+        "locator": "src/lib.rs"
+      },
+      "fields": [
+        {
+          "field": {
+            "kind": "node-id"
+          },
+          "name": "node_id",
+          "value": "file:src/lib.rs"
+        },
+        {
+          "field": {
+            "kind": "role"
+          },
+          "name": "role",
+          "value": "entrypoint"
+        },
+        {
+          "field": {
+            "kind": "semantic-field",
+            "key": "subsystem"
+          },
+          "name": "subsystem",
+          "value": "core"
+        }
+      ],
+      "canonical_item_bytes": 151
+    }
+  ],
+  "groups": [
+    {
+      "name": "core",
+      "node_ids": [
+        "file:src/lib.rs"
+      ]
+    }
+  ],
+  "selected_bytes": 151,
+  "truncated": true
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/repository-scan-snapshot/v1/schema.json",
+  "title": "BRAN Repository Scan Snapshot",
+  "description": "Portable bounded scanner snapshot with weak identities, diagnostics, input fingerprints, and observed byte accounting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "inputs", "entries", "diagnostics", "file_count", "total_bytes", "observed_bytes"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "inputs": { "$ref": "#/$defs/input_fingerprints" },
+    "entries": {
+      "type": "array",
+      "maxItems": 10000,
+      "description": "Ordered lexicographically by repository-relative path.",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 10000,
+      "description": "Ordered by diagnostic kind, path, then reason.",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "file_count": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "total_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+    "observed_bytes": {
+      "type": "array",
+      "maxItems": 10000,
+      "description": "Ordered lexicographically by path; records bytes actually observed during this scan operation.",
+      "items": { "$ref": "#/$defs/observed" }
+    }
+  },
+  "$defs": {
+    "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "weak_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Deterministic non-cryptographic identity. Equality is ambiguous and requires byte-for-byte reparse; it is not proof of content identity.",
+      "required": ["byte_len", "lanes"],
+      "properties": {
+        "byte_len": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "lanes": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+        }
+      }
+    },
+    "input_fingerprints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "parser", "profile", "config", "package_defaults", "ignore"],
+      "properties": {
+        "schema": { "$ref": "#/$defs/weak_identity" },
+        "parser": { "$ref": "#/$defs/weak_identity" },
+        "profile": { "$ref": "#/$defs/weak_identity" },
+        "config": { "$ref": "#/$defs/weak_identity" },
+        "package_defaults": { "$ref": "#/$defs/weak_identity" },
+        "ignore": { "$ref": "#/$defs/weak_identity" }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "identity", "source_bytes", "metadata_status"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "identity": { "$ref": "#/$defs/weak_identity" },
+        "source_bytes": { "type": "integer", "minimum": 0, "maximum": 262144 },
+        "metadata_status": { "enum": ["complete", "warning", "unavailable"] }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": { "enum": ["symlink", "unreadable", "non-utf8-path", "unsupported-input", "weak-identity-mismatch"] },
+        "path": { "$ref": "#/$defs/path" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 }
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/structural-graph-snapshot/v1/schema.json",
+  "title": "BRAN Structural Graph Snapshot v1",
+  "description": "Shape validation only; Rust remains authoritative for canonical ordering, derived-index equivalence, graph integrity, and digests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adjacency", "case_policy", "edges", "frozen_frequency_digest", "graph_digest", "indexes", "nodes", "parent_digest", "receipt", "scan_input_digest", "schema_version", "snapshot_digest"],
+  "properties": {
+    "adjacency": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/adjacency" } },
+    "case_policy": { "const": "case-sensitive" },
+    "edges": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/edge" } },
+    "frozen_frequency_digest": { "$ref": "#/$defs/digest" },
+    "graph_digest": { "$ref": "#/$defs/digest" },
+    "indexes": { "$ref": "#/$defs/indexes" },
+    "nodes": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/node" } },
+    "parent_digest": { "$ref": "#/$defs/nullable_digest" },
+    "receipt": { "$ref": "#/$defs/receipt" },
+    "scan_input_digest": { "$ref": "#/$defs/digest" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "snapshot_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullable_digest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "relative_path": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\x00-\\x1f]+(?:/[^/\\x00-\\x1f]+)*$" },
+    "text": { "type": "string", "minLength": 1 },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["locator", "source"],
+      "properties": { "locator": { "$ref": "#/$defs/text" }, "source": { "$ref": "#/$defs/text" } }
+    },
+    "node": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authority", "content_digest", "domains", "generated_status", "id", "lifecycle", "owner", "path", "provenance", "source_type"],
+      "properties": {
+        "authority": { "enum": ["canonical", "approved", "supporting", "unknown"] },
+        "content_digest": { "$ref": "#/$defs/digest" },
+        "domains": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "generated_status": { "enum": ["source", "generated", "preextracted"] },
+        "id": { "$ref": "#/$defs/digest" },
+        "lifecycle": { "enum": ["current", "superseded", "draft", "archive", "rejected"] },
+        "owner": { "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
+        "path": { "$ref": "#/$defs/relative_path" },
+        "provenance": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/provenance" } },
+        "source_type": { "enum": ["text", "code", "markdown", "mermaid", "metadata", "preextracted-text"] }
+      }
+    },
+    "edge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["certainty", "id", "kind", "provenance", "source", "source_locator", "target"],
+      "properties": {
+        "certainty": { "enum": ["known", "dynamic", "unknown", "missing-target"] },
+        "id": { "$ref": "#/$defs/digest" },
+        "kind": { "enum": ["ownership", "lifecycle", "supersedes", "predecessor", "dependency", "impact", "requirement", "design", "implementation", "validation", "domain", "architecture", "business-flow", "generated-from", "source-link"] },
+        "provenance": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/provenance" } },
+        "source": { "$ref": "#/$defs/digest" },
+        "source_locator": { "$ref": "#/$defs/text" },
+        "target": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "adjacency": {
+      "type": "object", "additionalProperties": false,
+      "required": ["forward", "node_id", "reverse"],
+      "properties": {
+        "forward": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
+        "node_id": { "$ref": "#/$defs/digest" },
+        "reverse": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } }
+      }
+    },
+    "index_record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "position"],
+      "properties": { "id": { "$ref": "#/$defs/digest" }, "position": { "type": "integer", "minimum": 0, "maximum": 999999 } }
+    },
+    "indexes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["edges", "nodes"],
+      "properties": {
+        "edges": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/index_record" } },
+        "nodes": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/index_record" } }
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["before_digest", "candidate_digest", "operation_id", "ordering_version", "published_digest", "validation_facts"],
+      "properties": {
+        "before_digest": { "$ref": "#/$defs/nullable_digest" },
+        "candidate_digest": { "$ref": "#/$defs/nullable_digest" },
+        "operation_id": { "$ref": "#/$defs/text" },
+        "ordering_version": { "type": "integer", "const": 1 },
+        "published_digest": { "$ref": "#/$defs/nullable_digest" },
+        "validation_facts": { "type": "array", "maxItems": 1000000, "uniqueItems": true, "items": { "$ref": "#/$defs/text" } }
+      }
+    }
+  }
+}

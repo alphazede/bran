@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/context-packet-receipt/v1/schema.json",
+  "title": "BRAN Context Packet Receipt",
+  "description": "Portable deterministic packet-selection accounting. estimated_tokens is ceil(raw_bytes / 4); actual provider tokens are unavailable and are intentionally outside this receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "seed_ids", "admitted_dependency_ids", "selected_ids", "omitted_ids", "dependency_closure_truncated", "dependency_max_depth", "dependency_max_nodes", "raw_bytes", "estimated_tokens", "token_estimate_method", "effective_max_items", "effective_max_bytes", "runtime_token_ceiling", "truncated"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "seed_ids": { "$ref": "#/$defs/view_ids" },
+    "admitted_dependency_ids": { "$ref": "#/$defs/dependency_ids" },
+    "selected_ids": { "$ref": "#/$defs/candidate_ids" },
+    "omitted_ids": { "$ref": "#/$defs/candidate_ids" },
+    "dependency_closure_truncated": { "type": "boolean" },
+    "dependency_max_depth": { "type": "integer", "minimum": 0, "maximum": 64 },
+    "dependency_max_nodes": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "raw_bytes": { "$ref": "#/$defs/usize" },
+    "estimated_tokens": { "$ref": "#/$defs/usize", "description": "Exactly ceil(raw_bytes / 4), not provider telemetry." },
+    "token_estimate_method": { "const": "bytes-divided-by-four-ceiling" },
+    "effective_max_items": { "type": "integer", "minimum": 0, "maximum": 8192 },
+    "effective_max_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+    "runtime_token_ceiling": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/usize" }] },
+    "truncated": { "type": "boolean" }
+  },
+  "$defs": {
+    "usize": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "id": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9./:_-]+$" },
+    "view_ids": { "type": "array", "maxItems": 4096, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "dependency_ids": { "type": "array", "maxItems": 4096, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "candidate_ids": { "type": "array", "maxItems": 8192, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+  }
+}

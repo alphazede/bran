@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/sqz-receipt/v1/schema.json",
+  "title": "BRAN SQZ Receipt",
+  "description": "Portable policy, fidelity, DLP, and byte accounting for one SQZ evaluation. Byte-derived token fields are estimates; nullable actual token fields are provider telemetry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "configured_identity", "returned_identity", "policy", "status", "failure_reason", "monotonic_call_latency_ns", "raw_bytes", "candidate_compressed_bytes", "returned_bytes", "raw_token_estimate_bytes_divided_by_four_ceiling", "candidate_token_estimate_bytes_divided_by_four_ceiling", "returned_token_estimate_bytes_divided_by_four_ceiling", "actual_input_tokens", "actual_output_tokens", "fidelity_status", "required_fidelity_anchor_ids", "missing_fidelity_anchor_ids", "dlp_status", "dlp_findings", "requested_max_output_bytes", "effective_max_output_bytes", "sqz_id"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "configured_identity": { "$ref": "#/$defs/identity" },
+    "returned_identity": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/identity" }] },
+    "policy": { "enum": ["public-off", "public-on", "internal-locked"] },
+    "status": { "enum": ["off", "applied", "not-beneficial", "failed"] },
+    "failure_reason": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/failure" }] },
+    "monotonic_call_latency_ns": { "$ref": "#/$defs/usize", "description": "Checked integer nanosecond projection of Rust Duration; serializers must reject values outside this bound rather than emitting a platform-specific Duration representation." },
+    "raw_bytes": { "$ref": "#/$defs/usize" },
+    "candidate_compressed_bytes": { "$ref": "#/$defs/nullable_usize" },
+    "returned_bytes": { "$ref": "#/$defs/usize" },
+    "raw_token_estimate_bytes_divided_by_four_ceiling": { "$ref": "#/$defs/usize" },
+    "candidate_token_estimate_bytes_divided_by_four_ceiling": { "$ref": "#/$defs/nullable_usize" },
+    "returned_token_estimate_bytes_divided_by_four_ceiling": { "$ref": "#/$defs/usize" },
+    "actual_input_tokens": { "$ref": "#/$defs/nullable_usize", "description": "Null when provider telemetry is unavailable." },
+    "actual_output_tokens": { "$ref": "#/$defs/nullable_usize", "description": "Null when provider telemetry is unavailable." },
+    "fidelity_status": { "enum": ["not-evaluated", "required-but-unavailable", "passed", "missing"] },
+    "required_fidelity_anchor_ids": { "$ref": "#/$defs/anchor_ids" },
+    "missing_fidelity_anchor_ids": { "$ref": "#/$defs/anchor_ids" },
+    "dlp_status": { "enum": ["not-evaluated", "input-passed", "passed", "findings"] },
+    "dlp_findings": { "type": "array", "maxItems": 4096, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 128 } },
+    "requested_max_output_bytes": { "$ref": "#/$defs/usize" },
+    "effective_max_output_bytes": { "$ref": "#/$defs/usize" },
+    "sqz_id": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sqz_id" }] }
+  },
+  "$defs": {
+    "usize": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "nullable_usize": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/usize" }] },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "version", "sha256"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "failure": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["configured-identity-mismatch", "returned-identity-mismatch", "fidelity-anchors-unavailable", "missing-fidelity-anchors", "fidelity-anchor-missing-from-input", "conflicting-fidelity-anchor-ids", "dlp-findings", "output-exceeds-bound"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "port_error_code"], "properties": { "kind": { "const": "port-unavailable" }, "port_error_code": { "enum": ["unavailable", "timeout", "execution-failed", "invalid-output"] } } }
+      ]
+    },
+    "anchor_ids": { "type": "array", "maxItems": 4096, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._-]+$" } },
+    "sqz_id": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}
