@@ -1,11 +1,9 @@
 ---
 type: integration-guide
 title: Agent setup
-okf_status: active
 tags:
   - public
   - developer
-public_boundary: public
 ---
 
 # Agent setup

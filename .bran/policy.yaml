@@ -27,13 +27,12 @@ coverage:
   - unclassified
 
 document_coverage:
-  native_bundle:
-    - README.md
-  canonical_documents:
-    - docs/integrations/agent-setup.md
-    - skill/use-bran/SKILL.md
   legacy_documents:
-    - examples/headless/README.md
+    - README.md
+    - docs/integrations/agent-setup.md
+  excluded_documents:
+    skill/use-bran/SKILL.md: Agent skill frontmatter is parsed by the host and is not an OKF concept document.
+    examples/headless/README.md: Headless command reference, not an OKF concept document.
   bridge_targets:
     - LICENSE-APACHE
     - LICENSE-MIT

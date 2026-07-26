@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "10d762d3b0c4e22d157568399950412ebe66890e",
+  "source_commit": "3cde6f06586d41b96cfad0da57015ed8919b9322",
   "public_repository": "alphazede/bran",
   "files": [
     {
       "path": ".bran/policy.yaml",
       "mode": "100644",
-      "bytes": 856,
-      "sha256": "09800066556b08e36b3dae0c6775a304d728ace1db37de5ab10fe4d3adb3999c"
+      "bytes": 975,
+      "sha256": "41e89d763cdd6beac49d0372e1758cc86c1e7cf6e15a494ded429fbbf7b6c7ac"
     },
     {
       "path": ".branignore",
@@ -61,8 +61,8 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "bytes": 5774,
-      "sha256": "3a03238e1e72e9b2560477591914e219bd66fb2e650be3f47c46a059bb467a9d"
+      "bytes": 11524,
+      "sha256": "0baf93700cc37a3e0cdd501725e135f99d915c6b628889baf69b1d4d39bc878d"
     },
     {
       "path": "assets/brand/bran-repository-raven.png",
@@ -373,8 +373,8 @@
     {
       "path": "docs/integrations/agent-setup.md",
       "mode": "100644",
-      "bytes": 4405,
-      "sha256": "6d6e874ea6f601eef0aa1574a15b45fbe78a2b42c5014319164873e175e8fb8d"
+      "bytes": 4362,
+      "sha256": "ae7f8e79701bc0f59f137869e3a9aefe76f0a0889a1c070e35e30cd1ba5bd662"
     },
     {
       "path": "examples/headless/README.md",
