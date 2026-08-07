@@ -7,238 +7,235 @@ tags:
 resource: https://github.com/alphazede/bran
 ---
 
-# BRAN
+# BRAN — deterministic code search and context packets for LLM agents
 
-![BRAN seated between two ravens beneath the memory tree](assets/brand/bran-repository-raven.png)
+**BRAN is a local-first Rust CLI for deterministic code search: it ranks a
+repository offline and assembles a bounded context packet, so AI agents get the
+right files without searching for them.** No embeddings and no index server. It
+runs fully offline, or connected to a model you choose — an API key is optional
+and unused by default.
 
-BRAN helps you understand and validate a repository locally. Use the headless
-`bran` command in scripts and agent workflows, or open the optional terminal
-interface to browse. Scanning, focused evidence packets, validation, and
-offline browsing work without an agent account.
+[![CI](https://github.com/alphazede/bran/actions/workflows/bran-fast.yml/badge.svg)](https://github.com/alphazede/bran/actions/workflows/bran-fast.yml)
+![Rust](https://img.shields.io/badge/rust-stable-orange)
+![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
-## Build and try it
+## Why not just grep?
 
-Run the fast checks:
+`rg` answers "which lines contain this string." An agent asking "where is
+authentication handled?" gets an unranked wall of matches and burns tokens
+sorting it. BRAN answers "which files are authoritative for this question,"
+ranked, with the reason attached.
 
-```sh
-./tools/ci/check.sh --fast
-```
+| | ripgrep / grep | Embedding RAG | BRAN |
+|---|---|---|---|
+| Ranking | none | similarity | declared authority + path + body + metadata |
+| Determinism | yes | no | yes — identical input, identical output |
+| Needs a model | no | yes | optional — works either way |
+| Needs an index server | no | usually | no |
+| Reports a miss | n/a | rarely | yes, explicitly |
+| Offline | yes | rarely | yes |
 
-Try a quick smoke test from the repository root:
+## Install
 
-```sh
-cargo run --quiet --bin bran -- smoke
-```
-
-The command prints a versioned JSON response. Start the TUI with:
-
-```sh
-cargo run --quiet --bin bran -- tui
-```
-
-On first launch, BRAN shows the requested and available settings for offline
-mode, SQZ, connected agents, voice, history, and saved chats. If a capability
-is unavailable, BRAN says so instead of pretending it worked. The default setup
-is offline, read-only, and keeps no conversation history.
-
-To cap a connected task, set `tokens=N`. BRAN treats this as a requested host
-limit until the connected adapter confirms enforcement. Leaving it unset does
-not block connected work or imply that a token limit is enforced. Version 2
-settings migrate the old numeric default to `unset`; set `tokens=N` again if
-you want an explicit limit. The separate 65,536-byte answer limit protects
-storage. It is not a token limit or token-usage measurement.
-
-During onboarding, you can choose `agent=`, `model=`, and `reasoning=` values,
-including `reasoning=max`, for the current TUI session. You can also choose
-`retention=none|structured|saved`. These options control BRAN's existing
-history and saved-chat behavior. They never accept credentials or change
-global configuration, and provider-side conversation retention remains
-disabled.
-
-After onboarding, inspect local readiness without contacting an account:
+Prebuilt archives for Linux, macOS, and Windows are attached to each release:
 
 ```sh
-bran doctor --onboarding
-bran doctor --agent
-bran agents list
+https://github.com/alphazede/bran/releases/download/bran-v0.1.0/
 ```
 
-Both doctor modes are read-only. Their JSON output shows unavailable
-capabilities and attestation details, and confirms that they made no provider,
-authentication, or network calls. `bran doctor --agent` continues to return
-validation status until the connected runtime and host attestation are active,
-even when `local_setup_ready` is true. See
-[Agent setup](docs/integrations/agent-setup.md) for the two supported setup
-journeys, reasoning and tool recipes, no-session operation, and the offline
-return check. To let an external agent host call BRAN, install the instructions
-in [`skill/use-bran`](skill/use-bran/SKILL.md).
+Or build from source:
 
-## Make an agent actually use BRAN
+```sh
+cargo install --git https://github.com/alphazede/bran --tag bran-v0.1.0 bran-cli
+```
 
-Giving an agent access to BRAN is not enough. Without a timely reminder, an
-agent usually reaches for built-in search tools because they are always
-available and never report `unavailable`. In one dev-node session on
-2026-07-25, a BRAN banner appeared on every turn while the agent still used raw
-search dozens of times without invoking BRAN.
+## Quickstart
 
-Two structural issues caused that behavior:
+Rank the sources for a question:
 
-1. A session-start or prompt-time reminder is stale by the time the agent forms
-   a search. The reminder needs to run on the search tool call itself.
-2. BRAN requires a native `.bran/policy.yaml` at the repository root. Without
-   one, `bran_status: unavailable` is the correct result, and ordinary
-   repository discovery is the correct fallback. Coverage is a precondition
-   for adoption.
-
-### Add coverage before reminders
-
-Audit target repositories for `.bran/policy.yaml` before wiring hooks. Do not
-nag an agent toward BRAN in a repository where it is unavailable; include the
-known coverage gaps in local injected context instead.
-
-When existing public-facing Markdown cannot carry BRAN classification
-frontmatter, keep the native index private, classify existing documents with
-`legacy_baseline`, and exclude private or generated state with `.branignore`.
-This provides repository coverage without changing the published Markdown.
-
-### Remind the agent at search time
-
-Use a `PreToolUse` command hook and match the tool names emitted by the actual
-harness. Tool vocabularies differ:
-
-| Harness | Search path | Matcher |
-|---|---|---|
-| Claude Code | Native `Grep`/`Glob`, plus raw search through its shell tool | `Grep\|Glob\|Bash` |
-| Codex | Unified shell commands such as `rg`, `grep`, `git grep`, and `find` | `Bash` |
-
-If a Codex surface exposes a dedicated search function, match its reported tool
-name as well. Use `/hooks` to inspect the active hook sources and observed tool
-names instead of assuming that another harness's matcher vocabulary applies.
-For a broad matcher such as `Bash`, the script should inspect `tool_input` and
-stay silent unless the command is a repository search. Resolve native coverage
-from the call's current working directory on every invocation instead of
-hard-coding a list of covered or uncovered repositories; that list becomes
-wrong as soon as a policy is added or removed.
-
-Keep the hook in a script file and reference it by absolute path. Both
-harnesses send a JSON payload on stdin. A Codex `PreToolUse` reminder returns an
-event-specific JSON object like this:
+```sh
+bran query . "valid_sha256" | jq '{status, source_rankings: .data.source_rankings[:3], metrics}'
+```
 
 ```json
 {
-  "systemMessage": "BRAN_SEARCH_ALERT: raw rg repository search requested in a BRAN-covered checkout.",
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "additionalContext": "Use the verified BRAN binary for this repository-knowledge search."
+  "status": "ok",
+  "source_rankings": [
+    { "rank": 1, "locator": "crates/bran-core/src/agent/runtime.rs",       "match_reason": "exact:body" },
+    { "rank": 2, "locator": "crates/bran-core/src/agent/delegate.rs",      "match_reason": "exact:body" },
+    { "rank": 3, "locator": "crates/bran-core/src/adapters/connected.rs",  "match_reason": "exact:body" }
+  ],
+  "metrics": {
+    "candidate_source_bytes": 2702707,
+    "selected_source_bytes": 133660,
+    "context_bytes_avoided": 2569047,
+    "estimated_tokens": 33415
   }
 }
 ```
 
-Codex treats non-empty hook stdout as JSON. Plain text on stdout causes an
-`invalid ... JSON output` hook failure. Exit successfully with no output when
-the hook does not apply.
+That is 2.7 MB of candidate sources narrowed to 134 KB. Trim the output with
+`jq` so BRAN saves context instead of consuming it.
 
-Codex also requires review of every new or changed non-managed hook definition.
-Open `/hooks`, inspect the source and exact command, and trust it; until then,
-Codex intentionally skips the changed hook. Test the stored command first, and
-start a fresh session if an already-running session still has the previous
-matcher set loaded. Do not use a trust-bypass flag as normal installation
-guidance.
+## A miss looks like a miss
 
-### Make raw-search fallback visible
-
-A search hook sees the raw tool call but cannot reliably prove that a BRAN
-query succeeded earlier in the conversation. Treat every matching raw search
-as an observable fallback: return a top-level `systemMessage` beginning with a
-stable marker such as `BRAN_SEARCH_ALERT`, and use `additionalContext` to make
-the agent report whether BRAN was used and why the fallback is still needed.
-This lets an owner find adoption loopholes without blocking legitimate
-diagnostic searches or maintaining fragile per-session state.
-
-In a covered repository, the alert should require `bran_status` plus a bounded
-fallback reason. In an uncovered repository, it should explicitly report
-`bran_status: unavailable` and allow ordinary discovery. Stay silent for
-unrelated shell commands so the warning remains useful instead of becoming
-background noise.
-
-The injected context should tell the agent to:
-
-- Resolve the pinned BRAN binary and verify its SHA-256 against the release pin.
-- Use ordinary discovery immediately when the repository has no native policy.
-- Trim query output so BRAN saves context instead of consuming it.
-- Report `bran_status` as `hit`, `miss`, `stale`, `conflict`, or `unavailable`.
-
-For example, keep the highest-ranked sources and top-level metrics while
-dropping the duplicate provenance payload:
+An agent cannot tell a good answer from a confident wrong one. So when a
+high-specificity entity has no match, BRAN returns nothing and says why,
+instead of padding the result with files that matched the generic words around
+it:
 
 ```sh
-bran query <repo-root> "<request>" |
-  jq '{status, source_rankings: .data.source_rankings[:8], metrics, warnings, failures}'
+bran query . "nonexistent-collector-xyz"
 ```
 
-### Test both hook directions
+```json
+{
+  "status": "ok",
+  "source_rankings": [],
+  "warnings": ["unmatched_query_terms: nonexistent-collector-xyz"]
+}
+```
 
-Do not assume that a stored hook configuration is valid. Inline shell embedded
-in JSON is easy to damage through escaping, so prefer an executable script and
-test the command exactly as stored:
+Command success is not evidence coverage. Empty results are a feature.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `bran query <root> <request>` | Rank the sources for a request |
+| `bran packet <root> <request>` | Assemble a bounded context packet |
+| `bran check <root> <profile>` | Validate against `okf-v0.1`, `okf-v0.2`, or `bran-strict` |
+| `bran maintain <propose\|apply\|revalidate>` | Bounded repair under explicit authority |
+| `bran tui` | Browse the repository offline |
+| `bran doctor --onboarding\|--agent` | Read-only local readiness check |
+| `bran get <result-id>` | Retrieve a stored result |
+
+Every command emits versioned JSON. `query`, `packet`, `check`, and `tui` need
+no account and make no network calls.
+
+## The schema layer: OKF
+
+BRAN ranks on declared authority, not guesswork. That declaration is the
+Open Knowledge Format, or [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog),
+Google's open spec. YAML frontmatter turns ordinary markdown into a queryable knowledge graph:
+
+```yaml
+---
+type: Concept
+title: Ranking precedence
+status: active
+tags: [developer]
+resource: https://github.com/alphazede/bran
+---
+```
+
+`type` is the only required field. Optional families cover provenance
+(`sources`, `usage_window`), trust (`generated`, `verified`), and lifecycle
+(`status`, `stale_after`).
 
 ```sh
-echo '{"hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"x"}}' |
-  /absolute/path/bran-search.sh
+bran check . okf-v0.2
 ```
 
-Confirm that a matching payload produces valid JSON with non-empty
-`additionalContext`. Then send an unrelated payload and confirm the hook emits
-nothing. A noisy hook that fires on every command will eventually be disabled.
+```json
+{
+  "selected_profile": "okf-v0.2",
+  "selected_passed": true,
+  "okf_compatibility": { "profile": "okf-v0.1", "status": "pass" },
+  "okf_v0_2":          { "profile": "okf-v0.2", "status": "pass" },
+  "bran_strict":       { "profile": "bran-strict", "status": "pass" }
+}
+```
 
-In the 2026-07-25 dev-node observation, one repository query narrowed 5.9 MB of
-candidate sources to 411 KB, placed the correct file at rank 2, and reported
-about 102,000 estimated tokens of context avoided. This is an observed result,
-not a general performance guarantee, and it only helps when the hook fires and
-the returned JSON is trimmed.
+All three results are reported independently and only the selected profile
+controls the exit code, so OKF conformance is never confused with house rules.
 
-Connected tasks require a valid project-local `.bran/settings.conf` with
-`profile=connected-agent`. Set `BRAN_AGENT_PROFILE`, `BRAN_AGENT_PROVIDER`,
-`BRAN_AGENT_MODEL`, `BRAN_AGENT_REASONING`, and `BRAN_AGENT_ACCOUNT_REF` to
-describe the agent connection.
-`BRAN_EXTERNAL_HOST_EXECUTABLE`, `BRAN_EXTERNAL_HOST_SHA256`, and
-`BRAN_SQZ_EXECUTABLE` identify the local adapters. The external host timeout is
-30 seconds by default; set `BRAN_EXTERNAL_HOST_TIMEOUT_SECONDS` to a whole
-number from 1 through 600 for a slower call.
+## Export the knowledge graph
 
-These values are references, not credentials. BRAN has no API-key flag and
-never copies credentials. It validates every value and converts the account
-reference into an opaque, one-way handle before creating requests, receipts,
-diagnostics, or `agents list` output. The raw environment value is never
-echoed.
+`bran_core::export` emits an Obsidian-compatible vault from the graph, so a
+repository can be browsed visually. See
+[`examples/obsidian/usage.rs`](examples/obsidian/usage.rs).
 
-The approved SQZ 1.1.1 digest identifies the verified platform artifact.
-Platforms without that exact artifact report connected SQZ as unavailable.
-`bran packet` also honors project `sqz=true` without contacting a model or
-provider, and returns the post-policy packet with a complete SQZ receipt. When
-SQZ is off, BRAN makes no SQZ process call. When it is on, BRAN fails visibly if
-the executable, identity, fidelity, DLP, or output contract is invalid or
-unavailable.
+## Offline or connected — both are first class
 
-Settings alone never give an agent permission to run. Add
-`--trust-current-root` to each connected `bran -p` call, or enter
-`trust-current-root` for the current TUI session. BRAN scans the repository,
-builds a bounded evidence packet, applies the configured SQZ policy, and then
-calls the configured host. It stores completed results and lossless artifacts
-under the IDs in `receipt.stored_result_ref`. Storage is limited by item count,
-total bytes, and TTL, and remains separate from conversation history. Run
-`bran get <receipt.result_id>` to retrieve the decoded answer and its citations.
+BRAN runs either way, and the same commands work in both modes.
+
+**Offline** is the default and needs no account, no key, and no network.
+Scanning, ranking, packets, validation, and the TUI are complete on their own —
+this is not a trial tier.
+
+**Connected** adds a model that reads what BRAN selected and answers with
+citations. It is opt-in per invocation.
+
+### Where the models go
+
+If you connect a model, put it in the middle tier rather than the top:
+
+1. **BRAN** decides *which* files matter. Deterministic, offline, free.
+2. **A fast or local model** — a Flash-class model, or something on your own
+   hardware — reads those files and condenses them.
+3. **The frontier model** receives that clean, bounded context and reasons.
+
+The expensive model should never be the thing hunting through a repository.
+Retrieval is a search problem, not a reasoning problem.
+
+### Connect a model
+
+BRAN has **no API-key flag and never copies credentials**. You point it at a
+profile; the account reference becomes an opaque one-way handle before any
+request, receipt, or diagnostic is written.
+
+1. Create a project-local `.bran/settings.conf` with `profile=connected-agent`.
+2. Describe the connection through the environment — a reference, not a secret:
+
+   ```sh
+   export BRAN_AGENT_PROFILE=<profile>
+   export BRAN_AGENT_PROVIDER=<provider>
+   export BRAN_AGENT_MODEL=<fast-or-local-model>
+   export BRAN_AGENT_REASONING=medium
+   export BRAN_AGENT_ACCOUNT_REF=<reference>
+   ```
+
+3. Check what is actually available before relying on it:
+
+   ```sh
+   bran agents list
+   bran doctor --agent
+   ```
+
+4. Run a bounded, grounded request:
+
+   ```sh
+   bran -p --agent <profile> --reasoning medium --tools read,search \
+     --trust-current-root "which module owns frontmatter validation?"
+   ```
+
+`--tools read,search` limits it to repository read and search. `--no-session`
+disables retention. `--offline` forces the deterministic profile even when a
+profile is configured, so you can always fall back:
+
+```sh
+bran -p --agent <profile> --offline --no-session "offline return proof"
+```
+
+If a capability is unavailable, BRAN says `unavailable` rather than pretending
+it worked. Requested and effective capability are always reported separately.
+
+## Use it with an agent
+
+Giving an agent access is not enough. Without a reminder it reaches for
+built-in search, which is always available and never reports `unavailable`.
+Install [`skill/use-bran`](skill/use-bran/SKILL.md) for the agent-facing
+instructions, and see [Agent setup](docs/integrations/agent-setup.md) for hook
+recipes, reasoning and tool configuration, and the offline return check.
 
 ## Releases
 
-BRAN does not have a published release yet. When releases begin, each version
-will use an exact `bran-vX.Y.Z` tag. Downloads will be available under:
+Each release uses an exact `bran-vX.Y.Z` tag. Downloads live under
+`https://github.com/alphazede/bran/releases/download/bran-vX.Y.Z/` — exact tags
+only, never `latest`.
 
-```text
-https://github.com/alphazede/bran/releases/download/bran-vX.Y.Z/
-```
-
-Each release will include these five platform archives:
+Five platform archives are published:
 
 - `bran-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
 - `bran-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz`
@@ -246,21 +243,41 @@ Each release will include these five platform archives:
 - `bran-vX.Y.Z-aarch64-apple-darwin.tar.gz`
 - `bran-vX.Y.Z-x86_64-pc-windows-msvc.zip`
 
-Each release will also include `SHA256SUMS`, `SHA256SUMS.sig`, and
-`bran-release-manifest.json`.
+Alongside them: `SHA256SUMS`, `SHA256SUMS.sigstore`, and
+`bran-release-manifest.json`, which records release provenance.
 
-- `bran-release-manifest.json` records release provenance.
-- SBOMs are not yet part of the release workflow.
-- Release notes belong to the tagged release. Installation and downloads use
-  exact tags rather than `latest`.
-
-To install a specific release with Cargo:
+Signing is Sigstore keyless via GitHub OIDC — there is no long-lived key to
+manage or leak. Verify a download:
 
 ```sh
-cargo install --git https://github.com/alphazede/bran --tag bran-vX.Y.Z --locked bran-cli
+cosign verify-blob SHA256SUMS \
+  --bundle SHA256SUMS.sigstore \
+  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+sha256sum -c SHA256SUMS --ignore-missing
 ```
+
+SBOMs are not yet part of the release workflow.
+
+## FAQ
+
+**Does BRAN need an API key?** No. A key or auth session is entirely optional.
+Scanning, ranking, packets, validation, and the TUI are fully offline and make
+no network calls. A connected mode exists and is opt-in.
+
+**If I add a model, which one?** A fast or local one. Use a Flash-class or
+self-hosted model to read the files BRAN selected and hand the condensed result
+to your frontier model. See [Where the models go](#where-the-models-go).
+
+**Does it replace RAG?** For code and docs, often yes. It separates retrieval
+from reasoning, so a cheap deterministic step feeds the expensive model.
+
+**What languages does it support?** Ranking is language-agnostic; it operates on
+paths, document bodies, structure, and OKF metadata.
+
+**Why did my query return nothing?** Because nothing matched. Check the
+`unmatched_query_terms` warning — that is BRAN refusing to guess.
 
 ## License
 
-BRAN is available under your choice of the [Apache License 2.0](LICENSE-APACHE)
-or the [MIT License](LICENSE-MIT).
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).

@@ -3,14 +3,15 @@
 set -eu
 
 usage() {
-    printf 'usage: %s --tag TAG --dist DIR [--dry-run-unsigned] [--fingerprint FINGERPRINT]\n' "$0" >&2
+    printf 'usage: %s --tag TAG --dist DIR [--dry-run-unsigned] [--certificate-identity IDENTITY] [--certificate-oidc-issuer ISSUER]\n' "$0" >&2
     exit 2
 }
 
 tag=
 dist=
 dry=
-fingerprint=
+certificate_identity=
+certificate_oidc_issuer=
 while [ $# -gt 0 ]; do
     case "$1" in
         --tag)
@@ -23,9 +24,14 @@ while [ $# -gt 0 ]; do
             dist=$2
             shift 2
             ;;
-        --fingerprint)
+        --certificate-identity)
             [ $# -ge 2 ] || usage
-            fingerprint=$2
+            certificate_identity=$2
+            shift 2
+            ;;
+        --certificate-oidc-issuer)
+            [ $# -ge 2 ] || usage
+            certificate_oidc_issuer=$2
             shift 2
             ;;
         --dry-run-unsigned)
@@ -45,7 +51,10 @@ set -- python3 "$script_dir/release_seal.py" --tag "$tag" --dist "$dist"
 if [ -n "$dry" ]; then
     set -- "$@" "$dry"
 fi
-if [ -n "$fingerprint" ]; then
-    set -- "$@" --fingerprint "$fingerprint"
+if [ -n "$certificate_identity" ]; then
+    set -- "$@" --certificate-identity "$certificate_identity"
+fi
+if [ -n "$certificate_oidc_issuer" ]; then
+    set -- "$@" --certificate-oidc-issuer "$certificate_oidc_issuer"
 fi
 exec "$@"

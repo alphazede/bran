@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "4e28fd5f0d45d47b05f97bc35abbd6e2c30b9c61",
+  "source_commit": "94b66ce2ea63b434a7571ef614121ecb5ee963bd",
   "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
@@ -22,6 +22,12 @@
       "mode": "100644",
       "bytes": 696,
       "sha256": "75002eee19da62eeb11dbc9c86eb67d6fde08635d3277e41298e887305f92128"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "mode": "100644",
+      "bytes": 6636,
+      "sha256": "584fb7bb2ceaab988be2500a7ab8598ed6ab073ce410546e7808ad5d5e3749a7"
     },
     {
       "path": ".gitignore",
@@ -62,8 +68,8 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "bytes": 11524,
-      "sha256": "0baf93700cc37a3e0cdd501725e135f99d915c6b628889baf69b1d4d39bc878d"
+      "bytes": 9773,
+      "sha256": "e1e78f08b7f5bfe79f6a922d86df0d14de8a10d6e0771b2e602afda6ce502c3d"
     },
     {
       "path": "assets/brand/bran-repository-raven.png",
@@ -254,8 +260,8 @@
     {
       "path": "crates/bran-core/src/lib.rs",
       "mode": "100644",
-      "bytes": 24814,
-      "sha256": "dd2d8c4c2f66b171aa149423b805dd5c92de6d88b8ba4f6e5cd3f3587fafccd2"
+      "bytes": 25540,
+      "sha256": "7823d50d4b59746c09635472364a415123afadfac1845b3345250e8486f5118a"
     },
     {
       "path": "crates/bran-core/src/metadata/mod.rs",
@@ -560,8 +566,8 @@
     {
       "path": "fixtures/release/valid-exact-release-manifest.json",
       "mode": "100644",
-      "bytes": 2900,
-      "sha256": "5e47f7482fbcdd38ddf7d8e32f25e2bb83cefef8c3b1e948472ac4317be694da"
+      "bytes": 3067,
+      "sha256": "1f5ac7c18b2519b2132171250e4f163392bc966df5f18cc17c5d2c464c5ec669"
     },
     {
       "path": "fixtures/repair/rollback-v1.json",
@@ -596,8 +602,8 @@
     {
       "path": "schemas/bran-release-manifest.schema.json",
       "mode": "100644",
-      "bytes": 7321,
-      "sha256": "cba9b364722a0d68abb25eb54dbd6ef8b79333b377c639357d66165702bbf0d6"
+      "bytes": 7579,
+      "sha256": "e6425b8e29e09f399c72eb69e440002d3ba73f161b7551a883df08b36a493674"
     },
     {
       "path": "schemas/bran-repository-policy.schema.json",
@@ -698,20 +704,20 @@
     {
       "path": "tools/ci/release-check.sh",
       "mode": "100755",
-      "bytes": 1093,
-      "sha256": "29360f0ac6fe9701eb42c3357428f135d8f62028aeb2fa2a7bccd9290de8aac5"
+      "bytes": 1471,
+      "sha256": "bf04ac9e19e67ba4e4b84255cb25d44b4f8980f8ec5e7f9839f8e01f19cd9bb9"
     },
     {
       "path": "tools/ci/release_contract_check.py",
       "mode": "100644",
-      "bytes": 11801,
-      "sha256": "36f0aa9098e350410d057cc1fe387d3e053816ab56c5658d6cdebbad5da1ccb2"
+      "bytes": 12318,
+      "sha256": "d37bb1c35618214d4d58b52d5e317c68bdd1864b0d9d097c748f62247aed5106"
     },
     {
       "path": "tools/ci/release_seal.py",
       "mode": "100755",
-      "bytes": 22511,
-      "sha256": "32063c65aaff99ddc39ed47fb07ace8b30a022d9f3e177ce35469978ab5fb302"
+      "bytes": 24663,
+      "sha256": "7d6fa282b8ca614a135dbf90e1504558b40e3195e8352d8f2abde334393eaee8"
     },
     {
       "path": "tools/ci/test-budget.json",

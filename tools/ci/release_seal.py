@@ -14,6 +14,7 @@ import sys
 import tempfile
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Callable
 
@@ -55,57 +56,66 @@ def git_state(root: Path, tag: str) -> tuple[str, str | None, bool | None, str |
         return "", None, None, None
 
 
+def bundle_signed_at(signature: Path) -> str:
+    """Return the Rekor integrated time of a cosign bundle as strict UTC."""
+    try:
+        bundle = json.loads(signature.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "signature verification unavailable: sigstore bundle is not valid JSON"
+        ) from error
+    entry = bundle.get("logEntry") if isinstance(bundle, dict) else None
+    integrated = entry.get("integratedTime") if isinstance(entry, dict) else None
+    if not isinstance(integrated, int) or isinstance(integrated, bool) or integrated < 0:
+        raise ValueError(
+            "signature verification unavailable: sigstore bundle has no valid Rekor integrated time"
+        )
+    try:
+        return datetime.fromtimestamp(integrated, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OSError, OverflowError, ValueError) as error:
+        raise ValueError(
+            "signature verification unavailable: sigstore bundle has an invalid Rekor integrated time"
+        ) from error
+
+
 def verify_signature(
     sums: Path,
     signature: Path,
     *,
+    certificate_identity: str,
+    certificate_oidc_issuer: str,
     _which: Callable[[str], str | None] = shutil.which,
     _run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> tuple[str, str]:
-    """Return the verified fingerprint and signature time."""
-    gpg = _which("gpg")
-    if not gpg:
-        raise ValueError("signature verification unavailable: gpg is not installed")
+) -> tuple[str, str, str]:
+    """Verify a cosign keyless bundle against the checksums with cosign.
+
+    Returns the enforced certificate identity, OIDC issuer, and the bundle's
+    Rekor integrated time. Fails closed when cosign is absent.
+    """
+    cosign = _which("cosign")
+    if not cosign:
+        raise ValueError("signature verification unavailable: cosign is not installed")
     try:
         result = _run(
             [
-                gpg,
-                "--batch",
-                "--no-auto-key-retrieve",
-                "--auto-key-locate",
-                "clear",
-                "--status-fd",
-                "1",
-                "--verify",
+                cosign,
+                "verify-blob",
+                "--bundle",
                 str(signature),
+                "--certificate-identity",
+                certificate_identity,
+                "--certificate-oidc-issuer",
+                certificate_oidc_issuer,
                 str(sums),
             ],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
     except OSError as error:
-        raise ValueError(f"signature verification unavailable: cannot run gpg: {error}") from error
+        raise ValueError(f"signature verification unavailable: cannot run cosign: {error}") from error
     if result.returncode:
-        detail = result.stderr.strip() or "no VALIDSIG status"
+        detail = result.stderr.strip() or "cosign verify-blob failed"
         raise ValueError(f"signature verification unavailable: {detail}")
-
-    valid = [line.split() for line in result.stdout.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")]
-    if len(valid) != 1 or len(valid[0]) < 5:
-        raise ValueError("signature verification unavailable: expected exactly one complete VALIDSIG status")
-    fingerprint, creation_date, creation_epoch = valid[0][2:5]
-    fingerprint = fingerprint.lower()
-    if not contract.is_fingerprint(fingerprint):
-        raise ValueError("signature verification unavailable: gpg returned an invalid signer fingerprint")
-    try:
-        epoch = int(creation_epoch)
-        if epoch < 0:
-            raise ValueError
-        signed_at = datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        parsed_date = datetime.strptime(creation_date, "%Y-%m-%d").strftime("%Y-%m-%d")
-    except (OSError, OverflowError, ValueError) as error:
-        raise ValueError("signature verification unavailable: gpg returned an invalid signature time") from error
-    if parsed_date != creation_date or creation_date != signed_at[:10]:
-        raise ValueError("signature verification unavailable: gpg signature date and epoch disagree")
-    return fingerprint, signed_at
+    return certificate_identity, certificate_oidc_issuer, bundle_signed_at(signature)
 
 
 def archives(tag: str) -> tuple[str, ...]:
@@ -201,14 +211,16 @@ def expected_manifest(
     assets = [{"name": name, "url": f"{contract.RELEASE_BASE}/{tag}/{name}", "sha256": get_arch(name), "media_type": media(name)} for name in names]
     assets += [
         {"name": "SHA256SUMS", "url": f"{contract.RELEASE_BASE}/{tag}/SHA256SUMS", "sha256": sums_d, "media_type": "text/plain"},
-        {"name": "SHA256SUMS.sig", "url": f"{contract.RELEASE_BASE}/{tag}/SHA256SUMS.sig", "sha256": sig_d, "media_type": "application/pgp-signature"},
+        {"name": "SHA256SUMS.sigstore", "url": f"{contract.RELEASE_BASE}/{tag}/SHA256SUMS.sigstore", "sha256": sig_d, "media_type": "application/vnd.dev.sigstore.bundle.v0.3+json"},
     ]
     return {
         "schema_version": contract.SCHEMA_VERSION, "tag": tag, "repository": contract.REPOSITORY,
         "source_commit": head, "lockfile_sha256": lock_digest, "immutable": True,
         "manifest_asset": "bran-release-manifest.json", "assets": assets,
         "checksums": {"asset": "SHA256SUMS", "algorithm": "sha256", "sha256": sums_d},
-        "signature": {"asset": "SHA256SUMS.sig", "format": "openpgp", "key_fingerprint": signer,
+        "signature": {"asset": "SHA256SUMS.sigstore", "format": "sigstore-bundle",
+                      "certificate_identity": signer,
+                      "certificate_oidc_issuer": contract.OIDC_ISSUER,
                       "signed_at": signed_at},
         "provenance": {"format": "https://slsa.dev/provenance/v1", "predicate_type": "https://slsa.dev/provenance/v1",
                        "source_repository": contract.REPOSITORY, "source_commit": head, "lockfile_sha256": lock_digest,
@@ -216,9 +228,10 @@ def expected_manifest(
     }
 
 
-def seal(tag: str, dist: Path, dry_run: bool, required_fingerprint: str | None,
+def seal(tag: str, dist: Path, dry_run: bool, required_identity: str | None,
+         required_issuer: str | None,
          _git: Callable[[Path, str], tuple[str, str | None, bool | None, str | None]] = git_state,
-         _proof: Callable[[Path, Path], tuple[str, str]] = verify_signature) -> int:
+         _proof: Callable[[Path, Path], tuple[str, str, str]] = verify_signature) -> int:
     if not contract.TAG_PATTERN.fullmatch(tag):
         print(f"FAIL invalid tag (must be bran-vX.Y.Z): {tag}")
         return 1
@@ -246,13 +259,13 @@ def seal(tag: str, dist: Path, dry_run: bool, required_fingerprint: str | None,
         )
         return 1
     manifest_path = dist / "bran-release-manifest.json"
-    sig_path = dist / "SHA256SUMS.sig"
+    sig_path = dist / "SHA256SUMS.sigstore"
     if dry_run:
         if manifest_path.exists() or manifest_path.is_symlink():
             print("FAIL dry-run unsigned rejects bran-release-manifest.json final-state input")
             return 1
         if sig_path.exists() or sig_path.is_symlink():
-            print("FAIL dry-run unsigned rejects SHA256SUMS.sig final-state input")
+            print("FAIL dry-run unsigned rejects SHA256SUMS.sigstore final-state input")
             return 1
     try:
         names = require_archives(tag, dist)
@@ -285,12 +298,15 @@ def seal(tag: str, dist: Path, dry_run: bool, required_fingerprint: str | None,
         print(f"wrote non-final evidence: {path.name}")
         return 0
 
-    if not required_fingerprint or not contract.is_fingerprint(required_fingerprint.lower()):
-        print("FAIL real mode requires a valid --fingerprint policy value")
+    if not required_identity or not contract.is_certificate_identity(required_identity):
+        print("FAIL real mode requires a valid --certificate-identity policy value")
+        return 1
+    if required_issuer != contract.OIDC_ISSUER:
+        print("FAIL real mode requires --certificate-oidc-issuer to be the exact GitHub Actions issuer")
         return 1
     try:
         manifest_blob = _ensure_real_file_for_read(manifest_path, "bran-release-manifest.json")
-        sig_snapshot = snapshot(sig_path, "SHA256SUMS.sig")
+        sig_snapshot = snapshot(sig_path, "SHA256SUMS.sigstore")
     except ValueError as error:
         print(f"FAIL {error}")
         return 1
@@ -305,12 +321,16 @@ def seal(tag: str, dist: Path, dry_run: bool, required_fingerprint: str | None,
     arch_digests = {name: value[1] for name, value in archive_snapshots.items()}
     sums_dig_frozen = hashlib.sha256(sums_blob).hexdigest()
     sig_dig_frozen = sig_snapshot[1]
+    proof = _proof
+    if _proof is verify_signature:
+        proof = partial(verify_signature, certificate_identity=required_identity,
+                        certificate_oidc_issuer=required_issuer)
     try:
-        signer, signed_at = _proof(sums, sig_path)
-        if signer != required_fingerprint.lower():
+        signer, issuer, signed_at = proof(sums, sig_path)
+        if signer != required_identity or issuer != required_issuer:
             raise ValueError(
-                f"verified signer fingerprint mismatch: actual={signer} "
-                f"required={required_fingerprint.lower()}"
+                f"verified signer certificate mismatch: actual={signer}/{issuer} "
+                f"required={required_identity}/{required_issuer}"
             )
     except (OSError, ValueError) as error:
         print(f"FAIL {error}")
@@ -323,8 +343,8 @@ def seal(tag: str, dist: Path, dry_run: bool, required_fingerprint: str | None,
                 raise ValueError(f"{name} changed during verification")
         if _ensure_real_file_for_read(sums, "SHA256SUMS") != sums_blob:
             raise ValueError("SHA256SUMS changed during verification")
-        if snapshot(sig_path, "SHA256SUMS.sig") != sig_snapshot:
-            raise ValueError("SHA256SUMS.sig changed during verification")
+        if snapshot(sig_path, "SHA256SUMS.sigstore") != sig_snapshot:
+            raise ValueError("SHA256SUMS.sigstore changed during verification")
         if _ensure_real_file_for_read(manifest_path, "bran-release-manifest.json") != manifest_blob:
             raise ValueError("bran-release-manifest.json changed during verification")
 
@@ -370,11 +390,14 @@ def seal(tag: str, dist: Path, dry_run: bool, required_fingerprint: str | None,
 def test_p4_sealed_release() -> None:
     """The single named P4 journey covers dry-run and strict refusal paths."""
     print("=== P4-SEALED-RELEASE self-test ===")
-    tag, fingerprint, head = "bran-v4.2.0", "0123456789abcdef0123456789abcdef01234567", "a" * 40
+    tag = "bran-v4.2.0"
+    identity = f"https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/{tag}"
+    issuer = contract.OIDC_ISSUER
+    head = "a" * 40
     signed_at = "2026-01-02T03:04:05Z"
     lock_digest = digest(bran_root() / "Cargo.lock")
     good_git = lambda _root, _tag: (head, head, False, lock_digest)
-    good_proof = lambda _sums, _signature: (fingerprint, signed_at)
+    good_proof = lambda _sums, _signature: (identity, issuer, signed_at)
 
     def expect_rejection(label: str, action: Callable[[], int]) -> None:
         with redirect_stdout(io.StringIO()):
@@ -383,27 +406,35 @@ def test_p4_sealed_release() -> None:
 
     commands: list[list[str]] = []
 
-    def fake_gpg(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_cosign(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
-        status = f"[GNUPG:] VALIDSIG {fingerprint.upper()} 2026-01-02 1767323045 0 4 0 1 10 00\n"
-        return subprocess.CompletedProcess(command, 0, status, "")
+        return subprocess.CompletedProcess(command, 0, "Verified OK\n", "")
 
-    verified = verify_signature(
-        Path("SHA256SUMS"),
-        Path("SHA256SUMS.sig"),
-        _which=lambda _name: "/usr/bin/gpg",
-        _run=fake_gpg,
-    )
-    assert verified == (fingerprint, signed_at)
-    assert commands == [[
-        "/usr/bin/gpg", "--batch", "--no-auto-key-retrieve", "--auto-key-locate", "clear",
-        "--status-fd", "1", "--verify", "SHA256SUMS.sig", "SHA256SUMS",
-    ]]
-    try:
-        verify_signature(Path("SHA256SUMS"), Path("SHA256SUMS.sig"), _which=lambda _name: None)
-        raise AssertionError("missing gpg was accepted")
-    except ValueError as error:
-        assert "gpg is not installed" in str(error)
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle_path = Path(tmp) / "SHA256SUMS.sigstore"
+        bundle_path.write_text(json.dumps({"logEntry": {"integratedTime": 1767323045}}), encoding="utf-8")
+        verified = verify_signature(
+            Path(tmp) / "SHA256SUMS",
+            bundle_path,
+            certificate_identity=identity,
+            certificate_oidc_issuer=issuer,
+            _which=lambda _name: "/usr/bin/cosign",
+            _run=fake_cosign,
+        )
+        assert verified == (identity, issuer, signed_at)
+        assert commands == [[
+            "/usr/bin/cosign", "verify-blob", "--bundle", str(bundle_path),
+            "--certificate-identity", identity,
+            "--certificate-oidc-issuer", issuer,
+            str(Path(tmp) / "SHA256SUMS"),
+        ]]
+        try:
+            verify_signature(Path(tmp) / "SHA256SUMS", bundle_path,
+                             certificate_identity=identity, certificate_oidc_issuer=issuer,
+                             _which=lambda _name: None)
+            raise AssertionError("missing cosign was accepted")
+        except ValueError as error:
+            assert "cosign is not installed" in str(error)
 
     with tempfile.TemporaryDirectory() as tmp:
         dist = Path(tmp)
@@ -411,60 +442,63 @@ def test_p4_sealed_release() -> None:
             (dist / name).write_bytes(f"artifact-{index}".encode())
         missing = dist / archives(tag)[0]
         missing.unlink()
-        expect_rejection("missing archive", lambda: seal(tag, dist, True, None, good_git, good_proof))
+        expect_rejection("missing archive", lambda: seal(tag, dist, True, None, None, good_git, good_proof))
         missing.write_bytes(b"artifact-0")
         extra = dist / f"{tag}-unsupported.tar.gz"
         extra.symlink_to(archives(tag)[1])
-        expect_rejection("unexpected archive symlink", lambda: seal(tag, dist, True, None, good_git, good_proof))
+        expect_rejection("unexpected archive symlink", lambda: seal(tag, dist, True, None, None, good_git, good_proof))
         extra.unlink()
-        expect_rejection("wrong tag", lambda: seal(tag, dist, True, None, lambda *_: (head, "b" * 40, False, lock_digest), good_proof))
-        expect_rejection("dirty tree", lambda: seal(tag, dist, True, None, lambda *_: (head, head, True, lock_digest), good_proof))
-        expect_rejection("wrong lock", lambda: seal(tag, dist, True, None, lambda *_: (head, head, False, "0" * 64), good_proof))
-        assert seal(tag, dist, True, None, good_git, good_proof) == 0
+        expect_rejection("wrong tag", lambda: seal(tag, dist, True, None, None, lambda *_: (head, "b" * 40, False, lock_digest), good_proof))
+        expect_rejection("dirty tree", lambda: seal(tag, dist, True, None, None, lambda *_: (head, head, True, lock_digest), good_proof))
+        expect_rejection("wrong lock", lambda: seal(tag, dist, True, None, None, lambda *_: (head, head, False, "0" * 64), good_proof))
+        assert seal(tag, dist, True, None, None, good_git, good_proof) == 0
         sums = dist / "SHA256SUMS"
         assert sums.read_text(encoding="utf-8") == expected_sums(archives(tag), dist)
         evidence = dist / "bran-release-evidence.unsigned.json"
         first = evidence.read_bytes()
-        assert seal(tag, dist, True, None, good_git, good_proof) == 0 and evidence.read_bytes() == first
+        assert seal(tag, dist, True, None, None, good_git, good_proof) == 0 and evidence.read_bytes() == first
         assert not (dist / "bran-release-manifest.json").exists()
-        signature = dist / "SHA256SUMS.sig"
+        signature = dist / "SHA256SUMS.sigstore"
         signature.write_bytes(b"final-state signature")
-        expect_rejection("signature-only dry-run", lambda: seal(tag, dist, True, None, good_git, good_proof))
+        expect_rejection("signature-only dry-run", lambda: seal(tag, dist, True, None, None, good_git, good_proof))
         signature.unlink()
         sums.write_text("drift\n", encoding="utf-8")
-        expect_rejection("checksum drift", lambda: seal(tag, dist, True, None, good_git, good_proof))
+        expect_rejection("checksum drift", lambda: seal(tag, dist, True, None, None, good_git, good_proof))
         sums.write_text(expected_sums(archives(tag), dist), encoding="utf-8")
         signature.write_bytes(b"not accepted by the injected verifier alone")
         manifest_path = dist / "bran-release-manifest.json"
-        expect_rejection("missing manifest", lambda: seal(tag, dist, False, fingerprint, good_git, good_proof))
+        expect_rejection("missing manifest", lambda: seal(tag, dist, False, identity, issuer, good_git, good_proof))
+        expect_rejection("missing issuer policy", lambda: seal(tag, dist, False, identity, None, good_git, good_proof))
+        expect_rejection("wrong issuer policy", lambda: seal(tag, dist, False, identity, "https://evil.example/", good_git, good_proof))
         manifest = expected_manifest(
-            tag, head, lock_digest, archives(tag), dist, sums, signature, fingerprint, signed_at
+            tag, head, lock_digest, archives(tag), dist, sums, signature, identity, signed_at
         )
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        expect_rejection("unverified signature", lambda: seal(tag, dist, False, fingerprint, good_git, lambda *_: (_ for _ in ()).throw(ValueError("signature verification unavailable: no key"))))
-        expect_rejection("wrong signer", lambda: seal(tag, dist, False, fingerprint, good_git, lambda *_: ("f" * 40, signed_at)))
+        expect_rejection("unverified signature", lambda: seal(tag, dist, False, identity, issuer, good_git, lambda *_: (_ for _ in ()).throw(ValueError("signature verification unavailable: certificate identity does not match"))))
+        expect_rejection("wrong signer", lambda: seal(tag, dist, False, identity, issuer, good_git, lambda *_: ("https://evil.example/", issuer, signed_at)))
+        expect_rejection("wrong issuer", lambda: seal(tag, dist, False, identity, issuer, good_git, lambda *_: (identity, "https://evil.example/", signed_at)))
         original_manifest = manifest_path.read_bytes()
-        assert seal(tag, dist, False, fingerprint, good_git, good_proof) == 0
+        assert seal(tag, dist, False, identity, issuer, good_git, good_proof) == 0
         assert manifest_path.read_bytes() == original_manifest
         original_sums = sums.read_bytes()
-        def mutating_proof(_sums: Path, _signature: Path) -> tuple[str, str]:
+        def mutating_proof(_sums: Path, _signature: Path) -> tuple[str, str, str]:
             sums.write_bytes(original_sums + b"drift")
-            return fingerprint, signed_at
-        expect_rejection("mutated supporting asset", lambda: seal(tag, dist, False, fingerprint, good_git, mutating_proof))
+            return identity, issuer, signed_at
+        expect_rejection("mutated supporting asset", lambda: seal(tag, dist, False, identity, issuer, good_git, mutating_proof))
         sums.write_bytes(original_sums)
         symlink_archive = dist / archives(tag)[0]
         saved_archive = dist / "saved-archive"
         symlink_archive.rename(saved_archive)
         symlink_archive.symlink_to(saved_archive.name)
-        expect_rejection("symlink archive", lambda: seal(tag, dist, False, fingerprint, good_git, good_proof))
+        expect_rejection("symlink archive", lambda: seal(tag, dist, False, identity, issuer, good_git, good_proof))
         symlink_archive.unlink()
         saved_archive.rename(symlink_archive)
-        expect_rejection("dry-run final-state inputs", lambda: seal(tag, dist, True, None, good_git, good_proof))
+        expect_rejection("dry-run final-state inputs", lambda: seal(tag, dist, True, None, None, good_git, good_proof))
         assert manifest_path.read_bytes() == original_manifest
         manifest["assets"][0]["sha256"] = "0" * 64
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         tampered_manifest = manifest_path.read_bytes()
-        expect_rejection("tampered manifest", lambda: seal(tag, dist, False, fingerprint, good_git, good_proof))
+        expect_rejection("tampered manifest", lambda: seal(tag, dist, False, identity, issuer, good_git, good_proof))
         assert manifest_path.read_bytes() == tampered_manifest
     print("=== P4-SEALED-RELEASE self-test PASS ===")
 
@@ -481,9 +515,11 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--dist", required=True, type=Path)
     parser.add_argument("--dry-run-unsigned", action="store_true")
-    parser.add_argument("--fingerprint")
+    parser.add_argument("--certificate-identity")
+    parser.add_argument("--certificate-oidc-issuer")
     args = parser.parse_args()
-    return seal(args.tag, args.dist.resolve(), args.dry_run_unsigned, args.fingerprint)
+    return seal(args.tag, args.dist.resolve(), args.dry_run_unsigned,
+                args.certificate_identity, args.certificate_oidc_issuer)
 
 
 if __name__ == "__main__":

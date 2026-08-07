@@ -1,0 +1,178 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "bran-v*"
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    # Least privilege: building needs to read the tag and nothing else. Only the
+    # sign job may write releases or mint an OIDC token.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-13
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build release archive
+        run: ./tools/ci/build-release.sh --target "${{ matrix.target }}" --tag "${{ github.ref_name }}" --dist dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.target }}
+          path: dist/
+
+  sign:
+    name: Sign checksums and emit manifest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: artifact-*
+          path: dist
+          merge-multiple: true
+      - name: Produce SHA256SUMS
+        run: |
+          python3 - "${{ github.ref_name }}" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+
+          tag = sys.argv[1]
+          targets = [
+              "x86_64-unknown-linux-gnu",
+              "aarch64-unknown-linux-gnu",
+              "x86_64-apple-darwin",
+              "aarch64-apple-darwin",
+              "x86_64-pc-windows-msvc",
+          ]
+          names = [
+              f"{tag}-{target}.zip" if target == "x86_64-pc-windows-msvc" else f"{tag}-{target}.tar.gz"
+              for target in targets
+          ]
+          dist = pathlib.Path("dist")
+          lines = []
+          for name in sorted(names):
+              digest = hashlib.sha256((dist / name).read_bytes()).hexdigest()
+              lines.append(f"{digest}  {name}")
+          (dist / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign SHA256SUMS with cosign keyless
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore dist/SHA256SUMS
+      - name: Emit bran-release-manifest.json
+        env:
+          TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          CERTIFICATE_IDENTITY: https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          from datetime import datetime, timezone
+
+          tag = os.environ["TAG"]
+          source_commit = os.environ["SOURCE_COMMIT"]
+          certificate_identity = os.environ["CERTIFICATE_IDENTITY"]
+          issuer = "https://token.actions.githubusercontent.com"
+          dist = pathlib.Path("dist")
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def media_type(name):
+              return "application/zip" if name.endswith(".zip") else "application/gzip"
+
+          targets = [
+              "x86_64-unknown-linux-gnu",
+              "aarch64-unknown-linux-gnu",
+              "x86_64-apple-darwin",
+              "aarch64-apple-darwin",
+              "x86_64-pc-windows-msvc",
+          ]
+          names = [
+              f"{tag}-{target}.zip" if target == "x86_64-pc-windows-msvc" else f"{tag}-{target}.tar.gz"
+              for target in targets
+          ]
+          assets = [
+              {
+                  "name": name,
+                  "url": f"https://github.com/alphazede/bran/releases/download/{tag}/{name}",
+                  "sha256": digest(dist / name),
+                  "media_type": media_type(name),
+              }
+              for name in names
+          ]
+          sums_digest = digest(dist / "SHA256SUMS")
+          sig_digest = digest(dist / "SHA256SUMS.sigstore")
+          assets += [
+              {"name": "SHA256SUMS",
+               "url": f"https://github.com/alphazede/bran/releases/download/{tag}/SHA256SUMS",
+               "sha256": sums_digest, "media_type": "text/plain"},
+              {"name": "SHA256SUMS.sigstore",
+               "url": f"https://github.com/alphazede/bran/releases/download/{tag}/SHA256SUMS.sigstore",
+               "sha256": sig_digest, "media_type": "application/vnd.dev.sigstore.bundle.v0.3+json"},
+          ]
+          bundle = json.loads((dist / "SHA256SUMS.sigstore").read_text(encoding="utf-8"))
+          signed_at = datetime.fromtimestamp(
+              bundle["logEntry"]["integratedTime"], timezone.utc
+          ).strftime("%Y-%m-%dT%H:%M:%SZ")
+          lockfile_digest = digest(pathlib.Path("Cargo.lock"))
+          manifest = {
+              "schema_version": "1.0.0",
+              "tag": tag,
+              "repository": "alphazede/bran",
+              "source_commit": source_commit,
+              "lockfile_sha256": lockfile_digest,
+              "immutable": True,
+              "manifest_asset": "bran-release-manifest.json",
+              "assets": assets,
+              "checksums": {"asset": "SHA256SUMS", "algorithm": "sha256", "sha256": sums_digest},
+              "signature": {
+                  "asset": "SHA256SUMS.sigstore",
+                  "format": "sigstore-bundle",
+                  "certificate_identity": certificate_identity,
+                  "certificate_oidc_issuer": issuer,
+                  "signed_at": signed_at,
+              },
+              "provenance": {
+                  "format": "https://slsa.dev/provenance/v1",
+                  "predicate_type": "https://slsa.dev/provenance/v1",
+                  "source_repository": "alphazede/bran",
+                  "source_commit": source_commit,
+                  "lockfile_sha256": lockfile_digest,
+                  "build_type": "https://alphazede.dev/bran/build/v1",
+              },
+          }
+          (dist / "bran-release-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/

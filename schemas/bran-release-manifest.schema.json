@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.alphazede.dev/bran/release-manifest/v1/schema.json",
   "title": "Bran exact-release manifest",
-  "description": "Non-circular release manifest contract. assets holds exactly seven hashed files (five platform archives + SHA256SUMS + SHA256SUMS.sig) in any order. manifest_asset is the const 'bran-release-manifest.json' with no self-digest inside. Build order: archives, SHA256SUMS (covers archives), SHA256SUMS.sig (signs sums), manifest (records digests/metadata, distributed unhashed). source_commit and provenance.source_commit are 40-hex git SHA-1; lockfile_sha256, asset sha256, checksums.sha256 are 64-hex. Asset order insignificant. key_fingerprint is exactly 40 or 64 lowercase hex; signed_at is the strict UTC subset exactly YYYY-MM-DDTHH:MM:SSZ (ASCII digits/separators only; year 0001-9999, real proleptic Gregorian/leap-day; pattern enforces no year 0000 / invalid m/d / non-leap Feb29 / Feb30 / 24h / 60minsec, format kept for Draft2020-12; hours 00-23, min/sec 00-59). Schema cannot bind dynamic tag/name/URL equality; x-semantic-oracle is the mandatory stdlib checker.",
+  "description": "Non-circular release manifest contract. assets holds exactly seven hashed files (five platform archives + SHA256SUMS + SHA256SUMS.sigstore) in any order. manifest_asset is the const 'bran-release-manifest.json' with no self-digest inside. Build order: archives, SHA256SUMS (covers archives), SHA256SUMS.sigstore (sigstore-bundle signs sums), manifest (records digests/metadata, distributed unhashed). source_commit and provenance.source_commit are 40-hex git SHA-1; lockfile_sha256, asset sha256, checksums.sha256 are 64-hex. Asset order insignificant. certificate_identity is the signing workflow's https OIDC subject URI; certificate_oidc_issuer is the exact GitHub Actions issuer const; signed_at is the strict UTC subset exactly YYYY-MM-DDTHH:MM:SSZ (ASCII digits/separators only; year 0001-9999, real proleptic Gregorian/leap-day; pattern enforces no year 0000 / invalid m/d / non-leap Feb29 / Feb30 / 24h / 60minsec, format kept for Draft2020-12; hours 00-23, min/sec 00-59). Schema cannot bind dynamic tag/name/URL equality; x-semantic-oracle is the mandatory stdlib checker.",
   "x-semantic-oracle": "tools/ci/release_contract_check.py",
   "type": "object",
   "additionalProperties": false,
@@ -81,13 +81,16 @@
     "signature": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["asset", "format", "key_fingerprint", "signed_at"],
+      "required": ["asset", "format", "certificate_identity", "certificate_oidc_issuer", "signed_at"],
       "properties": {
-        "asset": { "const": "SHA256SUMS.sig" },
-        "format": { "const": "openpgp" },
-        "key_fingerprint": {
+        "asset": { "const": "SHA256SUMS.sigstore" },
+        "format": { "const": "sigstore-bundle" },
+        "certificate_identity": {
           "type": "string",
-          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          "pattern": "^https://"
+        },
+        "certificate_oidc_issuer": {
+          "const": "https://token.actions.githubusercontent.com"
         },
         "signed_at": {
           "type": "string",
@@ -182,7 +185,7 @@
     "signatureAsset": {
       "allOf": [
         { "$ref": "#/$defs/asset" },
-        { "properties": { "name": { "const": "SHA256SUMS.sig" } } }
+        { "properties": { "name": { "const": "SHA256SUMS.sigstore" } } }
       ]
     }
   }
