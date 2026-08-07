@@ -32,7 +32,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # build-release.sh packages archives with python3. Windows runners expose
+      # Python as `python`, not `python3`, so pin an interpreter explicitly.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Build release archive
+        # build-release.sh is /bin/sh. The default shell on windows-latest is
+        # PowerShell, which cannot execute it; `bash` resolves to Git Bash there.
+        shell: bash
         run: ./tools/ci/build-release.sh --target "${{ matrix.target }}" --tag "${{ github.ref_name }}" --dist dist
       - uses: actions/upload-artifact@v4
         with:
