@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "cd396e16a2f4c9a53d95cab6eb2ef2d617964351",
+  "source_commit": "9c2e7dab3c67503615bf6ccc0d32f754cb679544",
   "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
@@ -27,7 +27,7 @@
       "path": ".github/workflows/release.yml",
       "mode": "100644",
       "bytes": 8337,
-      "sha256": "ac6713baf1765339026fd05e1161e07eb1b943c21a6553daf77ad7081a73a1de"
+      "sha256": "0c4ca4de81371c50f95ebfb13103b28557ad48aeecbcac8f3cb0712adee38a37"
     },
     {
       "path": ".gitignore",
