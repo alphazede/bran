@@ -131,18 +131,40 @@ jobs:
           ]
           sums_digest = digest(dist / "SHA256SUMS")
           sig_digest = digest(dist / "SHA256SUMS.sigstore")
+          bundle = json.loads((dist / "SHA256SUMS.sigstore").read_text(encoding="utf-8"))
+
+          def rekor_integrated_time(doc):
+              """Rekor inclusion time, from either cosign bundle shape.
+
+              `cosign sign-blob --bundle` writes the legacy cosign bundle
+              (rekorBundle.Payload.integratedTime). `--new-bundle-format`
+              writes a Sigstore v0.3 bundle
+              (verificationMaterial.tlogEntries[].integratedTime, a string).
+              Fail closed rather than publish a manifest with an invented time.
+              """
+              legacy = (doc.get("rekorBundle") or {}).get("Payload") or {}
+              if "integratedTime" in legacy:
+                  return int(legacy["integratedTime"]), "application/vnd.dev.cosign.simplesigning.v1+json"
+              entries = (doc.get("verificationMaterial") or {}).get("tlogEntries") or []
+              if entries and "integratedTime" in entries[0]:
+                  return int(entries[0]["integratedTime"]), "application/vnd.dev.sigstore.bundle.v0.3+json"
+              raise SystemExit(
+                  "cosign bundle has no recognised Rekor integratedTime; keys: "
+                  + ", ".join(sorted(doc))
+              )
+
+          integrated_time, bundle_media_type = rekor_integrated_time(bundle)
+          signed_at = datetime.fromtimestamp(integrated_time, timezone.utc).strftime(
+              "%Y-%m-%dT%H:%M:%SZ"
+          )
           assets += [
               {"name": "SHA256SUMS",
                "url": f"https://github.com/alphazede/bran/releases/download/{tag}/SHA256SUMS",
                "sha256": sums_digest, "media_type": "text/plain"},
               {"name": "SHA256SUMS.sigstore",
                "url": f"https://github.com/alphazede/bran/releases/download/{tag}/SHA256SUMS.sigstore",
-               "sha256": sig_digest, "media_type": "application/vnd.dev.sigstore.bundle.v0.3+json"},
+               "sha256": sig_digest, "media_type": bundle_media_type},
           ]
-          bundle = json.loads((dist / "SHA256SUMS.sigstore").read_text(encoding="utf-8"))
-          signed_at = datetime.fromtimestamp(
-              bundle["logEntry"]["integratedTime"], timezone.utc
-          ).strftime("%Y-%m-%dT%H:%M:%SZ")
           lockfile_digest = digest(pathlib.Path("Cargo.lock"))
           manifest = {
               "schema_version": "1.0.0",
