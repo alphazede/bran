@@ -91,7 +91,17 @@
         "fixtures/conformance/okf-v0.1-log-invalid.fixture",
         "fixtures/conformance/okf-v0.1-log-valid.fixture",
         "fixtures/conformance/strict-gap-strict-selected.fixture",
-        "fixtures/conformance/bran-policy-parity.fixture"
+        "fixtures/conformance/bran-policy-parity.fixture",
+        "fixtures/conformance/okf-v0.2-attested-computation.fixture",
+        "fixtures/conformance/okf-v0.2-index-version.fixture",
+        "fixtures/conformance/okf-v0.2-legacy-fallback.fixture",
+        "fixtures/conformance/okf-v0.2-lifecycle.fixture",
+        "fixtures/conformance/okf-v0.2-malformed.fixture",
+        "fixtures/conformance/okf-v0.2-minimal.fixture",
+        "fixtures/conformance/okf-v0.2-sources.fixture",
+        "fixtures/conformance/okf-v0.2-trust-list.fixture",
+        "fixtures/conformance/okf-v0.2-unknown-tolerated.fixture",
+        "fixtures/conformance/okf-v0.2-verified-bare.fixture"
       ]
     },
     {

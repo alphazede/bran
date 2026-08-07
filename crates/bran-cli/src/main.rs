@@ -22,7 +22,9 @@ use bran_core::adapters::{
 use bran_core::agent::coordinator::{
     AgentRuntime, AgentRuntimeAuthority, AgentRuntimeConfig, AgentSqzAdapter, RuntimePorts,
 };
-use bran_core::agent::delegate::{DelegationOptions, DelegationRequest, GroundingContract};
+use bran_core::agent::delegate::{
+    AdmittedEvidence, DelegationOptions, DelegationRequest, GroundingContract,
+};
 use bran_core::agent::receipt::InlineResult;
 use bran_core::agent::receipt::{sqz_receipt_json, DelegationReceipt};
 use bran_core::agent::result_store::{
@@ -40,7 +42,7 @@ use bran_core::graph::{
     Confidence, EdgeCertainty, EdgeRelationship, GraphInput, GraphLimits, KnowledgeGraph, NodeId,
     NodeInput, NodeRole, Provenance,
 };
-use bran_core::metadata::{FactProvenance, MetadataFact};
+use bran_core::metadata::FactProvenance;
 use bran_core::migration::{self, MigrationError};
 use bran_core::packet::{
     DependencyClosureLimits, EvidenceContent, EvidencePriority, PacketAssembler,
@@ -51,7 +53,6 @@ use bran_core::profile::BRAN_STRICT;
 use bran_core::profile::{Diagnostic, ProfileValidator, ValidationStatus};
 use bran_core::repair::{MaintainerAuthority, RepairCoordinator, RepairReceipt, RepairTerminal};
 use bran_core::scan::{is_knowledge_document_path, RepositoryScanner, ScanConfig, ScanSnapshot};
-use bran_core::schema::YamlValue;
 use bran_core::view::{
     Presentation, ViewCompiler, ViewField, ViewFilter, ViewGrouping, ViewSort, ViewSource, ViewSpec,
 };
@@ -108,6 +109,7 @@ const CONNECTED_AGENT_PREAMBLE: &str = "inner-agent-rules:
 3. Stay grounded and mark uncertainty or missing evidence.
 4. Stay read-only and leave decisions and implementation to the outer agent.
 5. Obey the bounded repository and tool policy; never expose credentials or fabricate sources or results.
+6. Treat every factual statement as material; its claim text must be exact supporting text or a symbol copied from the current file and bound to a cited path plus the supplied SHA-256 digest. Return the answer as those claim texts in the same order, separated only by newlines.
 
 ";
 
@@ -1442,32 +1444,156 @@ const RANKED_FACT_KEYS: &[&str] = &[
 ];
 const PARENT_QUERY_FACT_KEYS: &[&str] = &["okf_status", "status", "public_boundary"];
 
+/// Common grammatical words that must not drive selection (issue #18).
+const QUERY_STOP_WORDS: &[&str] = &["about", "and", "for", "from", "not", "the", "this", "with"];
+
+/// Plain query words and high-specificity identifier units.
+///
+/// A hyphenated, underscored, or dotted identifier ("example-entity-unit") is
+/// one high-specificity unit for match purposes: its sub-tokens are never
+/// extracted as independent terms, so a sub-token match cannot count as the
+/// entity matching (issue #18).
+fn query_terms_and_entities(query_text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut terms = BTreeSet::new();
+    let mut entities = BTreeSet::new();
+    let mut run = String::new();
+    for character in query_text.chars() {
+        if character.is_alphanumeric() || matches!(character, '-' | '_' | '.') {
+            run.push(character.to_ascii_lowercase());
+        } else {
+            classify_query_run(&run, &mut terms, &mut entities);
+            run.clear();
+        }
+    }
+    classify_query_run(&run, &mut terms, &mut entities);
+    (terms, entities)
+}
+
+/// One maximal identifier-character run becomes either a high-specificity
+/// entity unit or a plain word. Short separator fragments ("e.g.", "v0.2")
+/// are dropped entirely rather than treated as words.
+fn classify_query_run(run: &str, terms: &mut BTreeSet<String>, entities: &mut BTreeSet<String>) {
+    if run.is_empty() {
+        return;
+    }
+    let trimmed = run.trim_matches(['-', '_', '.']);
+    if trimmed.contains(['-', '_', '.']) {
+        if trimmed.len() >= 6 {
+            entities.insert(trimmed.to_owned());
+        }
+        return;
+    }
+    if trimmed.len() >= 3 && !QUERY_STOP_WORDS.contains(&trimmed) {
+        terms.insert(trimmed.to_owned());
+    }
+}
+
+/// The body content of one scanned entry: source bytes after the frontmatter
+/// (or commented YAML) header, or the whole source when no header is present.
+fn document_body(snapshot: &ScanSnapshot, locator: &str) -> Option<String> {
+    let entry = snapshot.entries.get(locator)?;
+    let source = std::str::from_utf8(entry.source.as_ref()).ok()?;
+    let start = entry
+        .metadata
+        .facts
+        .iter()
+        .find_map(|fact| match &fact.provenance {
+            FactProvenance::MarkdownFrontmatter => markdown_header_end(source),
+            FactProvenance::CommentedYaml => commented_header_end(source),
+            _ => None,
+        })
+        .unwrap_or(0);
+    Some(source[start..].to_owned())
+}
+
+/// One warning naming every query term or entity unit that matched no
+/// document, when any. Unmatched entity units lead the list and are named
+/// whole, never as their sub-tokens.
+fn unmatched_query_warnings(query_text: &str, matched_terms: &BTreeSet<String>) -> Vec<String> {
+    let (terms, entities) = query_terms_and_entities(query_text);
+    let unmatched = entities
+        .iter()
+        .filter(|term| !matched_terms.contains(*term))
+        .cloned()
+        .chain(
+            terms
+                .iter()
+                .filter(|term| !matched_terms.contains(*term))
+                .cloned(),
+        )
+        .collect::<Vec<_>>();
+    if unmatched.is_empty() {
+        return vec![];
+    }
+    let listed = unmatched.len().min(8);
+    let mut message = format!("unmatched_query_terms: {}", unmatched[..listed].join(","));
+    if unmatched.len() > listed {
+        message.push_str(&format!(",+{} more", unmatched.len() - listed));
+    }
+    vec![message]
+}
+
 fn source_rankings(
     graph_input: &GraphInput,
+    snapshot: &ScanSnapshot,
     query_text: &str,
     max_sources: usize,
-) -> Vec<SourceRanking> {
-    let terms = query_text
-        .split(|c: char| !c.is_alphanumeric())
-        .map(str::to_ascii_lowercase)
-        .filter(|term| {
-            term.len() >= 3
-                && !matches!(
-                    term.as_str(),
-                    "about" | "and" | "for" | "from" | "the" | "this" | "with"
-                )
-        })
-        .collect::<BTreeSet<_>>();
+) -> (Vec<SourceRanking>, BTreeSet<String>) {
+    let (terms, entities) = query_terms_and_entities(query_text);
+    let mut matched_terms = BTreeSet::new();
     let mut matches = graph_input
         .nodes()
         .iter()
         .filter(|node| node.role() == NodeRole::Document)
         .filter_map(|node| {
-            let locator = node.provenance().locator().to_ascii_lowercase();
+            let locator_original = node.provenance().locator();
+            let locator = locator_original.to_ascii_lowercase();
+            let body =
+                document_body(snapshot, locator_original).map(|body| body.to_ascii_lowercase());
             let mut exact_matches = 0;
             let mut partial_matches = 0;
             let mut exact_fields = BTreeSet::new();
             let mut partial_fields = BTreeSet::new();
+            // A high-specificity identifier unit matches only as a whole; a
+            // sub-token match never counts as the entity matching.
+            for entity in &entities {
+                let mut entity_fields = BTreeSet::new();
+                if locator.contains(entity.as_str()) {
+                    entity_fields.insert("path");
+                }
+                for (key, value) in RANKED_FACT_KEYS.iter().flat_map(|key| {
+                    node.facts()
+                        .values(key)
+                        .into_iter()
+                        .flatten()
+                        .map(move |value| (*key, value.as_str()))
+                }) {
+                    if value.to_ascii_lowercase().contains(entity.as_str()) {
+                        entity_fields.insert(key);
+                    }
+                }
+                for (key, value) in PARENT_QUERY_FACT_KEYS.iter().flat_map(|key| {
+                    node.facts()
+                        .values(key)
+                        .into_iter()
+                        .flatten()
+                        .map(move |value| (*key, value.as_str()))
+                }) {
+                    if value.to_ascii_lowercase().contains(entity.as_str()) {
+                        entity_fields.insert(key);
+                    }
+                }
+                if let Some(body) = &body {
+                    if body.contains(entity.as_str()) {
+                        entity_fields.insert("body");
+                    }
+                }
+                if !entity_fields.is_empty() {
+                    exact_matches += 1;
+                    exact_fields.extend(entity_fields);
+                    matched_terms.insert(entity.clone());
+                }
+            }
             for (key, value) in std::iter::once(("path", locator.as_str())).chain(
                 RANKED_FACT_KEYS.iter().flat_map(|key| {
                     node.facts()
@@ -1479,16 +1605,26 @@ fn source_rankings(
             ) {
                 let value = value.to_ascii_lowercase();
                 for term in &terms {
-                    let exact_path_term = key == "path"
-                        && value
-                            .split(|character: char| !character.is_alphanumeric())
-                            .any(|part| part == term);
-                    if value == *term || exact_path_term {
+                    if value == *term {
                         exact_matches += 1;
                         exact_fields.insert(key);
+                        matched_terms.insert(term.clone());
+                    } else if key == "path"
+                        && value
+                            .split(|character: char| !character.is_alphanumeric())
+                            .any(|part| part == term)
+                    {
+                        // A path-segment equality is a containment signal, not
+                        // a whole-value equality: a generic query term that
+                        // happens to appear in an unrelated path must not
+                        // outrank real content matches.
+                        partial_matches += 1;
+                        partial_fields.insert("path");
+                        matched_terms.insert(term.clone());
                     } else if value.contains(term.as_str()) {
                         partial_matches += 1;
                         partial_fields.insert(key);
+                        matched_terms.insert(term.clone());
                     }
                 }
             }
@@ -1504,8 +1640,22 @@ fn source_rankings(
                     if value.contains(term.as_str()) {
                         partial_matches += 1;
                         partial_fields.insert(key);
+                        matched_terms.insert(term.clone());
                     }
                 }
+            }
+            let mut body_matches = 0;
+            if let Some(body) = &body {
+                for term in &terms {
+                    if body.contains(term.as_str()) {
+                        body_matches += 1;
+                        matched_terms.insert(term.clone());
+                    }
+                }
+            }
+            if body_matches > 0 {
+                partial_matches += body_matches;
+                partial_fields.insert("body");
             }
             let status_rank = match node
                 .facts()
@@ -1562,6 +1712,20 @@ fn source_rankings(
             })
         })
         .collect::<Vec<_>>();
+    // A high-specificity entity unit that matched no document means the query
+    // names something this repository does not contain. When nothing else in
+    // the query matched at identity level (exact fact or path equality), the
+    // remaining generic body matches are not evidence for the entity: return
+    // no rankings so a caller cannot mistake command success for evidence
+    // coverage (issue #18). Exact content matches keep the rankings, with the
+    // unmatched unit still surfaced by name in the warnings.
+    if entities
+        .iter()
+        .any(|entity| !matched_terms.contains(entity))
+        && !matches.iter().any(|ranking| ranking.exact_matches > 0)
+    {
+        return (Vec::new(), matched_terms);
+    }
     matches.sort_by(|left, right| {
         right
             .exact_matches
@@ -1578,7 +1742,7 @@ fn source_rankings(
     for (index, ranking) in matches.iter_mut().enumerate() {
         ranking.rank = index + 1;
     }
-    matches
+    (matches, matched_terms)
 }
 
 fn query_view_spec(rankings: &[SourceRanking], max_sources: usize) -> ViewSpec {
@@ -1621,6 +1785,7 @@ fn locator_evidence_content(
     node: &NodeInput,
     ranking: Option<&SourceRanking>,
     graph: &KnowledgeGraph,
+    content_digest: Option<&str>,
     excerpt: Option<&str>,
 ) -> String {
     let metadata = RANKED_FACT_KEYS
@@ -1651,17 +1816,20 @@ fn locator_evidence_content(
         .take(4)
         .collect::<Vec<_>>()
         .join(";");
+    let digest = content_digest.map_or_else(String::new, |digest| {
+        format!("content-digest-sha256: {digest}\n")
+    });
     let excerpt = excerpt.map_or_else(String::new, |excerpt| format!("excerpt: {excerpt}\n"));
     match ranking {
         Some(ranking) => format!(
-            "path: {}\nrank: {}\nscore: exact={} partial={} active={} canonical={} public_safe={} confidence={} freshness={}\nmatch_reason: {}\nmetadata: {}\nrelationships: {}\n{}",
+            "path: {}\nrank: {}\nscore: exact={} partial={} active={} canonical={} public_safe={} confidence={} freshness={}\nmatch_reason: {}\nmetadata: {}\nrelationships: {}\n{}{}",
             ranking.locator, ranking.rank, ranking.exact_matches, ranking.partial_matches,
             ranking.active, ranking.canonical, ranking.public_safe, ranking.confidence,
-            ranking.freshness, ranking.match_reason, metadata, relationships, excerpt
+            ranking.freshness, ranking.match_reason, metadata, relationships, digest, excerpt
         ),
         None => format!(
-            "path: {}\nrank: dependency\nmetadata: {}\nrelationships: {}\n{}",
-            node.provenance().locator(), metadata, relationships, excerpt
+            "path: {}\nrank: dependency\nmetadata: {}\nrelationships: {}\n{}{}",
+            node.provenance().locator(), metadata, relationships, digest, excerpt
         ),
     }
 }
@@ -1855,7 +2023,8 @@ fn do_query(root: String, query_text: String) -> QueryPacketResult {
     let edge_count = graph_input.edges().len().max(1);
     let limits =
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
-    let rankings = source_rankings(&graph_input, &query_text, QUERY_RESULT_LIMIT);
+    let (rankings, matched_terms) =
+        source_rankings(&graph_input, &snapshot, &query_text, QUERY_RESULT_LIMIT);
     let spec = query_view_spec(&rankings, QUERY_RESULT_LIMIT);
     let graph =
         KnowledgeGraph::build(graph_input, limits).map_err(|e| format!("graph_error: {:?}", e))?;
@@ -1884,11 +2053,12 @@ fn do_query(root: String, query_text: String) -> QueryPacketResult {
     let estimated = selected_bytes / 4 + usize::from(!selected_bytes.is_multiple_of(4));
     let context_bytes_avoided = candidate_bytes.saturating_sub(selected_bytes);
 
-    let warns: Vec<String> = snapshot
+    let mut warns: Vec<String> = snapshot
         .diagnostics
         .iter()
         .map(|d| format!("{:?}", d))
         .collect();
+    warns.extend(unmatched_query_warnings(&query_text, &matched_terms));
 
     let (locs_json, why_selected_json) = selected_sources_json(&selected);
     let source_rankings_json = source_rankings_json(&rankings, &selected_ids);
@@ -1939,7 +2109,8 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
     let edge_count = graph_input.edges().len().max(1);
     let limits =
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
-    let rankings = source_rankings(&graph_input, &query_text, controls.max_sources());
+    let (rankings, matched_terms) =
+        source_rankings(&graph_input, &snapshot, &query_text, controls.max_sources());
     let spec = query_view_spec(&rankings, controls.max_sources());
     let graph =
         KnowledgeGraph::build(graph_input, limits).map_err(|e| format!("graph_error: {:?}", e))?;
@@ -1984,6 +2155,7 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
                     node,
                     ranking,
                     &graph,
+                    None,
                     public_safe_excerpt(node, &snapshot, controls.excerpt_bytes).as_deref(),
                 ),
                 if !anchors.is_empty() {
@@ -2088,11 +2260,12 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
     let est = encoded_packet_bytes.div_ceil(4);
     let tr = pkt.receipt.truncated;
 
-    let warns: Vec<String> = snapshot
+    let mut warns: Vec<String> = snapshot
         .diagnostics
         .iter()
         .map(|d| format!("{:?}", d))
         .collect();
+    warns.extend(unmatched_query_warnings(&query_text, &matched_terms));
 
     let data = format!(
         "{{\"root\":\"{}\",\"query\":\"{}\",\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{}}}",
@@ -2155,8 +2328,10 @@ fn do_check(
     }
 
     let okf = &vres.okf_compatibility;
+    let v0_2 = &vres.okf_v0_2;
     let strict = &vres.bran_strict;
     let okf_diags = format_diagnostics(&okf.diagnostics);
+    let v0_2_diags = format_diagnostics(&v0_2.diagnostics);
     let strict_diags = format_diagnostics(&strict.diagnostics);
     let sel_err_json = match &vres.selected_profile_error {
         Some(d) => format!(
@@ -2184,12 +2359,15 @@ fn do_check(
     };
 
     let data = format!(
-        "{{\"root\":\"{}\",\"selected_profile\":\"{}\",\"okf_compatibility\":{{\"profile\":\"{}\",\"status\":\"{}\",\"diagnostics\":[{}]}},\"bran_strict\":{{\"profile\":\"{}\",\"status\":\"{}\",\"diagnostics\":[{}]}},\"selected_profile_error\":{},\"selected_passed\":{},\"exit_code\":{}}}",
+        "{{\"root\":\"{}\",\"selected_profile\":\"{}\",\"okf_compatibility\":{{\"profile\":\"{}\",\"status\":\"{}\",\"diagnostics\":[{}]}},\"okf_v0_2\":{{\"profile\":\"{}\",\"status\":\"{}\",\"diagnostics\":[{}]}},\"bran_strict\":{{\"profile\":\"{}\",\"status\":\"{}\",\"diagnostics\":[{}]}},\"selected_profile_error\":{},\"selected_passed\":{},\"exit_code\":{}}}",
         json_escape(&root),
         json_escape(&selected_profile),
         json_escape(&okf.profile),
         status_str(&okf.status),
         okf_diags,
+        json_escape(&v0_2.profile),
+        status_str(&v0_2.status),
+        v0_2_diags,
         json_escape(&strict.profile),
         status_str(&strict.status),
         strict_diags,
@@ -2231,18 +2409,28 @@ fn derive_bundle_from_snapshot(snapshot: &ScanSnapshot) -> Result<Bundle, String
             Err(_) => continue,
         };
         let (raw, body) = split_frontmatter(&source);
-        let fm_map = build_map_from_facts(&entry.metadata.facts);
-        let fm = if let Some(reason) = entry
-            .metadata
-            .warnings
-            .iter()
-            .find_map(|warning| warning.strip_prefix("malformed-metadata: "))
-        {
-            Frontmatter::malformed(raw, reason)
-        } else if fm_map.is_empty() && raw.is_empty() {
+        // The scanner's flat fact parser cannot represent nested v0.2
+        // families (sources, generated, verified, ...), so the raw frontmatter
+        // is re-parsed structurally. A successful structural parse wins even
+        // when the scanner warned; the scanner's reason is kept only when the
+        // structural parse also fails.
+        let fm = if raw.is_empty() {
             Frontmatter::empty()
         } else {
-            Frontmatter::from_parsed(raw, fm_map)
+            match bran_core::frontmatter::parse_frontmatter(&raw) {
+                Ok(fields) => Frontmatter::from_parsed(raw, fields),
+                Err(_) => {
+                    let reason = entry
+                        .metadata
+                        .warnings
+                        .iter()
+                        .find_map(|warning| warning.strip_prefix("malformed-metadata: "));
+                    match reason {
+                        Some(reason) => Frontmatter::malformed(raw, reason),
+                        None => Frontmatter::malformed(raw, "invalid frontmatter"),
+                    }
+                }
+            }
         };
         docs.push(Doc::new(path.clone(), source, body, fm));
     }
@@ -2278,30 +2466,6 @@ fn split_frontmatter(source: &str) -> (String, String) {
     };
     let raw = fm_lines.join("\n") + "\n";
     (raw, body)
-}
-
-fn build_map_from_facts(facts: &[MetadataFact]) -> BTreeMap<String, YamlValue> {
-    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for f in facts {
-        if f.provenance == FactProvenance::MarkdownFrontmatter {
-            grouped
-                .entry(f.key.clone())
-                .or_default()
-                .push(f.value.clone());
-        }
-    }
-    let mut map = BTreeMap::new();
-    for (k, vs) in grouped {
-        if vs.len() == 1 {
-            map.insert(k, YamlValue::String(vs[0].clone()));
-        } else {
-            map.insert(
-                k,
-                YamlValue::Sequence(vs.into_iter().map(YamlValue::String).collect()),
-            );
-        }
-    }
-    map
 }
 
 fn status_str(s: &ValidationStatus) -> &'static str {
@@ -3416,7 +3580,10 @@ impl SqzPort for ConnectedSqzPort {
                     Ok(SqzPortOutput::new(
                         evidence
                             .lines()
-                            .filter(|line| line.starts_with("locator="))
+                            .filter(|line| {
+                                line.starts_with("locator=")
+                                    || line.starts_with("content-digest-sha256:")
+                            })
                             .collect::<Vec<_>>()
                             .join("\n"),
                         SqzIdentity::approved(),
@@ -3509,7 +3676,12 @@ fn grounded_request_with(
         .map_err(|_| ConnectedSetupFailure::GroundingFailed)?;
     let node_count = graph_input.nodes().len().max(1);
     let edge_count = graph_input.edges().len().max(1);
-    let rankings = source_rankings(&graph_input, request.prompt(), controls.max_sources());
+    let (rankings, _matched_terms) = source_rankings(
+        &graph_input,
+        &snapshot,
+        request.prompt(),
+        controls.max_sources(),
+    );
     let spec = query_view_spec(&rankings, controls.max_sources());
     let graph = KnowledgeGraph::build(
         graph_input,
@@ -3540,6 +3712,10 @@ fn grounded_request_with(
         .enumerate()
         .map(|(index, node)| {
             let ranking = ranking_by_id.get(node.id()).copied();
+            let digest = snapshot
+                .entries
+                .get(node.provenance().locator())
+                .map(|entry| ResultId::sha256(entry.source.as_ref()).value().to_owned());
             let anchors = ranking
                 .filter(|ranking| ranking.rank == 1)
                 .and_then(|_| {
@@ -3557,6 +3733,7 @@ fn grounded_request_with(
                     node,
                     ranking,
                     &graph,
+                    digest.as_deref(),
                     public_safe_excerpt(node, &snapshot, controls.excerpt_bytes).as_deref(),
                 ),
                 if !anchors.is_empty() {
@@ -3613,6 +3790,17 @@ fn grounded_request_with(
         .iter()
         .map(|item| item.provenance.locator().to_owned())
         .collect::<Vec<_>>();
+    let admitted_evidence = locators
+        .iter()
+        .map(|locator| {
+            let entry = snapshot
+                .entries
+                .get(locator)
+                .ok_or(ConnectedSetupFailure::GroundingFailed)?;
+            AdmittedEvidence::new(locator, ResultId::sha256(entry.source.as_ref()).value())
+                .map_err(|_| ConnectedSetupFailure::GroundingFailed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut anchors = Vec::new();
     let mut start = 0;
     while start < request.prompt().len() {
@@ -3639,7 +3827,17 @@ fn grounded_request_with(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| ConnectedSetupFailure::GroundingFailed)?,
     );
-    let grounding_contract = GroundingContract::new(locators, anchors)
+    anchors.extend(
+        admitted_evidence
+            .iter()
+            .enumerate()
+            .map(|(index, evidence)| {
+                PreservationAnchor::new(format!("source-digest-{index}"), evidence.content_digest())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| ConnectedSetupFailure::GroundingFailed)?,
+    );
+    let grounding_contract = GroundingContract::with_evidence(root, admitted_evidence, anchors)
         .map_err(|_| ConnectedSetupFailure::GroundingFailed)?;
     let prompt = prompt_prefix + &packet.payload;
     if prompt.len() > 65_536 {
@@ -4206,14 +4404,31 @@ fn do_get(root: &Path, result_id: &str) -> CliResult {
         .map(|citation| format!("\"{}\"", json_escape(citation)))
         .collect::<Vec<_>>()
         .join(",");
+    let claims = result
+        .claims()
+        .iter()
+        .map(|claim| {
+            format!(
+                "{{\"id\":\"{}\",\"text\":\"{}\",\"material\":{},\"locator\":\"{}\",\"content_digest\":\"{}\",\"support\":\"{}\"}}",
+                json_escape(claim.id()),
+                json_escape(claim.text()),
+                claim.material(),
+                json_escape(claim.locator()),
+                json_escape(claim.content_digest()),
+                json_escape(claim.support())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     CliResult::success(make_envelope(
         "get",
         "ok",
         &format!(
-            "{{\"result_id\":\"{}\",\"answer\":\"{}\",\"citations\":[{}]}}",
+            "{{\"result_id\":\"{}\",\"answer\":\"{}\",\"citations\":[{}],\"claims\":[{}]}}",
             json_escape(result_id),
             json_escape(result.answer()),
-            citations
+            citations,
+            claims
         ),
         &[],
         &[],
@@ -4633,6 +4848,7 @@ const fn agent_failure_code(failure: AgentFailure) -> &'static str {
         AgentFailure::TokenBudgetUnattested => "token_budget_unattested",
         AgentFailure::TokenCeilingExceeded => "token_ceiling_exceeded",
         AgentFailure::GroundingFailed => "grounding_failed",
+        AgentFailure::ClaimUnsupported => "claim_unsupported",
     }
 }
 
@@ -5274,8 +5490,8 @@ mod tests {
         let rep = "p3-replacement-bytes-exact\n".to_owned();
         let proot = root.to_string_lossy().into_owned();
 
-        let seed_document = "---\ntype: concept\ntitle: Seed\nokf_status: active\ntags: p3\ntags: packet\ntimestamp: 2026-07-19T00:00:00Z\nresource: test://seed\npublic_boundary: safe\ndependency: dep.md\n---\nseed-full-body-sentinel [dependency](dep.md)\n# Citations\nref\n";
-        let dependency_document = "---\ntype: concept\ntitle: Dep\nokf_status: active\ntags: p3\ntags: packet\ntimestamp: 2026-07-19T00:00:00Z\nresource: test://dep\npublic_boundary: safe\n---\ndep [reference](x)\n# Citations\nref\n";
+        let seed_document = "---\ntype: concept\ntitle: Seed\nokf_status: active\ntags: [p3, packet]\ntimestamp: 2026-07-19T00:00:00Z\nresource: test://seed\npublic_boundary: safe\ndependency: dep.md\n---\nseed-full-body-sentinel [dependency](dep.md)\n# Citations\nref\n";
+        let dependency_document = "---\ntype: concept\ntitle: Dep\nokf_status: active\ntags: [p3, packet]\ntimestamp: 2026-07-19T00:00:00Z\nresource: test://dep\npublic_boundary: safe\n---\ndep [reference](x)\n# Citations\nref\n";
         std::fs::write(root.join("seed.md"), seed_document.as_bytes()).unwrap();
         std::fs::write(root.join("dep.md"), dependency_document.as_bytes()).unwrap();
 
@@ -5651,10 +5867,15 @@ mod tests {
             "account retry queue deduplication".to_owned(),
         ]);
         assert_eq!(okf_query.exit_code, ExitCode::SUCCESS);
+        // The metadata-exact task contract ranks first; the document whose
+        // body contains the full phrase now ranks second via body content.
         assert!(okf_query.output.contains(
-            "\"selected_locators\":[\"src/worker.rs\",\"task-retry.md\",\"tests/worker_check.rs\"]"
+            "\"selected_locators\":[\"distractor.md\",\"src/worker.rs\",\"task-retry.md\",\"tests/worker_check.rs\"]"
         ));
-        assert!(!okf_query.output.contains("distractor.md"));
+        assert!(okf_query.output.contains(
+            "\"source_rankings\":[{\"locator\":\"task-retry.md\",\"rank\":1,\"score\":{\"exact\":2"
+        ));
+        assert!(okf_query.output.contains("partial:body"));
         let okf_packet = CliApp::run(vec![
             "packet".to_owned(),
             proot.clone(),
@@ -5666,11 +5887,13 @@ mod tests {
             .contains("\"locator\":\"task-retry.md\",\"reason\":\"metadata_seed\""));
         assert!(okf_packet
             .output
+            .contains("\"locator\":\"distractor.md\",\"reason\":\"metadata_seed\""));
+        assert!(okf_packet
+            .output
             .contains("\"locator\":\"src/worker.rs\",\"reason\":\"declared_implementation\""));
         assert!(okf_packet
             .output
             .contains("\"locator\":\"tests/worker_check.rs\",\"reason\":\"declared_validation\""));
-        assert!(!okf_packet.output.contains("distractor.md"));
         let okf_estimate = okf_packet
             .output
             .split_once("\"estimated_tokens\":")
@@ -5795,7 +6018,7 @@ mod tests {
             b"bran-cli-fixture-v1\n",
         )
         .unwrap();
-        let valid_doc = "---\ntype: concept\ntitle: P3 Headless\nokf_status: active\ntags: p3\ntags: headless\ntimestamp: 2026-07-19T00:00:00Z\nresource: test://p3\npublic_boundary: safe\n---\nBody [link](x).\n# Citations\nref\n";
+        let valid_doc = "---\ntype: concept\ntitle: P3 Headless\nokf_status: active\ntags: [p3, headless]\ntimestamp: 2026-07-19T00:00:00Z\nresource: test://p3\npublic_boundary: safe\n---\nBody [link](x).\n# Citations\nref\n";
         std::fs::write(root.join("p3.md"), valid_doc.as_bytes()).unwrap();
 
         let stale_target = "stale.txt".to_owned();
@@ -6130,8 +6353,9 @@ mod tests {
                                 && bytes[2] == b' '
                         })
                         .count(),
-                    5
+                    6
                 );
+                assert!(preamble.contains("Treat every factual statement as material"));
                 Ok(bran_core::agent::synthetic::connected_receipt_for(
                     request, false,
                 ))
@@ -6340,7 +6564,7 @@ mod tests {
                         && bytes[2] == b' '
                 })
                 .count(),
-            5
+            6
         );
         assert_numbered_rules(preamble);
         assert!(grounded
@@ -6387,7 +6611,7 @@ mod tests {
                         && bytes[2] == b' '
                 })
                 .count(),
-            5
+            6
         );
         assert!(response_limited_grounding
             .prompt()
@@ -6416,10 +6640,16 @@ mod tests {
             bran_core::agent::delegate::DelegationOptions::new(),
         )
         .unwrap();
-        assert_eq!(
-            super::grounded_request(&oversized_root, &oversized_request),
-            Err(super::ConnectedSetupFailure::GroundingFailed)
-        );
+        // A term that exists only in the document body is now groundable
+        // (issue #19), and the 70 KiB body must not bloat the packet: the
+        // evidence is the metadata descriptor, not the raw body.
+        let grounded_oversized = super::grounded_request(&oversized_root, &oversized_request)
+            .expect("body-only content must be groundable");
+        assert!(grounded_oversized
+            .grounding_contract()
+            .unwrap()
+            .admits_citation("only.md"));
+        assert!(grounded_oversized.prompt().len() < 2_000);
         let configured_descriptor = super::ConfiguredAgentDescriptor {
             profile: bran_core::agent::AgentProfile::new(
                 "local-agent",
@@ -6452,11 +6682,14 @@ mod tests {
             .grounding_contract()
             .unwrap()
             .preservation_anchors();
-        assert_eq!(long_anchors.len(), 4);
-        assert_eq!(long_anchors[2].id(), "task-000");
-        assert_eq!(long_anchors[2].value(), &long_task[..512]);
-        assert_eq!(long_anchors[3].id(), "task-001");
-        assert_eq!(long_anchors[3].value(), &long_task[512..]);
+        // Body-content ranking (#19) admits repl.txt to the packet: its body
+        // "p3-replacement-bytes-exact" matches the task term "exact", so the
+        // grounding contract now carries three sources plus three digests.
+        assert_eq!(long_anchors.len(), 8);
+        assert_eq!(long_anchors[6].id(), "task-000");
+        assert_eq!(long_anchors[6].value(), &long_task[..512]);
+        assert_eq!(long_anchors[7].id(), "task-001");
+        assert_eq!(long_anchors[7].value(), &long_task[512..]);
         let mut tui_options = bran_core::agent::delegate::DelegationOptions::new();
         tui_options.model_override = Some("alternate-model".to_owned());
         tui_options.reasoning_override = Some(bran_core::agent::ReasoningLevel::Max);
@@ -6655,7 +6888,9 @@ mod tests {
                 "sqz-applied-v1\n{}",
                 original_evidence
                     .lines()
-                    .filter(|line| line.starts_with("locator="))
+                    .filter(|line| {
+                        line.starts_with("locator=") || line.starts_with("content-digest-sha256:")
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             )
@@ -6996,6 +7231,45 @@ mod tests {
     }
 
     #[test]
+    fn check_okf_v0_2_profile_end_to_end() {
+        let (root, _) = scratch_check_root("okf-v0-2-profile");
+        // Nested v0.2 families: the scanner's flat parser cannot represent
+        // them and warns, which exercises the structural re-parse in
+        // derive_bundle_from_snapshot.
+        std::fs::write(
+            root.join("doc.md"),
+            "---\ntype: Concept\ngenerated:\n  by: agent/1\n  at: 2026-07-01T00:00:00Z\nverified:\n  - by: human:alice\n    at: 2026-07-02T00:00:00Z\n---\nbody\n",
+        )
+        .unwrap();
+
+        let result = CliApp::run_with_stdin(
+            vec![
+                "check".to_owned(),
+                "--policy-stdin".to_owned(),
+                root.to_string_lossy().into_owned(),
+                "okf-v0.2".to_owned(),
+            ],
+            minimal_valid_policy().as_bytes(),
+        );
+
+        assert!(!result.is_error);
+        assert_eq!(result.exit_code, TypedExit::Success.code());
+        assert!(result.output.contains("\"selected_profile\":\"okf-v0.2\""));
+        assert!(result.output.contains(
+            "\"okf_v0_2\":{\"profile\":\"okf-v0.2\",\"status\":\"pass\",\"diagnostics\":[]}"
+        ));
+        assert!(result
+            .output
+            .contains("\"okf_compatibility\":{\"profile\":\"okf-v0.1\""));
+        assert!(result
+            .output
+            .contains("\"bran_strict\":{\"profile\":\"bran-strict\""));
+        assert!(result.output.contains("\"selected_passed\":true"));
+        assert!(result.output.contains("\"exit_code\":0"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn check_stdin_no_side_effects() {
         let (root, bran_dir) = scratch_check_root("stdin-no-side");
         write_valid_doc(&root, "doc.md");
@@ -7257,6 +7531,171 @@ mod tests {
         assert!(result.output.contains("OversizedInput"));
         assert!(result.output.contains("large.log"));
         assert!(!result.output.contains("scan_error"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn query_ranks_body_phrase_document_first() {
+        // A phrase that appears only in a document body must retrieve that
+        // document ahead of any path-token coincidence (issue #19).
+        let root =
+            std::env::temp_dir().join(format!("bran-query-body-phrase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
+        std::fs::write(
+            root.join("canonical.md"),
+            "---\ntype: concept\ntitle: Canonical anchor\ntags: anchor\n---\nThe proposal builds on the compatible superset not a fork idea.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("not-unrelated.md"),
+            "---\ntype: concept\ntitle: Unrelated incident\ntags: incident\n---\nno matching content here\n",
+        )
+        .unwrap();
+
+        let result = CliApp::run(vec![
+            "query".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "compatible superset not a fork".to_owned(),
+        ]);
+
+        assert_eq!(result.exit_code, ExitCode::SUCCESS, "{}", result.output);
+        assert!(result.output.contains(
+            "\"source_rankings\":[{\"locator\":\"canonical.md\",\"rank\":1,\"score\":{\"exact\":0,\"partial\":3"
+        ));
+        assert!(result.output.contains("partial:body"));
+        // The generic term "not" is stop-listed (issue #18); the remaining
+        // body phrase must still outrank any path-token coincidence and rank
+        // the full-phrase document first.
+        assert!(!result
+            .output
+            .contains("\"locator\":\"not-unrelated.md\",\"rank\":1"));
+        assert!(!result.output.contains("unmatched_query_terms"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn query_returns_empty_when_high_specificity_entity_unmatched() {
+        // A hyphenated identifier that matches no document must not present
+        // generic sub-token matches as ordinary evidence: no rankings and a
+        // warning naming the whole unit (issue #18).
+        let root = std::env::temp_dir().join(format!(
+            "bran-query-unmatched-entity-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
+        std::fs::write(
+            root.join("notes.md"),
+            "---\ntype: concept\ntitle: Notes\n---\nGeneric notes about the nonexistent collector wrapper and runner.\n",
+        )
+        .unwrap();
+
+        let result = CliApp::run(vec![
+            "query".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "zzq-entity-unit-8873".to_owned(),
+        ]);
+
+        assert_eq!(result.exit_code, ExitCode::SUCCESS, "{}", result.output);
+        assert!(result.output.contains("\"source_rankings\":[],"));
+        assert!(!result.output.contains("\"locator\":\"notes.md\""));
+        assert!(result
+            .output
+            .contains("unmatched_query_terms: zzq-entity-unit-8873"));
+
+        // The same holds when generic words around the missing entity match
+        // bodies: their weak matches must not be presented as evidence either.
+        let diluted = CliApp::run(vec![
+            "query".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "Where are the zzq-entity-unit-8873 wrapper, runner, and tests documented?".to_owned(),
+        ]);
+        assert_eq!(diluted.exit_code, ExitCode::SUCCESS, "{}", diluted.output);
+        assert!(diluted.output.contains("\"source_rankings\":[],"));
+        assert!(!diluted.output.contains("\"locator\":\"notes.md\""));
+        assert!(diluted
+            .output
+            .contains("unmatched_query_terms: zzq-entity-unit-8873"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sub_token_does_not_count_as_entity_match() {
+        // Only the whole identifier unit matches: a document holding just its
+        // sub-tokens as separate words must not be presented as evidence for
+        // the entity (issue #18).
+        let root = std::env::temp_dir().join(format!(
+            "bran-query-sub-token-entity-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
+        std::fs::write(
+            root.join("home.md"),
+            "---\ntype: concept\ntitle: Home\n---\nThe zzq-entity-unit-8873 wrapper and runner are implemented here.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("noise.md"),
+            "---\ntype: concept\ntitle: Noise\n---\nThe entity unit wrapper notes live here.\n",
+        )
+        .unwrap();
+
+        let result = CliApp::run(vec![
+            "query".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "zzq-entity-unit-8873".to_owned(),
+        ]);
+
+        assert_eq!(result.exit_code, ExitCode::SUCCESS, "{}", result.output);
+        assert!(result.output.contains(
+            "\"source_rankings\":[{\"locator\":\"home.md\",\"rank\":1,\"score\":{\"exact\":1"
+        ));
+        assert!(result.output.contains("exact:body"));
+        assert!(!result.output.contains("\"locator\":\"noise.md\""));
+        assert!(!result.output.contains("unmatched_query_terms"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn query_warns_on_unmatched_query_terms() {
+        // A high-specificity term that matches no document must surface an
+        // explicit warning instead of silently returning diluted generic
+        // matches (issue #18).
+        let root =
+            std::env::temp_dir().join(format!("bran-query-unmatched-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
+        std::fs::write(
+            root.join("actuator.md"),
+            "---\ntype: concept\ntitle: Actuator\n---\nGeneric actuator notes.\n",
+        )
+        .unwrap();
+
+        let diluted = CliApp::run(vec![
+            "query".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "zephyrite actuator".to_owned(),
+        ]);
+        assert_eq!(diluted.exit_code, ExitCode::SUCCESS, "{}", diluted.output);
+        assert!(diluted
+            .output
+            .contains("\"locator\":\"actuator.md\",\"rank\":1"));
+        assert!(diluted.output.contains("unmatched_query_terms: zephyrite"));
+
+        let miss = CliApp::run(vec![
+            "query".to_owned(),
+            root.to_string_lossy().into_owned(),
+            "zephyrite".to_owned(),
+        ]);
+        assert_eq!(miss.exit_code, ExitCode::SUCCESS, "{}", miss.output);
+        assert!(miss.output.contains("unmatched_query_terms: zephyrite"));
+        assert!(miss.output.contains("\"source_rankings\":[],"));
         let _ = std::fs::remove_dir_all(root);
     }
 

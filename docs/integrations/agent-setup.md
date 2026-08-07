@@ -83,6 +83,36 @@ token counts as estimates.
    ```sh
    bran get <receipt.result_id>
    ```
+
+### Grounded result contract
+
+The external host remains provider-neutral. For a grounded `bran -p` request,
+its result frame must emit aligned repeated values for `claim_id`, `claim_text`,
+`claim_material`, `claim_locator`, `claim_content_digest`, and `claim_support`.
+Every claim is material, `claim_text` and `claim_support` must be identical exact
+text or a symbol copied from the current cited file, and `answer` must contain
+the ordered claim texts separated only by newlines. `claim_locator` must also be
+present as a normal `citation`, while `claim_content_digest` must echo the
+SHA-256 supplied in BRAN's bounded packet. `claim_support` must be at least 12
+bytes after trimming; shorter spans are rejected before verification.
+
+Before storing a result, BRAN reopens every uniquely cited regular file at most
+once, rejects symlinked or escaping paths, recomputes its SHA-256, and checks the
+exact support bytes. Missing claims, invented symbols, stale files or digests,
+unattested execution identity, degenerate support spans, and answer/claim
+mismatches fail closed as an incomplete receipt. Claim verification adds bounded
+local file I/O; it does not make another model call. Ungrounded provider calls
+may omit the claim fields.
+
+What this contract does and does not prove. Support is verified by exact
+substring existence against the current file, with no uniqueness or position
+requirement beyond the minimum length. A validated claim therefore proves that
+the quoted span **exists verbatim in the cited file at the digest BRAN
+supplied** — that is, the claim is not fabricated and not stale. It does not
+prove that the span is the *relevant* occurrence, nor that it answers the
+question asked. Treat a grounded result as evidence against fabrication, not as
+a correctness or attribution guarantee.
+
 4. Disable Connected Agent in TUI settings, or prove the same boundary directly:
 
    ```sh

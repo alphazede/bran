@@ -15,6 +15,9 @@ use std::path::Path;
 /// Stable identifier for the OKF v0.1 compatibility profile.
 pub const OKF_V0_1: &str = "okf-v0.1";
 
+/// Stable identifier for the OKF v0.2 compatibility profile.
+pub const OKF_V0_2: &str = "okf-v0.2";
+
 /// Stable identifier for the BRAN Strict readiness profile.
 pub const BRAN_STRICT: &str = "bran-strict";
 
@@ -41,11 +44,12 @@ pub struct ProfileOutcome {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Dual-profile validation result. Both outcomes are always computed.
+/// Triple-profile validation result. All three outcomes are always computed.
 /// Only `selected_profile` decides `selected_passed` and `exit_code`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidationResult {
     pub okf_compatibility: ProfileOutcome,
+    pub okf_v0_2: ProfileOutcome,
     pub bran_strict: ProfileOutcome,
     pub selected_profile: String,
     /// Explicit selection failure, if the caller named an unsupported profile.
@@ -59,6 +63,7 @@ impl ValidationResult {
     pub fn selected_passed(&self) -> bool {
         let outcome = match self.selected_profile.as_str() {
             OKF_V0_1 => &self.okf_compatibility,
+            OKF_V0_2 => &self.okf_v0_2,
             BRAN_STRICT => &self.bran_strict,
             _ => return false,
         };
@@ -102,7 +107,7 @@ impl ProfileValidator {
         Self::validate_with_policy(bundle, selected_profile, None)
     }
 
-    /// Validates the bundle for both profiles independently, driving BRAN strict
+    /// Validates the bundle for all three profiles independently, driving BRAN strict
     /// status/tags/public-boundary/frontmatter/source-links checks from `policy`
     /// when `Some`.  When `None`, intrinsic BRAN strict shape checks still run
     /// with sensible defaults.
@@ -112,13 +117,15 @@ impl ProfileValidator {
         policy: Option<&RepositoryPolicy>,
     ) -> ValidationResult {
         let okf = Self::validate_okf_compatibility(bundle, policy);
+        let okf_v0_2 = Self::validate_okf_v0_2(bundle, policy);
         let strict = Self::validate_bran_strict(bundle, policy);
         ValidationResult {
             okf_compatibility: okf,
+            okf_v0_2,
             bran_strict: strict,
             selected_profile: selected_profile.to_owned(),
             selected_profile_error: match selected_profile {
-                OKF_V0_1 | BRAN_STRICT => None,
+                OKF_V0_1 | OKF_V0_2 | BRAN_STRICT => None,
                 _ => Some(Diagnostic {
                     path: "<selection>".to_owned(),
                     code: "unknown-profile".to_owned(),
@@ -164,6 +171,73 @@ impl ProfileValidator {
         };
         ProfileOutcome {
             profile: OKF_V0_1.to_owned(),
+            status,
+            diagnostics,
+        }
+    }
+
+    /// OKF v0.2 compatibility: the permissive v0.1 conformance floor plus shape
+    /// validation of the optional v0.2 families when present.
+    ///
+    /// - The v0.1 floor is unchanged: parseable frontmatter plus a non-blank
+    ///   string `type` on concept documents; reserved index.md/log.md keep
+    ///   their structural checks.
+    /// - Bundle-root `index.md` may carry an `okf_version` frontmatter string.
+    ///   Newer or unknown declared versions are consumed best-effort and never
+    ///   rejected.
+    /// - Optional families are shape-validated only when present: `sources` /
+    ///   `usage_window` (provenance), `generated` / `verified` (trust),
+    ///   `status` / `stale_after` (lifecycle), and `runtime` / `parameters` /
+    ///   `computation` / `executor` / `attester` for `type: Attested
+    ///   Computation`. A bare `verified: { by, at }` mapping normalizes
+    ///   identically to a one-element list. Missing families never fail
+    ///   conformance.
+    /// - Unknown types, unknown fields, broken cross-links, and missing index
+    ///   files are tolerated. BRAN producer extensions (`okf_status`,
+    ///   `freshness`, `public_boundary`) stay valid and are never conflated
+    ///   with upstream `status` (see [`upstream_status_to_okf_status`]).
+    fn validate_okf_v0_2(bundle: &Bundle, policy: Option<&RepositoryPolicy>) -> ProfileOutcome {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let coverage = policy.and_then(|p| p.document_coverage.as_ref());
+
+        for (path, doc) in bundle.docs() {
+            if !portable_document_participates(path, coverage) {
+                continue;
+            }
+            match doc.kind() {
+                DocKind::Index => {
+                    diagnostics.extend(okf_index_diagnostics(path, doc.body()));
+                    if path == "index.md" {
+                        diagnostics.extend(okf_v0_2_index_version_diagnostics(
+                            path,
+                            doc.frontmatter().parsed(),
+                        ));
+                    }
+                    continue;
+                }
+                DocKind::Log => {
+                    diagnostics.extend(okf_log_diagnostics(path, doc.body()));
+                    continue;
+                }
+                DocKind::Concept { .. } => {}
+            }
+            let fm = doc.frontmatter();
+            if let Some(diagnostic) = okf_diagnostic(path, fm.status(), fm.parsed()) {
+                diagnostics.push(diagnostic);
+            }
+            let Some(map) = fm.parsed() else {
+                continue;
+            };
+            diagnostics.extend(okf_v0_2_family_diagnostics(path, map));
+        }
+
+        let status = if diagnostics.is_empty() {
+            ValidationStatus::Pass
+        } else {
+            ValidationStatus::Fail
+        };
+        ProfileOutcome {
+            profile: OKF_V0_2.to_owned(),
             status,
             diagnostics,
         }
@@ -807,6 +881,347 @@ fn okf_diagnostic(
             code: "missing-type".to_owned(),
             message: "frontmatter must contain a non-empty type field".to_owned(),
         }),
+    }
+}
+
+/// Shape-validate the optional OKF v0.2 frontmatter families on one concept.
+///
+/// Every family is optional: absence never fails conformance. Diagnostics are
+/// deterministic and never echo raw values.
+fn okf_v0_2_family_diagnostics(path: &str, map: &BTreeMap<String, YamlValue>) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    // --- provenance family: sources + usage_window ---
+    if let Some(value) = map.get("sources") {
+        match value.as_sequence() {
+            None => diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "sources-not-sequence".to_owned(),
+                message: "sources must be a sequence of entries".to_owned(),
+            }),
+            Some(entries) => {
+                for entry in entries {
+                    let Some(fields) = entry.as_mapping() else {
+                        diagnostics.push(Diagnostic {
+                            path: path.to_owned(),
+                            code: "source-entry-not-mapping".to_owned(),
+                            message: "each sources entry must be a mapping".to_owned(),
+                        });
+                        continue;
+                    };
+                    if !has_nonblank_string(fields, "resource") {
+                        diagnostics.push(Diagnostic {
+                            path: path.to_owned(),
+                            code: "source-entry-resource".to_owned(),
+                            message: "each sources entry must carry a non-blank string resource"
+                                .to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(value) = map.get("usage_window") {
+        match value.as_mapping() {
+            None => diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "usage-window-not-mapping".to_owned(),
+                message: "usage_window must be a mapping".to_owned(),
+            }),
+            Some(fields) => {
+                if !has_nonblank_string(fields, "from") {
+                    diagnostics.push(Diagnostic {
+                        path: path.to_owned(),
+                        code: "usage-window-from".to_owned(),
+                        message: "usage_window.from must be a non-blank string".to_owned(),
+                    });
+                }
+                if !has_nonblank_string(fields, "to") {
+                    diagnostics.push(Diagnostic {
+                        path: path.to_owned(),
+                        code: "usage-window-to".to_owned(),
+                        message: "usage_window.to must be a non-blank string".to_owned(),
+                    });
+                }
+            }
+        }
+    }
+
+    // --- trust family: generated + verified ---
+    if let Some(value) = map.get("generated") {
+        match value.as_mapping() {
+            None => diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "generated-not-mapping".to_owned(),
+                message: "generated must be a mapping".to_owned(),
+            }),
+            Some(fields) => {
+                if !has_nonblank_string(fields, "by") {
+                    diagnostics.push(Diagnostic {
+                        path: path.to_owned(),
+                        code: "generated-by".to_owned(),
+                        message: "generated.by must be a non-blank string".to_owned(),
+                    });
+                }
+                if fields.contains_key("at") && !has_nonblank_string(fields, "at") {
+                    diagnostics.push(Diagnostic {
+                        path: path.to_owned(),
+                        code: "generated-at".to_owned(),
+                        message: "generated.at must be a non-blank string when present".to_owned(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(value) = map.get("verified") {
+        // A bare mapping normalizes to a one-element verification list.
+        let events: Vec<&BTreeMap<String, YamlValue>> = match value {
+            YamlValue::Mapping(fields) => vec![fields],
+            YamlValue::Sequence(items) => {
+                let mut events = Vec::new();
+                for item in items {
+                    match item.as_mapping() {
+                        Some(fields) => events.push(fields),
+                        None => diagnostics.push(Diagnostic {
+                            path: path.to_owned(),
+                            code: "verified-event-not-mapping".to_owned(),
+                            message: "each verified event must be a mapping".to_owned(),
+                        }),
+                    }
+                }
+                events
+            }
+            _ => {
+                diagnostics.push(Diagnostic {
+                    path: path.to_owned(),
+                    code: "verified-shape".to_owned(),
+                    message: "verified must be a mapping or a sequence of verification events"
+                        .to_owned(),
+                });
+                Vec::new()
+            }
+        };
+        for event in events {
+            if !has_nonblank_string(event, "by") {
+                diagnostics.push(Diagnostic {
+                    path: path.to_owned(),
+                    code: "verified-by".to_owned(),
+                    message: "each verified event must carry a non-blank string by".to_owned(),
+                });
+            }
+            if !has_nonblank_string(event, "at") {
+                diagnostics.push(Diagnostic {
+                    path: path.to_owned(),
+                    code: "verified-at".to_owned(),
+                    message: "each verified event must carry a non-blank string at".to_owned(),
+                });
+            }
+        }
+    }
+
+    // --- lifecycle family: status + stale_after ---
+    if let Some(value) = map.get("status") {
+        let valid =
+            matches!(value, YamlValue::String(s) if upstream_status_to_okf_status(s).is_some());
+        if !valid {
+            diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "status-value".to_owned(),
+                message: "status must be one of draft/stable/active/deprecated".to_owned(),
+            });
+        }
+    }
+
+    if let Some(value) = map.get("stale_after") {
+        let valid = matches!(value, YamlValue::String(s) if is_iso_date(s.trim()));
+        if !valid {
+            diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "stale-after-shape".to_owned(),
+                message: "stale_after must be a YYYY-MM-DD date".to_owned(),
+            });
+        }
+    }
+
+    // --- Attested Computation contract family ---
+    if map.get("type") == Some(&YamlValue::String("Attested Computation".to_owned())) {
+        if !has_nonblank_string(map, "runtime") {
+            diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "ac-runtime".to_owned(),
+                message: "type: Attested Computation requires a non-blank string runtime field"
+                    .to_owned(),
+            });
+        }
+        if let Some(value) = map.get("parameters") {
+            let valid = value.as_sequence().is_some_and(|items| {
+                items.iter().all(|item| {
+                    item.as_mapping().is_some_and(|fields| {
+                        has_nonblank_string(fields, "name") && has_nonblank_string(fields, "type")
+                    })
+                })
+            });
+            if !valid {
+                diagnostics.push(Diagnostic {
+                    path: path.to_owned(),
+                    code: "ac-parameters".to_owned(),
+                    message: "parameters must be a sequence of mappings with non-blank string name and type"
+                        .to_owned(),
+                });
+            }
+        }
+        if map.contains_key("computation") && !has_nonblank_string(map, "computation") {
+            diagnostics.push(Diagnostic {
+                path: path.to_owned(),
+                code: "ac-computation".to_owned(),
+                message: "computation must be a non-blank string path when present".to_owned(),
+            });
+        }
+        if let Some(value) = map.get("executor") {
+            let valid = value.as_mapping().is_some_and(|fields| {
+                if !has_nonblank_string(fields, "resource") {
+                    return false;
+                }
+                match fields.get("receipt") {
+                    Some(receipt) => receipt.as_sequence().is_some(),
+                    None => true,
+                }
+            });
+            if !valid {
+                diagnostics.push(Diagnostic {
+                    path: path.to_owned(),
+                    code: "ac-executor".to_owned(),
+                    message: "executor must be a mapping with a non-blank string resource and a sequence receipt"
+                        .to_owned(),
+                });
+            }
+        }
+        if let Some(value) = map.get("attester") {
+            let valid = value
+                .as_mapping()
+                .is_some_and(|fields| has_nonblank_string(fields, "resource"));
+            if !valid {
+                diagnostics.push(Diagnostic {
+                    path: path.to_owned(),
+                    code: "ac-attester".to_owned(),
+                    message:
+                        "attester must be a mapping with a non-blank string resource when present"
+                            .to_owned(),
+                });
+            }
+        }
+    }
+
+    diagnostics
+}
+
+/// Bundle-root `index.md` may declare `okf_version` as a non-blank string.
+/// Newer or unknown declared versions are consumed best-effort and never
+/// rejected; only a non-string or blank declaration is a shape error.
+fn okf_v0_2_index_version_diagnostics(
+    path: &str,
+    parsed: Option<&BTreeMap<String, YamlValue>>,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let Some(value) = parsed.and_then(|map| map.get("okf_version")) else {
+        return diagnostics;
+    };
+    match value {
+        YamlValue::String(s) if !s.trim().is_empty() => {}
+        YamlValue::String(_) => diagnostics.push(Diagnostic {
+            path: path.to_owned(),
+            code: "okf-version-blank".to_owned(),
+            message: "okf_version must be a non-blank string on the bundle-root index.md"
+                .to_owned(),
+        }),
+        _ => diagnostics.push(Diagnostic {
+            path: path.to_owned(),
+            code: "okf-version-non-string".to_owned(),
+            message: "okf_version must be a string on the bundle-root index.md".to_owned(),
+        }),
+    }
+    diagnostics
+}
+
+/// Content-change time (OKF v0.2 §13.1 migration).
+///
+/// Prefers `generated.at`; falls back to the legacy `timestamp` field when
+/// `generated` is absent. Returns `None` when neither is present.
+pub fn content_change_time(frontmatter: &BTreeMap<String, YamlValue>) -> Option<&str> {
+    if let Some(YamlValue::Mapping(fields)) = frontmatter.get("generated") {
+        if let Some(YamlValue::String(at)) = fields.get("at") {
+            if !at.trim().is_empty() {
+                return Some(at);
+            }
+        }
+    }
+    match frontmatter.get("timestamp") {
+        Some(YamlValue::String(value)) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+/// Provenance (OKF v0.2 §13.1 migration).
+///
+/// Prefers frontmatter `sources`; falls back to the legacy body `# Citations`
+/// list for v0.1 documents. `sources` entries contribute their `resource`
+/// when well-shaped; malformed entries are skipped. Returns an empty vector
+/// when neither source of provenance is present.
+pub fn provenance_resources(frontmatter: &BTreeMap<String, YamlValue>, body: &str) -> Vec<String> {
+    if let Some(YamlValue::Sequence(entries)) = frontmatter.get("sources") {
+        let mut resources = Vec::new();
+        for entry in entries {
+            if let YamlValue::Mapping(fields) = entry {
+                if let Some(YamlValue::String(resource)) = fields.get("resource") {
+                    if !resource.trim().is_empty() {
+                        resources.push(resource.clone());
+                    }
+                }
+            }
+        }
+        return resources;
+    }
+    legacy_citation_targets(body)
+}
+
+/// Legacy provenance: markdown link targets inside the `# Citations` section.
+fn legacy_citation_targets(body: &str) -> Vec<String> {
+    let citations = body.find("# Citations").map_or("", |start| &body[start..]);
+    let mut targets = Vec::new();
+    let bytes = citations.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b'(' {
+            let start = i + 2;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != b')' {
+                end += 1;
+            }
+            let target = std::str::from_utf8(&bytes[start..end]).unwrap_or("");
+            if !target.trim().is_empty() {
+                targets.push(target.to_owned());
+            }
+            i = end;
+        }
+        i += 1;
+    }
+    targets
+}
+
+/// Explicit upstream `status` to BRAN `okf_status` mapping.
+///
+/// `draft` -> `draft`, `active` -> `stable`, `deprecated` -> `deprecated`;
+/// `stable` maps to itself. Returns `None` for unknown values. Upstream
+/// `status` is never silently conflated with `okf_status`: BRAN strict still
+/// requires the `okf_status` field independently.
+pub fn upstream_status_to_okf_status(status: &str) -> Option<&'static str> {
+    match status {
+        "draft" => Some("draft"),
+        "active" | "stable" => Some("stable"),
+        "deprecated" => Some("deprecated"),
+        _ => None,
     }
 }
 
@@ -3977,5 +4392,596 @@ mod tests {
             r1.bran_strict.diagnostics, r2.bran_strict.diagnostics,
             "permuted bundle must produce identical ordered diagnostics"
         );
+    }
+
+    // ===================================================================
+    // OKF v0.2 profile tests (issue alphazede/bran#1)
+    // ===================================================================
+
+    /// Build a concept document from a full fixture source (fenced frontmatter
+    /// followed by a body). The frontmatter is re-parsed with the structural
+    /// parser, mirroring how the CLI constructs bundles from scanned sources.
+    fn v0_2_document(path: &str, source: &str) -> Doc {
+        let body_start = source.find("\n---\n").map(|pos| pos + 5).unwrap_or(0);
+        let raw = &source[..body_start];
+        let body = &source[body_start..];
+        let fields = crate::frontmatter::parse_frontmatter(raw)
+            .expect("fixture frontmatter must be structurally parseable");
+        Doc::new(
+            path,
+            source.to_owned(),
+            body,
+            Frontmatter::from_parsed(raw, fields),
+        )
+    }
+
+    fn v0_2_codes(result: &ValidationResult, profile: &str) -> Vec<String> {
+        let outcome = match profile {
+            OKF_V0_1 => &result.okf_compatibility,
+            OKF_V0_2 => &result.okf_v0_2,
+            BRAN_STRICT => &result.bran_strict,
+            _ => panic!("unknown profile {profile}"),
+        };
+        let mut codes: Vec<String> = outcome.diagnostics.iter().map(|d| d.code.clone()).collect();
+        codes.sort();
+        codes
+    }
+
+    #[test]
+    fn okf_v0_2_profile_selection_and_floor() {
+        let minimal = Bundle::from_documents([v0_2_document(
+            "concepts/minimal.md",
+            include_str!("../../../fixtures/conformance/okf-v0.2-minimal.fixture"),
+        )])
+        .expect("minimal v0.2 bundle");
+        let result = ProfileValidator::validate(&minimal, OKF_V0_2);
+
+        // All three outcomes are always computed; selection governs exit.
+        assert_eq!(result.okf_compatibility.profile, OKF_V0_1);
+        assert_eq!(result.okf_v0_2.profile, OKF_V0_2);
+        assert_eq!(result.bran_strict.profile, BRAN_STRICT);
+        assert_eq!(result.okf_compatibility.status, ValidationStatus::Pass);
+        assert_eq!(result.okf_v0_2.status, ValidationStatus::Pass);
+        assert_eq!(result.selected_profile, OKF_V0_2);
+        assert!(result.selected_passed());
+        assert_eq!(result.exit_code(), 0);
+
+        // A v0.1 floor violation (unparseable frontmatter) fails v0.2 too.
+        let malformed_source = "---\ntype: [\n---\nBody.\n";
+        let malformed = Bundle::from_documents([Doc::new(
+            "concepts/malformed.md",
+            malformed_source,
+            "Body.\n",
+            Frontmatter::malformed(malformed_source, "invalid yaml"),
+        )])
+        .expect("malformed bundle");
+        let malformed_result = ProfileValidator::validate(&malformed, OKF_V0_2);
+        assert_eq!(malformed_result.okf_v0_2.status, ValidationStatus::Fail);
+        assert_eq!(
+            malformed_result.okf_v0_2.diagnostics[0].code,
+            "malformed-frontmatter"
+        );
+        assert!(!malformed_result.selected_passed());
+        assert_eq!(malformed_result.exit_code(), 1);
+    }
+
+    #[test]
+    fn okf_v0_2_frozen_fixture_corpus() {
+        // Frozen sources: every fixture byte is pinned here so the corpus
+        // cannot drift silently.
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-minimal.fixture"),
+            "---\ntype: Concept\n---\nMinimal concept with no optional v0.2 families.\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-sources.fixture"),
+            "---\ntype: Concept\nsources:\n  - resource: https://example.invalid/r1\n    title: Research one\n    usage_count: 4\n  - resource: https://example.invalid/r2\nusage_window:\n  from: 2026-01-01\n  to: 2026-12-31\n---\nProvenance family present and well shaped.\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-trust-list.fixture"),
+            "---\ntype: Concept\ngenerated:\n  by: agent/1\n  at: 2026-07-01T00:00:00Z\nverified:\n  - by: human:alice\n    at: 2026-07-02T00:00:00Z\n  - by: human:bob\n    at: 2026-07-03T00:00:00Z\n---\nTrust family as a verification list.\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-verified-bare.fixture"),
+            "---\ntype: Concept\nverified:\n  by: human:alice\n  at: 2026-07-02T00:00:00Z\n---\nBare verified mapping normalizes to a one-element list.\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-lifecycle.fixture"),
+            "---\ntype: Concept\nstatus: deprecated\nstale_after: 2026-12-31\n---\nLifecycle family present.\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-attested-computation.fixture"),
+            "---\ntype: Attested Computation\nruntime: python3\nparameters:\n  - name: seed\n    type: integer\n  - name: corpus\n    type: path\n    required: true\ncomputation: scripts/rank.py\nexecutor:\n  resource: https://example.invalid/exec\n  receipt:\n    - sha256: deadbeef\n    - pid: 42\nattester:\n  resource: https://example.invalid/att\n---\nAttested computation contract family present.\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-index-version.fixture"),
+            "---\nokf_version: \"0.2\"\n---\n# Root\n\n- [Nested index](missing/nested-index.md)\n\n## Concepts\n\n- [Concept](missing/concept.md)\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-legacy-fallback.fixture"),
+            "---\ntype: Concept\ntimestamp: 2026-01-01\n---\nLegacy v0.1-shaped document with body citations.\n\n# Citations\n- [Alpha](https://example.invalid/a)\n- [Beta](https://example.invalid/b)\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-unknown-tolerated.fixture"),
+            "---\ntype: Unknown Type\nfrobnicate: 42\n---\nUnknown types and unknown fields are tolerated.\n\n- [Broken link](missing.md)\n"
+        );
+        assert_eq!(
+            include_str!("../../../fixtures/conformance/okf-v0.2-malformed.fixture"),
+            "---\ntype: Concept\nsources: not-a-sequence\nusage_window:\n  from: 2026-01-01\ngenerated: scalar\nverified:\n  - 2026-07-01\nstatus: retired\nstale_after: tomorrow\n---\nBadly shaped optional families.\n"
+        );
+    }
+
+    #[test]
+    fn okf_v0_2_optional_families_pass() {
+        let bundle = Bundle::from_documents([
+            v0_2_document(
+                "concepts/sources.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-sources.fixture"),
+            ),
+            v0_2_document(
+                "concepts/trust.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-trust-list.fixture"),
+            ),
+            v0_2_document(
+                "concepts/verified-bare.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-verified-bare.fixture"),
+            ),
+            v0_2_document(
+                "concepts/lifecycle.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-lifecycle.fixture"),
+            ),
+            v0_2_document(
+                "concepts/computation.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-attested-computation.fixture"),
+            ),
+            v0_2_document(
+                "concepts/unknown.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-unknown-tolerated.fixture"),
+            ),
+        ])
+        .expect("v0.2 families bundle");
+        let result = ProfileValidator::validate(&bundle, OKF_V0_2);
+        assert_eq!(
+            result.okf_v0_2.status,
+            ValidationStatus::Pass,
+            "all optional families well-shaped must pass, got {:?}",
+            result.okf_v0_2.diagnostics
+        );
+        assert!(result.selected_passed());
+    }
+
+    #[test]
+    fn okf_v0_2_malformed_families_fail_with_explicit_codes() {
+        let bundle = Bundle::from_documents([v0_2_document(
+            "concepts/malformed.md",
+            include_str!("../../../fixtures/conformance/okf-v0.2-malformed.fixture"),
+        )])
+        .expect("malformed families bundle");
+        let result = ProfileValidator::validate(&bundle, OKF_V0_2);
+        assert_eq!(result.okf_v0_2.status, ValidationStatus::Fail);
+        assert_eq!(
+            v0_2_codes(&result, OKF_V0_2),
+            vec![
+                "generated-not-mapping".to_owned(),
+                "sources-not-sequence".to_owned(),
+                "stale-after-shape".to_owned(),
+                "status-value".to_owned(),
+                "usage-window-to".to_owned(),
+                "verified-event-not-mapping".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn okf_v0_2_verified_bare_mapping_equals_one_element_list() {
+        let bare = Bundle::from_documents([v0_2_document(
+            "concepts/bare.md",
+            include_str!("../../../fixtures/conformance/okf-v0.2-verified-bare.fixture"),
+        )])
+        .expect("bare verified bundle");
+        let listed = Bundle::from_documents([v0_2_document(
+            "concepts/listed.md",
+            "---\ntype: Concept\nverified:\n  - by: human:alice\n    at: 2026-07-02T00:00:00Z\n---\nList form.\n",
+        )])
+        .expect("listed verified bundle");
+        let bare_result = ProfileValidator::validate(&bare, OKF_V0_2);
+        let listed_result = ProfileValidator::validate(&listed, OKF_V0_2);
+        assert_eq!(
+            bare_result.okf_v0_2, listed_result.okf_v0_2,
+            "bare verified mapping and one-element list must normalize identically"
+        );
+        assert_eq!(bare_result.okf_v0_2.status, ValidationStatus::Pass);
+    }
+
+    #[test]
+    fn okf_v0_2_index_version_cases() {
+        // Bundle-root index.md may declare any non-blank string version.
+        let declared = Bundle::from_documents([
+            v0_2_document(
+                "index.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-index-version.fixture"),
+            ),
+            v0_2_document(
+                "concepts/concept.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-minimal.fixture"),
+            ),
+        ])
+        .expect("versioned index bundle");
+        let declared_result = ProfileValidator::validate(&declared, OKF_V0_2);
+        assert_eq!(declared_result.okf_v0_2.status, ValidationStatus::Pass);
+
+        // Newer/unknown declared versions are consumed best-effort, never rejected.
+        let newer = Bundle::from_documents([
+            v0_2_document(
+                "index.md",
+                "---\nokf_version: \"9.9\"\n---\n# Root\n\n- [Concept](concepts/concept.md)\n\n## Concepts\n\n- [Concept](concepts/concept.md)\n",
+            ),
+            v0_2_document(
+                "concepts/concept.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-minimal.fixture"),
+            ),
+        ])
+        .expect("newer version index bundle");
+        let newer_result = ProfileValidator::validate(&newer, OKF_V0_2);
+        assert_eq!(newer_result.okf_v0_2.status, ValidationStatus::Pass);
+
+        // Blank and non-string declarations are shape errors. A blank string
+        // is not structurally parseable, so it is exercised through a
+        // programmatically built parsed map (the shape check is defensive).
+        let blank_source =
+            "---\nokf_version: \"\"\n---\n# Root\n\n- [Concept](concepts/concept.md)\n\n## Concepts\n\n- [Concept](concepts/concept.md)\n";
+        let blank_body = "# Root\n\n- [Concept](concepts/concept.md)\n\n## Concepts\n\n- [Concept](concepts/concept.md)\n";
+        let mut blank_fields = BTreeMap::new();
+        blank_fields.insert("okf_version".to_owned(), YamlValue::String(String::new()));
+        let blank = Bundle::from_documents([Doc::new(
+            "index.md",
+            blank_source,
+            blank_body,
+            Frontmatter::from_parsed(blank_source, blank_fields),
+        )])
+        .expect("blank version index bundle");
+        let blank_result = ProfileValidator::validate(&blank, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&blank_result, OKF_V0_2),
+            vec!["okf-version-blank".to_owned()]
+        );
+
+        let non_string = Bundle::from_documents([v0_2_document(
+            "index.md",
+            "---\nokf_version: [1, 2]\n---\n# Root\n\n- [Concept](concepts/concept.md)\n\n## Concepts\n\n- [Concept](concepts/concept.md)\n",
+        )])
+        .expect("non-string version index bundle");
+        let non_string_result = ProfileValidator::validate(&non_string, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&non_string_result, OKF_V0_2),
+            vec!["okf-version-non-string".to_owned()]
+        );
+
+        // The version check applies to the bundle-root index.md only.
+        let nested = Bundle::from_documents([
+            v0_2_document(
+                "nested/index.md",
+                "---\nokf_version: \"0.2\"\n---\n# Nested\n\n- [Concept](concept.md)\n\n## Concepts\n\n- [Concept](concept.md)\n",
+            ),
+            v0_2_document(
+                "concepts/concept.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-minimal.fixture"),
+            ),
+        ])
+        .expect("nested version index bundle");
+        let nested_result = ProfileValidator::validate(&nested, OKF_V0_2);
+        assert_eq!(nested_result.okf_v0_2.status, ValidationStatus::Pass);
+    }
+
+    #[test]
+    fn okf_v0_2_status_value_and_producer_extensions() {
+        // Every mapped upstream status passes.
+        for status in ["draft", "stable", "active", "deprecated"] {
+            let bundle = Bundle::from_documents([v0_2_document(
+                "concepts/status.md",
+                &format!("---\ntype: Concept\nstatus: {status}\n---\nBody.\n"),
+            )])
+            .expect("status bundle");
+            let result = ProfileValidator::validate(&bundle, OKF_V0_2);
+            assert_eq!(
+                result.okf_v0_2.status,
+                ValidationStatus::Pass,
+                "status {status} must pass"
+            );
+        }
+
+        // Unknown status fails with the explicit code.
+        let unknown = Bundle::from_documents([v0_2_document(
+            "concepts/status.md",
+            "---\ntype: Concept\nstatus: retired\n---\nBody.\n",
+        )])
+        .expect("unknown status bundle");
+        let unknown_result = ProfileValidator::validate(&unknown, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&unknown_result, OKF_V0_2),
+            vec!["status-value".to_owned()]
+        );
+
+        // BRAN producer extensions stay valid and are never conflated with
+        // upstream status: okf_status is not checked by the v0.2 profile, and
+        // an upstream status never satisfies BRAN strict's okf_status field.
+        let extensions = Bundle::from_documents([v0_2_document(
+            "concepts/ext.md",
+            "---\ntype: Concept\nstatus: draft\nokf_status: active\nfreshness: 2026-07-01\npublic_boundary: private\n---\nBody.\n",
+        )])
+        .expect("extension bundle");
+        let extensions_result = ProfileValidator::validate(&extensions, OKF_V0_2);
+        assert_eq!(extensions_result.okf_v0_2.status, ValidationStatus::Pass);
+
+        let conflation_guard = Bundle::from_documents([v0_2_document(
+            "concepts/guard.md",
+            "---\ntype: Concept\nstatus: active\n---\nBody.\n",
+        )])
+        .expect("conflation guard bundle");
+        let guard_result = ProfileValidator::validate(&conflation_guard, BRAN_STRICT);
+        let guard_codes: Vec<_> = guard_result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            guard_codes.contains(&"status"),
+            "upstream status must not satisfy BRAN strict okf_status, got {guard_codes:?}"
+        );
+    }
+
+    #[test]
+    fn okf_v0_2_attested_computation_cases() {
+        // Missing runtime fails.
+        let no_runtime = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nparameters:\n  - name: seed\n    type: integer\n---\nBody.\n",
+        )])
+        .expect("AC without runtime bundle");
+        let no_runtime_result = ProfileValidator::validate(&no_runtime, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&no_runtime_result, OKF_V0_2),
+            vec!["ac-runtime".to_owned()]
+        );
+
+        // Badly shaped parameters fail.
+        let bad_parameters = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nparameters: scalar\n---\nBody.\n",
+        )])
+        .expect("AC with scalar parameters bundle");
+        let bad_parameters_result = ProfileValidator::validate(&bad_parameters, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&bad_parameters_result, OKF_V0_2),
+            vec!["ac-parameters".to_owned()]
+        );
+
+        let entry_parameters = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nparameters:\n  - name: seed\n---\nBody.\n",
+        )])
+        .expect("AC with incomplete parameter bundle");
+        let entry_parameters_result = ProfileValidator::validate(&entry_parameters, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&entry_parameters_result, OKF_V0_2),
+            vec!["ac-parameters".to_owned()]
+        );
+
+        // Non-string computation fails when present.
+        let bad_computation = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\ncomputation: [a, b]\n---\nBody.\n",
+        )])
+        .expect("AC with list computation bundle");
+        let bad_computation_result = ProfileValidator::validate(&bad_computation, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&bad_computation_result, OKF_V0_2),
+            vec!["ac-computation".to_owned()]
+        );
+
+        // Executor must be a mapping with resource; receipt is a sequence.
+        let scalar_executor = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nexecutor: exec/1\n---\nBody.\n",
+        )])
+        .expect("AC with scalar executor bundle");
+        let scalar_executor_result = ProfileValidator::validate(&scalar_executor, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&scalar_executor_result, OKF_V0_2),
+            vec!["ac-executor".to_owned()]
+        );
+
+        let missing_resource = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  receipt:\n    - sha256: deadbeef\n---\nBody.\n",
+        )])
+        .expect("AC with executor without resource bundle");
+        let missing_resource_result = ProfileValidator::validate(&missing_resource, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&missing_resource_result, OKF_V0_2),
+            vec!["ac-executor".to_owned()]
+        );
+
+        let scalar_receipt = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  resource: https://example.invalid/exec\n  receipt: deadbeef\n---\nBody.\n",
+        )])
+        .expect("AC with scalar receipt bundle");
+        let scalar_receipt_result = ProfileValidator::validate(&scalar_receipt, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&scalar_receipt_result, OKF_V0_2),
+            vec!["ac-executor".to_owned()]
+        );
+
+        // Attester must be a mapping with a non-blank string resource.
+        let bad_attester = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nattester: att/1\n---\nBody.\n",
+        )])
+        .expect("AC with scalar attester bundle");
+        let bad_attester_result = ProfileValidator::validate(&bad_attester, OKF_V0_2);
+        assert_eq!(
+            v0_2_codes(&bad_attester_result, OKF_V0_2),
+            vec!["ac-attester".to_owned()]
+        );
+
+        // Executor without receipt and attester absent stay valid.
+        let minimal_ac = Bundle::from_documents([v0_2_document(
+            "concepts/ac.md",
+            "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  resource: https://example.invalid/exec\n---\nBody.\n",
+        )])
+        .expect("minimal AC bundle");
+        let minimal_ac_result = ProfileValidator::validate(&minimal_ac, OKF_V0_2);
+        assert_eq!(minimal_ac_result.okf_v0_2.status, ValidationStatus::Pass);
+    }
+
+    #[test]
+    fn okf_v0_2_content_change_time_migration() {
+        let mut frontmatter = BTreeMap::new();
+        assert_eq!(content_change_time(&frontmatter), None);
+
+        frontmatter.insert(
+            "generated".to_owned(),
+            YamlValue::Mapping(BTreeMap::from([
+                ("by".to_owned(), YamlValue::String("agent/1".to_owned())),
+                (
+                    "at".to_owned(),
+                    YamlValue::String("2026-07-01T00:00:00Z".to_owned()),
+                ),
+            ])),
+        );
+        frontmatter.insert(
+            "timestamp".to_owned(),
+            YamlValue::String("2026-01-01".to_owned()),
+        );
+        assert_eq!(
+            content_change_time(&frontmatter),
+            Some("2026-07-01T00:00:00Z"),
+            "generated.at must win over legacy timestamp"
+        );
+
+        frontmatter.remove("generated");
+        assert_eq!(
+            content_change_time(&frontmatter),
+            Some("2026-01-01"),
+            "legacy timestamp must be the fallback"
+        );
+
+        frontmatter.insert(
+            "generated".to_owned(),
+            YamlValue::Mapping(BTreeMap::from([(
+                "by".to_owned(),
+                YamlValue::String("agent/1".to_owned()),
+            )])),
+        );
+        assert_eq!(
+            content_change_time(&frontmatter),
+            Some("2026-01-01"),
+            "generated without at falls back to legacy timestamp"
+        );
+    }
+
+    #[test]
+    fn okf_v0_2_provenance_migration() {
+        // Frontmatter sources win; only well-shaped entries contribute.
+        let mut frontmatter = BTreeMap::new();
+        frontmatter.insert(
+            "sources".to_owned(),
+            YamlValue::Sequence(vec![
+                YamlValue::Mapping(BTreeMap::from([
+                    (
+                        "resource".to_owned(),
+                        YamlValue::String("https://example.invalid/r1".to_owned()),
+                    ),
+                    ("title".to_owned(), YamlValue::String("One".to_owned())),
+                ])),
+                YamlValue::String("https://example.invalid/skip".to_owned()),
+            ]),
+        );
+        let body = "# Citations\n- [Alpha](https://example.invalid/legacy)\n";
+        assert_eq!(
+            provenance_resources(&frontmatter, body),
+            vec!["https://example.invalid/r1".to_owned()]
+        );
+
+        // Without sources, the legacy # Citations list is the fallback.
+        frontmatter.remove("sources");
+        assert_eq!(
+            provenance_resources(&frontmatter, body),
+            vec!["https://example.invalid/legacy".to_owned(),]
+        );
+
+        // No sources, no citations section, no provenance.
+        assert!(provenance_resources(&frontmatter, "Body only.\n").is_empty());
+    }
+
+    #[test]
+    fn okf_v0_2_upstream_status_mapping() {
+        assert_eq!(upstream_status_to_okf_status("draft"), Some("draft"));
+        assert_eq!(upstream_status_to_okf_status("active"), Some("stable"));
+        assert_eq!(upstream_status_to_okf_status("stable"), Some("stable"));
+        assert_eq!(
+            upstream_status_to_okf_status("deprecated"),
+            Some("deprecated")
+        );
+        assert_eq!(upstream_status_to_okf_status("retired"), None);
+        assert_eq!(upstream_status_to_okf_status(""), None);
+    }
+
+    #[test]
+    fn okf_v0_2_v0_1_floor_regression() {
+        // The v0.1 reserved-document structural checks are unchanged under a
+        // v0.2 selection: the invalid index/log fixtures fail with the exact
+        // v0.1 codes.
+        let invalid = Bundle::from_documents([
+            v0_2_document(
+                "index.md",
+                &format!(
+                    "---\ntype: Concept\n---\n{}",
+                    include_str!("../../../fixtures/conformance/okf-v0.1-index-invalid.fixture")
+                ),
+            ),
+            v0_2_document(
+                "log.md",
+                &format!(
+                    "---\ntype: Concept\n---\n{}",
+                    include_str!("../../../fixtures/conformance/okf-v0.1-log-invalid.fixture")
+                ),
+            ),
+        ])
+        .expect("invalid v0.1 floor bundle");
+        let result = ProfileValidator::validate(&invalid, OKF_V0_2);
+        assert_eq!(result.okf_v0_2.status, ValidationStatus::Fail);
+        assert_eq!(
+            v0_2_codes(&result, OKF_V0_2),
+            vec![
+                "okf-index-empty-section".to_owned(),
+                "okf-index-link-before-heading".to_owned(),
+                "okf-log-date-order".to_owned(),
+                "okf-log-entry-before-date".to_owned(),
+                "okf-log-invalid-date-heading".to_owned(),
+                "okf-log-invalid-date-heading".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn okf_v0_2_determinism() {
+        let bundle = Bundle::from_documents([
+            v0_2_document(
+                "index.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-index-version.fixture"),
+            ),
+            v0_2_document(
+                "concepts/concept.md",
+                include_str!("../../../fixtures/conformance/okf-v0.2-malformed.fixture"),
+            ),
+        ])
+        .expect("determinism bundle");
+        let r1 = ProfileValidator::validate(&bundle, OKF_V0_2);
+        let r2 = ProfileValidator::validate(&bundle, OKF_V0_2);
+        assert_eq!(r1, r2, "repeated validation must be deterministic");
+        assert_eq!(r1.okf_v0_2, r2.okf_v0_2);
     }
 }

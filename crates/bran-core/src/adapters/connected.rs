@@ -2,7 +2,7 @@
 
 use super::sqz::{SqzAdapter, SqzAdapterConfig, SqzFailureReason, SqzPort, SqzReceipt, SqzStatus};
 use crate::agent::result_store::ResultId;
-use crate::agent::runtime::ProviderTokenUsage;
+use crate::agent::runtime::{valid_sha256, ProviderTokenUsage};
 use crate::packet::{ContextPacket, PacketReceipt, PreservationAnchor, StructuralPacket};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -288,7 +288,7 @@ fn validate(
             || !valid_id(&citation.claim_id)
             || !valid_field(&citation.node_id)
             || !valid_field(&citation.locator)
-            || !valid_digest(&citation.content_digest)
+            || !valid_sha256(&citation.content_digest)
             || !ids.insert(citation.id.clone())
         {
             bad += 1;
@@ -309,7 +309,7 @@ fn validate(
             || usage.support.len() > MAX_TEXT
             || !valid_field(&usage.node_id)
             || !valid_field(&usage.locator)
-            || !valid_digest(&usage.content_digest)
+            || !valid_sha256(&usage.content_digest)
             || !ids.insert(usage.id.clone())
         {
             bad += 1;
@@ -541,9 +541,6 @@ fn valid_id(value: &str) -> bool {
 }
 fn valid_field(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= MAX_TEXT && !value.contains(['\r', '\n'])
-}
-fn valid_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 fn digest(bytes: &[u8]) -> String {
     ResultId::sha256(bytes).value().to_owned()
@@ -963,6 +960,11 @@ mod tests {
         let mut invalid = response();
         invalid.usages.push(invalid.usages[0].clone());
         assert_grounding_rejected(packet(), invalid); // duplicate usage ID
+
+        let mut invalid = response();
+        invalid.citations[0].content_digest = "A".repeat(64);
+        invalid.usages[0].content_digest = "A".repeat(64);
+        assert_grounding_rejected(packet(), invalid); // uppercase-hex digest never matches a packet item
 
         let mut invalid = response();
         invalid.claims[0].id = "malformed id".into();

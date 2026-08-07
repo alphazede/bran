@@ -1,0 +1,12 @@
+---
+type: Concept
+sources:
+  - resource: https://example.invalid/r1
+    title: Research one
+    usage_count: 4
+  - resource: https://example.invalid/r2
+usage_window:
+  from: 2026-01-01
+  to: 2026-12-31
+---
+Provenance family present and well shaped.

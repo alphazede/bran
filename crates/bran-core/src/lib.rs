@@ -6,6 +6,7 @@ pub mod boundary;
 pub mod bundle;
 pub mod derived_state;
 pub mod export;
+pub mod frontmatter;
 pub mod graph;
 pub mod metadata;
 pub mod migration;
@@ -20,7 +21,7 @@ pub mod view;
 // Profile validation exports (Slice 1.2 wiring only)
 pub use crate::profile::{
     Diagnostic, ProfileOutcome, ProfileValidator, ValidationResult, ValidationStatus, BRAN_STRICT,
-    OKF_V0_1,
+    OKF_V0_1, OKF_V0_2,
 };
 
 use std::collections::BTreeSet;
