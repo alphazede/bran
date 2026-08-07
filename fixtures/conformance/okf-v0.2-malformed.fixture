@@ -1,0 +1,12 @@
+---
+type: Concept
+sources: not-a-sequence
+usage_window:
+  from: 2026-01-01
+generated: scalar
+verified:
+  - 2026-07-01
+status: retired
+stale_after: tomorrow
+---
+Badly shaped optional families.

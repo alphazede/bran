@@ -1,0 +1,19 @@
+---
+type: Attested Computation
+runtime: python3
+parameters:
+  - name: seed
+    type: integer
+  - name: corpus
+    type: path
+    required: true
+computation: scripts/rank.py
+executor:
+  resource: https://example.invalid/exec
+  receipt:
+    - sha256: deadbeef
+    - pid: 42
+attester:
+  resource: https://example.invalid/att
+---
+Attested computation contract family present.

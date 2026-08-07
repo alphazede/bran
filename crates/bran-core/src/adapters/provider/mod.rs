@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use crate::agent::result_store::ResultId;
 use crate::agent::runtime::{
-    ArtifactKind, LosslessArtifact, ProviderError, ProviderExecutionEvidence, ProviderOutput,
-    ProviderPort, ProviderRequest, ProviderTokenUsage,
+    ArtifactKind, LosslessArtifact, ProviderClaim, ProviderError, ProviderExecutionEvidence,
+    ProviderOutput, ProviderPort, ProviderRequest, ProviderTokenUsage,
 };
 
 const MAX_FRAME: usize = 4 * 1024 * 1024;
@@ -843,6 +843,12 @@ fn parse_result(
         "actual_output_tokens",
         "answer",
         "citation",
+        "claim_id",
+        "claim_text",
+        "claim_material",
+        "claim_locator",
+        "claim_content_digest",
+        "claim_support",
         "provider_run_id",
         "effective_provider",
         "effective_model",
@@ -888,6 +894,12 @@ fn parse_result(
         &required,
         &[
             "citation",
+            "claim_id",
+            "claim_text",
+            "claim_material",
+            "claim_locator",
+            "claim_content_digest",
+            "claim_support",
             "artifact_kind",
             "artifact_media_type",
             "artifact_id",
@@ -968,6 +980,7 @@ fn parse_result(
         return Err(ProviderError::InvalidOutput);
     }
     let citations = values.get("citation").cloned().unwrap_or_default();
+    let claims = parse_claims(&values)?;
     let artifacts = parse_artifacts(&values)?;
     let effective = |key: &str, legacy: &str| -> Result<Option<String>, ProviderError> {
         let reported = values
@@ -1005,6 +1018,7 @@ fn parse_result(
         },
         artifacts,
     )
+    .and_then(|output| output.with_claims(claims))
     .map_err(|_| ProviderError::InvalidOutput)?;
     match preflight.ceiling {
         Some(ceiling) => output
@@ -1012,6 +1026,53 @@ fn parse_result(
             .map_err(|_| ProviderError::InvalidOutput),
         None => Ok(output),
     }
+}
+
+fn parse_claims(
+    values: &BTreeMap<String, Vec<String>>,
+) -> Result<Vec<ProviderClaim>, ProviderError> {
+    let fields = [
+        values.get("claim_id").map(Vec::as_slice).unwrap_or(&[]),
+        values.get("claim_text").map(Vec::as_slice).unwrap_or(&[]),
+        values
+            .get("claim_material")
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+        values
+            .get("claim_locator")
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+        values
+            .get("claim_content_digest")
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+        values
+            .get("claim_support")
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    ];
+    let count = fields[0].len();
+    if fields.iter().any(|field| field.len() != count) {
+        return Err(ProviderError::InvalidOutput);
+    }
+    (0..count)
+        .map(|index| {
+            let material = match fields[2][index].as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return Err(ProviderError::InvalidOutput),
+            };
+            ProviderClaim::new(
+                &fields[0][index],
+                &fields[1][index],
+                material,
+                &fields[3][index],
+                &fields[4][index],
+                &fields[5][index],
+            )
+            .map_err(|_| ProviderError::InvalidOutput)
+        })
+        .collect()
 }
 
 fn parse_artifacts(
@@ -1310,6 +1371,7 @@ fn provider_protocol_self_check() -> Result<(), ProviderError> {
     )?;
     let artifact_bytes = [0, 0xff, b'{', b'}'];
     let artifact_id = ResultId::sha256(&artifact_bytes).to_string();
+    let claim_digest = "a".repeat(64);
     let result_payload = |no_session| {
         fields(&[
             ("stage", "result"),
@@ -1329,6 +1391,13 @@ fn provider_protocol_self_check() -> Result<(), ProviderError> {
             ("actual_input_tokens", "10"),
             ("actual_output_tokens", "7"),
             ("answer", "fixture answer"),
+            ("citation", "src/fixture.rs"),
+            ("claim_id", "claim-1"),
+            ("claim_text", "fixture_symbol exists"),
+            ("claim_material", "true"),
+            ("claim_locator", "src/fixture.rs"),
+            ("claim_content_digest", &claim_digest),
+            ("claim_support", "fixture_symbol"),
             ("provider_run_id", "fixture-run"),
             ("effective_provider", "fixture-provider-v2"),
             ("effective_model", "unavailable"),
@@ -1352,10 +1421,18 @@ fn provider_protocol_self_check() -> Result<(), ProviderError> {
     if output.effective_provider() != Some("fixture-provider-v2")
         || output.effective_model().is_some()
         || output.effective_reasoning() != Some("low")
+        || output.claims().len() != 1
+        || output.claims()[0].locator() != "src/fixture.rs"
+        || output.claims()[0].support() != "fixture_symbol"
         || output.artifacts().len() != 1
         || output.artifacts()[0].bytes() != artifact_bytes
         || output.artifacts()[0].id().to_string() != artifact_id
     {
+        return Err(ProviderError::InvalidOutput);
+    }
+    let mut malformed_claims = parse(&payload)?;
+    malformed_claims.remove("claim_support");
+    if parse_claims(&malformed_claims).is_ok() {
         return Err(ProviderError::InvalidOutput);
     }
     if parse_result(

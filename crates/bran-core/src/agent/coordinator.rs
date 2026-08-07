@@ -637,6 +637,32 @@ impl AgentRuntime {
             request.tool_policy().clone(),
             agent_profile_registry,
         );
+        if request.grounding_contract().is_some()
+            && !grounding_execution_attested(&requested, &effective)
+        {
+            return incomplete(
+                requested,
+                effective,
+                AgentFailure::InvalidOutput,
+                Some(input.receipt().clone()),
+                None,
+                input_bytes,
+                0,
+                request.no_session(),
+            );
+        }
+        if !grounded_claims_accepted(request, &provider_output) {
+            return incomplete(
+                requested,
+                effective,
+                AgentFailure::ClaimUnsupported,
+                Some(input.receipt().clone()),
+                None,
+                input_bytes,
+                0,
+                request.no_session(),
+            );
+        }
         if let Err(failure) = enforced_token_budget(request, &provider_output) {
             return incomplete(
                 requested,
@@ -682,10 +708,23 @@ impl AgentRuntime {
                 request.no_session(),
             );
         }
+        if request.grounding_contract().is_some() && output.payload() != provider_output.answer() {
+            return incomplete(
+                requested,
+                effective,
+                AgentFailure::ClaimUnsupported,
+                Some(input.receipt().clone()),
+                Some(output.receipt().clone()),
+                input_bytes,
+                output.payload().len(),
+                request.no_session(),
+            );
+        }
 
-        let inline = InlineResult::new(
+        let inline = InlineResult::with_claims(
             output.payload(),
             provider_output.citations().iter().cloned(),
+            provider_output.claims().iter().cloned(),
         )
         .map_err(|_| AgentRuntimeInternalError::ReceiptInvariant)?;
         let stored_ref = match store_output(
@@ -867,6 +906,15 @@ fn safe_provider_surfaces(output: &super::runtime::ProviderOutput) -> bool {
         .chain(output.effective_provider().map(str::as_bytes))
         .chain(output.effective_model().map(str::as_bytes))
         .chain(output.effective_reasoning().map(str::as_bytes))
+        .chain(output.claims().iter().flat_map(|claim| {
+            [
+                claim.id().as_bytes(),
+                claim.text().as_bytes(),
+                claim.locator().as_bytes(),
+                claim.content_digest().as_bytes(),
+                claim.support().as_bytes(),
+            ]
+        }))
         .all(|bytes| crate::adapters::sqz::public_dlp_findings(bytes).is_empty());
     strings_are_safe
         && output.artifacts().iter().all(|artifact| {
@@ -902,6 +950,50 @@ fn grounded_citations_accepted(request: &DelegationRequest, citations: &[String]
         && citations.iter().all(|citation| {
             crate::adapters::is_public_dlp_safe(citation) && contract.admits_citation(citation)
         })
+}
+
+fn grounding_execution_attested(
+    requested: &RequestedExecution,
+    effective: &EffectiveExecution,
+) -> bool {
+    matches!(effective.profile(), Attestation::Attested(profile) if profile.name() == requested.profile_name())
+        && matches!((requested.provider(), effective.provider()),
+            (Attestation::Attested(requested), Attestation::Attested(effective)) if requested == effective)
+        && matches!((requested.model(), effective.model()),
+            (Attestation::Attested(requested), Attestation::Attested(effective)) if requested == effective)
+        && matches!((requested.reasoning(), effective.reasoning()),
+            (Attestation::Attested(requested), Attestation::Attested(effective)) if requested == effective)
+}
+
+fn grounded_claims_accepted(
+    request: &DelegationRequest,
+    output: &super::runtime::ProviderOutput,
+) -> bool {
+    let Some(contract) = request.grounding_contract() else {
+        return true;
+    };
+    let claims = output.claims();
+    let grounded_answer = claims
+        .iter()
+        .map(|claim| claim.text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    contract.has_verifiable_evidence()
+        && !claims.is_empty()
+        && output.answer() == grounded_answer
+        && claims.iter().all(|claim| {
+            claim.material()
+                && claim.text() == claim.support()
+                && output
+                    .citations()
+                    .iter()
+                    .any(|citation| citation == claim.locator())
+        })
+        && contract.verifies_support(
+            claims
+                .iter()
+                .map(|claim| (claim.locator(), claim.content_digest(), claim.support())),
+        )
 }
 
 fn accepted_sqz(receipt: &SqzReceipt, payload: &str) -> bool {
@@ -1083,11 +1175,13 @@ fn store_output<Store: ResultStore>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::delegate::{DelegationOptions, DelegationRequest, GroundingContract};
+    use super::super::delegate::{
+        AdmittedEvidence, DelegationOptions, DelegationRequest, GroundingContract,
+    };
     use super::super::result_store::{MemoryResultStore, ResultStoreError};
     use super::super::runtime::{
         AgentFailure, ArtifactKind, Attestation, AuthError, AuthStore, InvocationLifecycle,
-        InvocationOutcome, InvocationState, LosslessArtifact, ProviderError,
+        InvocationOutcome, InvocationState, LosslessArtifact, ProviderClaim, ProviderError,
         ProviderExecutionEvidence, ProviderOutput, ProviderPort, ProviderRequest,
         ProviderTokenUsage,
     };
@@ -1101,6 +1195,8 @@ mod tests {
         ToolPolicy,
     };
     use std::cell::{Cell, RefCell};
+    use std::fs;
+    use std::path::PathBuf;
     use std::rc::Rc;
     use std::time::Duration;
 
@@ -1384,6 +1480,28 @@ mod tests {
             let receipt = make_sqz_receipt(payload);
             AgentSqzOutput::new(payload.to_owned(), receipt)
         }
+
+        fn evaluate_with_anchors(
+            &self,
+            stage: SqzStage,
+            payload: &str,
+            max_output_bytes: usize,
+            preservation_anchors: &[PreservationAnchor],
+        ) -> Result<AgentSqzOutput, AgentSqzError> {
+            if preservation_anchors
+                .iter()
+                .any(|anchor| !payload.contains(anchor.value()))
+            {
+                return Err(AgentSqzError::new(AgentSqzFailureCode::InvalidOutput, None));
+            }
+            let mut output = self.evaluate(stage, payload, max_output_bytes)?;
+            output.receipt.required_fidelity_anchor_ids = preservation_anchors
+                .iter()
+                .map(|anchor| anchor.id().to_owned())
+                .collect();
+            output.receipt.missing_fidelity_anchor_ids.clear();
+            Ok(output)
+        }
     }
 
     fn make_success_provider_output() -> ProviderOutput {
@@ -1414,6 +1532,106 @@ mod tests {
             vec![artifact],
         )
         .unwrap()
+    }
+
+    fn grounding_fixture() -> (PathBuf, String, String) {
+        let root = std::env::temp_dir().join(format!(
+            "bran-claim-grounding-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let src1 = "pub fn supported_symbol() -> u32 { 42 }\n";
+        let doc2 = "The architecture contract preserves grounded evidence.\n";
+        fs::write(root.join("src1"), src1).unwrap();
+        fs::write(root.join("doc2"), doc2).unwrap();
+        (
+            root,
+            ResultId::sha256(src1.as_bytes()).value().to_owned(),
+            ResultId::sha256(doc2.as_bytes()).value().to_owned(),
+        )
+    }
+
+    fn grounded_provider_output(src1_digest: &str, doc2_digest: &str) -> ProviderOutput {
+        let claims = [
+            ProviderClaim::new(
+                "claim-src1",
+                "supported_symbol",
+                true,
+                "src1",
+                src1_digest,
+                "supported_symbol",
+            )
+            .unwrap(),
+            ProviderClaim::new(
+                "claim-doc2",
+                "architecture contract preserves grounded evidence",
+                true,
+                "doc2",
+                doc2_digest,
+                "architecture contract preserves grounded evidence",
+            )
+            .unwrap(),
+        ];
+        ProviderOutput::with_effective_execution(
+            claims
+                .iter()
+                .map(ProviderClaim::text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ["src1", "doc2"],
+            Some("prov-run-xyz"),
+            ProviderExecutionEvidence::new(
+                Some("sol"),
+                Some("fixture-provider"),
+                Some("fixture-sol"),
+                Some("high"),
+            )
+            .unwrap(),
+            ProviderTokenUsage {
+                actual_input_tokens: Some(123),
+                actual_output_tokens: Some(9),
+            },
+            Vec::<LosslessArtifact>::new(),
+        )
+        .unwrap()
+        .with_claims(claims)
+        .unwrap()
+    }
+
+    fn custom_grounded_provider_output(
+        citations: &[&str],
+        claim: ProviderClaim,
+        effective_model: Option<&str>,
+    ) -> ProviderOutput {
+        let answer = claim.text().to_owned();
+        ProviderOutput::with_effective_execution(
+            answer,
+            citations.iter().copied(),
+            Some("prov-run-grounded"),
+            ProviderExecutionEvidence::new(
+                Some("sol"),
+                Some("fixture-provider"),
+                effective_model,
+                Some("high"),
+            )
+            .unwrap(),
+            ProviderTokenUsage {
+                actual_input_tokens: Some(123),
+                actual_output_tokens: Some(9),
+            },
+            Vec::<LosslessArtifact>::new(),
+        )
+        .unwrap()
+        .with_claims([claim])
+        .unwrap()
+    }
+
+    fn single_citation_provider_output(claim: ProviderClaim) -> ProviderOutput {
+        custom_grounded_provider_output(&["src1"], claim, Some("fixture-sol"))
     }
 
     fn canonical_result(answer: &str, citations: &[String]) -> Vec<u8> {
@@ -1543,12 +1761,21 @@ mod tests {
             PreservationAnchor::new("architecture", "architecture-contract-alpha").unwrap(),
             PreservationAnchor::new("late-evidence", "late-evidence-anchor-omega").unwrap(),
         ];
-        let grounding =
-            GroundingContract::new(["src1", "doc2"], grounding_anchors.clone()).unwrap();
+        let (grounding_root, src1_digest, doc2_digest) = grounding_fixture();
+        let grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [
+                AdmittedEvidence::new("src1", &src1_digest).unwrap(),
+                AdmittedEvidence::new("doc2", &doc2_digest).unwrap(),
+            ],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
         let mut grounded_options = make_trusted_opts();
         grounded_options.grounding_contract = Some(grounding);
         let grounded_auth = FakeAuthStore::always_ok();
-        let grounded_provider = FakeProviderPort::success(success_out.clone());
+        let grounded_provider =
+            FakeProviderPort::success(grounded_provider_output(&src1_digest, &doc2_digest));
         let mut grounded_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
         let grounded_ports = RuntimePorts::new(
             &grounded_auth,
@@ -1578,14 +1805,113 @@ mod tests {
         assert!(grounded_receipt
             .provenance()
             .contains(&"bran-grounding-validated".to_string()));
+        let grounded_inline = grounded_receipt.inline_result().unwrap();
+        assert_eq!(grounded_inline.claims().len(), 2);
+        assert!(grounded_inline
+            .encode_canonical()
+            .starts_with(b"bran-agent-result-v2"));
+        assert_eq!(
+            InlineResult::decode_canonical(&grounded_inline.encode_canonical()).unwrap(),
+            grounded_inline.clone()
+        );
         assert_eq!(off_calls.get(), 0);
 
-        let rejected_grounding =
-            GroundingContract::new(["src1"], grounding_anchors.clone()).unwrap();
+        let rewritten_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [
+                AdmittedEvidence::new("src1", &src1_digest).unwrap(),
+                AdmittedEvidence::new("doc2", &doc2_digest).unwrap(),
+            ],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let mut rewritten_options = make_trusted_opts();
+        rewritten_options.grounding_contract = Some(rewritten_grounding);
+        let rewritten_auth = FakeAuthStore::always_ok();
+        let rewritten_provider =
+            FakeProviderPort::success(grounded_provider_output(&src1_digest, &doc2_digest));
+        let rewritten_sqz = FakeAgentSqzPort::rewrite_output();
+        let mut rewritten_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let rewritten_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, rewritten_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &rewritten_auth,
+                        &rewritten_provider,
+                        &rewritten_sqz,
+                        &mut rewritten_store,
+                    )
+                },
+                1001,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                rewritten_receipt.outcome(),
+                InvocationOutcome::Incomplete {
+                    failure: AgentFailure::ClaimUnsupported,
+                    ..
+                }
+            ),
+            "unexpected outcome: {:?}",
+            rewritten_receipt.outcome()
+        );
+        assert!(rewritten_receipt.inline_result().is_none());
+        assert!(rewritten_receipt.stored_result_ref().is_none());
+
+        let missing_claims_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [
+                AdmittedEvidence::new("src1", &src1_digest).unwrap(),
+                AdmittedEvidence::new("doc2", &doc2_digest).unwrap(),
+            ],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let mut missing_claims_options = make_trusted_opts();
+        missing_claims_options.grounding_contract = Some(missing_claims_grounding);
+        let missing_claims_auth = FakeAuthStore::always_ok();
+        let missing_claims_provider = FakeProviderPort::success(success_out.clone());
+        let mut missing_claims_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let missing_claims_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, missing_claims_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &missing_claims_auth,
+                        &missing_claims_provider,
+                        &off_adapter,
+                        &mut missing_claims_store,
+                    )
+                },
+                1001,
+            )
+            .unwrap();
+        assert!(matches!(
+            missing_claims_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+        assert!(missing_claims_receipt.inline_result().is_none());
+
+        let rejected_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
         let mut rejected_options = make_trusted_opts();
         rejected_options.grounding_contract = Some(rejected_grounding);
         let rejected_auth = FakeAuthStore::always_ok();
-        let rejected_provider = FakeProviderPort::success(success_out.clone());
+        let rejected_provider =
+            FakeProviderPort::success(grounded_provider_output(&src1_digest, &doc2_digest));
         let mut rejected_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
         let rejected_ports = RuntimePorts::new(
             &rejected_auth,
@@ -1599,7 +1925,7 @@ mod tests {
                 AgentRuntimeAuthority::new(false, true, false),
                 &registry,
                 || rejected_ports,
-                1001,
+                1002,
             )
             .unwrap();
         assert!(matches!(
@@ -1611,6 +1937,405 @@ mod tests {
         ));
         assert!(rejected_receipt.inline_result().is_none());
         assert!(rejected_receipt.stored_result_ref().is_none());
+
+        let invented_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let invented_output = single_citation_provider_output(
+            ProviderClaim::new(
+                "claim-invented",
+                "nonexistent_symbol",
+                true,
+                "src1",
+                &src1_digest,
+                "nonexistent_symbol",
+            )
+            .unwrap(),
+        );
+        let mut invented_options = make_trusted_opts();
+        invented_options.grounding_contract = Some(invented_grounding);
+        let invented_auth = FakeAuthStore::always_ok();
+        let invented_provider = FakeProviderPort::success(invented_output);
+        let mut invented_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let invented_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, invented_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &invented_auth,
+                        &invented_provider,
+                        &off_adapter,
+                        &mut invented_store,
+                    )
+                },
+                1003,
+            )
+            .unwrap();
+        assert!(matches!(
+            invented_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+        assert!(invented_receipt.inline_result().is_none());
+        assert!(invented_receipt.stored_result_ref().is_none());
+
+        let mismatch_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let mismatch_output = single_citation_provider_output(
+            ProviderClaim::new(
+                "claim-mismatch",
+                "unsupported summary",
+                true,
+                "src1",
+                &src1_digest,
+                "supported_symbol",
+            )
+            .unwrap(),
+        );
+        let mut mismatch_options = make_trusted_opts();
+        mismatch_options.grounding_contract = Some(mismatch_grounding);
+        let mismatch_auth = FakeAuthStore::always_ok();
+        let mismatch_provider = FakeProviderPort::success(mismatch_output);
+        let mut mismatch_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let mismatch_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, mismatch_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &mismatch_auth,
+                        &mismatch_provider,
+                        &off_adapter,
+                        &mut mismatch_store,
+                    )
+                },
+                1004,
+            )
+            .unwrap();
+        assert!(matches!(
+            mismatch_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+
+        let wrong_digest_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let wrong_digest_output = single_citation_provider_output(
+            ProviderClaim::new(
+                "claim-wrong-digest",
+                "supported_symbol",
+                true,
+                "src1",
+                "b".repeat(64),
+                "supported_symbol",
+            )
+            .unwrap(),
+        );
+        let mut wrong_digest_options = make_trusted_opts();
+        wrong_digest_options.grounding_contract = Some(wrong_digest_grounding);
+        let wrong_digest_auth = FakeAuthStore::always_ok();
+        let wrong_digest_provider = FakeProviderPort::success(wrong_digest_output);
+        let mut wrong_digest_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let wrong_digest_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, wrong_digest_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &wrong_digest_auth,
+                        &wrong_digest_provider,
+                        &off_adapter,
+                        &mut wrong_digest_store,
+                    )
+                },
+                1005,
+            )
+            .unwrap();
+        assert!(matches!(
+            wrong_digest_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+
+        let uncited_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [
+                AdmittedEvidence::new("src1", &src1_digest).unwrap(),
+                AdmittedEvidence::new("doc2", &doc2_digest).unwrap(),
+            ],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let uncited_output = custom_grounded_provider_output(
+            &["doc2"],
+            ProviderClaim::new(
+                "claim-uncited",
+                "supported_symbol",
+                true,
+                "src1",
+                &src1_digest,
+                "supported_symbol",
+            )
+            .unwrap(),
+            Some("fixture-sol"),
+        );
+        let mut uncited_options = make_trusted_opts();
+        uncited_options.grounding_contract = Some(uncited_grounding);
+        let uncited_auth = FakeAuthStore::always_ok();
+        let uncited_provider = FakeProviderPort::success(uncited_output);
+        let mut uncited_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let uncited_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, uncited_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &uncited_auth,
+                        &uncited_provider,
+                        &off_adapter,
+                        &mut uncited_store,
+                    )
+                },
+                1006,
+            )
+            .unwrap();
+        assert!(matches!(
+            uncited_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+
+        let nonmaterial_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let nonmaterial_output = single_citation_provider_output(
+            ProviderClaim::new(
+                "claim-nonmaterial",
+                "supported_symbol",
+                false,
+                "src1",
+                &src1_digest,
+                "supported_symbol",
+            )
+            .unwrap(),
+        );
+        let mut nonmaterial_options = make_trusted_opts();
+        nonmaterial_options.grounding_contract = Some(nonmaterial_grounding);
+        let nonmaterial_auth = FakeAuthStore::always_ok();
+        let nonmaterial_provider = FakeProviderPort::success(nonmaterial_output);
+        let mut nonmaterial_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let nonmaterial_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, nonmaterial_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &nonmaterial_auth,
+                        &nonmaterial_provider,
+                        &off_adapter,
+                        &mut nonmaterial_store,
+                    )
+                },
+                1007,
+            )
+            .unwrap();
+        assert!(matches!(
+            nonmaterial_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+
+        let unattested_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        let unattested_output = custom_grounded_provider_output(
+            &["src1"],
+            ProviderClaim::new(
+                "claim-unattested",
+                "supported_symbol",
+                true,
+                "src1",
+                &src1_digest,
+                "supported_symbol",
+            )
+            .unwrap(),
+            None,
+        );
+        let mut unattested_options = make_trusted_opts();
+        unattested_options.grounding_contract = Some(unattested_grounding);
+        let unattested_auth = FakeAuthStore::always_ok();
+        let unattested_provider = FakeProviderPort::success(unattested_output);
+        let mut unattested_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let unattested_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, unattested_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || {
+                    RuntimePorts::new(
+                        &unattested_auth,
+                        &unattested_provider,
+                        &off_adapter,
+                        &mut unattested_store,
+                    )
+                },
+                1008,
+            )
+            .unwrap();
+        assert!(matches!(
+            unattested_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::InvalidOutput,
+                ..
+            }
+        ));
+        assert!(!unattested_receipt
+            .provenance()
+            .contains(&"bran-grounding-validated".to_string()));
+
+        let stale_grounding = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("src1", &src1_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        fs::write(
+            grounding_root.join("src1"),
+            "pub fn replacement_symbol() -> u32 { 7 }\n",
+        )
+        .unwrap();
+        let stale_output = single_citation_provider_output(
+            ProviderClaim::new(
+                "claim-stale",
+                "supported_symbol",
+                true,
+                "src1",
+                &src1_digest,
+                "supported_symbol",
+            )
+            .unwrap(),
+        );
+        let mut stale_options = make_trusted_opts();
+        stale_options.grounding_contract = Some(stale_grounding);
+        let stale_auth = FakeAuthStore::always_ok();
+        let stale_provider = FakeProviderPort::success(stale_output);
+        let mut stale_store = MemoryResultStore::new(8, 10000, 2000, 10000).unwrap();
+        let stale_receipt = rt
+            .invoke(
+                &make_request("sol", grounded_prompt, stale_options),
+                AgentRuntimeAuthority::new(false, true, false),
+                &registry,
+                || RuntimePorts::new(&stale_auth, &stale_provider, &off_adapter, &mut stale_store),
+                1009,
+            )
+            .unwrap();
+        assert!(matches!(
+            stale_receipt.outcome(),
+            InvocationOutcome::Incomplete {
+                failure: AgentFailure::ClaimUnsupported,
+                ..
+            }
+        ));
+        assert!(stale_receipt.inline_result().is_none());
+        assert!(stale_receipt.stored_result_ref().is_none());
+        assert!(AdmittedEvidence::new("../src1", &src1_digest).is_err());
+        assert!(AdmittedEvidence::new("/src1", &src1_digest).is_err());
+        // Degenerate support: "u32" genuinely occurs in the fixture, so
+        // substring existence alone would accept it and prove nothing. The
+        // parse-time invariant and the boundary check must each reject it on
+        // their own. Uses a dedicated file because src1 was just rewritten to
+        // make the stale case stale.
+        let floor_body = "pub fn supported_symbol() -> u32 { 42 }\n";
+        let floor_digest = ResultId::sha256(floor_body.as_bytes()).value().to_owned();
+        fs::write(grounding_root.join("floor-src"), floor_body).unwrap();
+        let floor_contract = GroundingContract::with_evidence(
+            &grounding_root,
+            [AdmittedEvidence::new("floor-src", &floor_digest).unwrap()],
+            grounding_anchors.clone(),
+        )
+        .unwrap();
+        assert!(ProviderClaim::new(
+            "claim-degenerate",
+            "u32",
+            true,
+            "floor-src",
+            &floor_digest,
+            "u32",
+        )
+        .is_err());
+        assert!(!floor_contract.verifies_support([("floor-src", floor_digest.as_str(), "u32")]));
+        assert!(!floor_contract.verifies_support([(
+            "floor-src",
+            floor_digest.as_str(),
+            "   u32   "
+        )]));
+        // A present span exactly at the floor still verifies, so the floor
+        // rejects degenerate spans without rejecting legitimate short symbols.
+        assert!(floor_contract.verifies_support([(
+            "floor-src",
+            floor_digest.as_str(),
+            "supported_sy"
+        )]));
+        assert!(ProviderClaim::new(
+            "claim-at-floor",
+            "supported_sy",
+            true,
+            "floor-src",
+            &floor_digest,
+            "supported_sy",
+        )
+        .is_ok());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("src1", grounding_root.join("linked-src1")).unwrap();
+            let replacement = "pub fn replacement_symbol() -> u32 { 7 }\n";
+            let replacement_digest = ResultId::sha256(replacement.as_bytes()).value().to_owned();
+            let linked_contract = GroundingContract::with_evidence(
+                &grounding_root,
+                [AdmittedEvidence::new("linked-src1", &replacement_digest).unwrap()],
+                grounding_anchors.clone(),
+            )
+            .unwrap();
+            assert!(!linked_contract.verifies_support([(
+                "linked-src1",
+                replacement_digest.as_str(),
+                "replacement_symbol",
+            )]));
+        }
+        fs::remove_dir_all(&grounding_root).unwrap();
         let empty_grounding = GroundingContract::new(["src1"], grounding_anchors.clone()).unwrap();
         let mut empty_options = make_trusted_opts();
         empty_options.grounding_contract = Some(empty_grounding);

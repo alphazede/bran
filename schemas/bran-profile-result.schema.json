@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.alphazede.dev/bran/profile-result/schema.json",
-  "title": "BRAN dual-profile validation result",
-  "description": "This schema is the planned future wire projection of ValidationResult. Both profile outcomes are exposed. selected_profile alone controls selected_passed and exit_code, which are projected/computed from ValidationResult methods (selected_passed(), exit_code()) rather than stored Rust fields. Link targets remain unvalidated.",
+  "title": "BRAN triple-profile validation result",
+  "description": "This schema is the planned future wire projection of ValidationResult. All three profile outcomes are exposed. selected_profile alone controls selected_passed and exit_code, which are projected/computed from ValidationResult methods (selected_passed(), exit_code()) rather than stored Rust fields. Link targets remain unvalidated.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["okf_compatibility", "bran_strict", "selected_profile", "selected_passed", "exit_code", "selected_profile_error"],
+  "required": ["okf_compatibility", "okf_v0_2", "bran_strict", "selected_profile", "selected_passed", "exit_code", "selected_profile_error"],
   "properties": {
     "okf_compatibility": { "$ref": "#/$defs/okfOutcome" },
+    "okf_v0_2": { "$ref": "#/$defs/v0_2Outcome" },
     "bran_strict": { "$ref": "#/$defs/strictOutcome" },
     "selected_profile": { "type": "string" },
     "selected_passed": { "type": "boolean" },
@@ -24,6 +25,12 @@
       "allOf": [
         { "$ref": "#/$defs/profileOutcome" },
         { "properties": { "profile": { "const": "okf-v0.1" } } }
+      ]
+    },
+    "v0_2Outcome": {
+      "allOf": [
+        { "$ref": "#/$defs/profileOutcome" },
+        { "properties": { "profile": { "const": "okf-v0.2" } } }
       ]
     },
     "strictOutcome": {

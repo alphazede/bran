@@ -90,13 +90,34 @@ fn read_diagnostic(path: &str) -> Diagnostic {
     }
 }
 
+/// True when the line contains an absolute path rooted in a user home
+/// directory, for any user name.
+///
+/// This deliberately matches by shape rather than by a fixed list of paths. A
+/// hardcoded list only detects one machine's layout and publishes that layout
+/// in source that ships publicly.
+fn contains_home_path(line: &str) -> bool {
+    const ROOTS: [(&str, char); 3] = [("/home/", '/'), ("/Users/", '/'), ("C:\\Users\\", '\\')];
+    for (root, separator) in ROOTS {
+        let mut rest = line;
+        while let Some(start) = rest.find(root) {
+            let after = &rest[start + root.len()..];
+            let user_len = after
+                .find(separator)
+                .filter(|len| *len > 0 && after.len() > len + 1);
+            if user_len.is_some() {
+                return true;
+            }
+            rest = &rest[start + root.len()..];
+        }
+    }
+    false
+}
+
 fn finding_codes(line: &str) -> BTreeSet<&'static str> {
     let lower = line.to_ascii_lowercase();
     let mut codes = BTreeSet::new();
-    if line.contains("/home/spectre/alphazede")
-        || line.contains("/home/spectre/Downloads")
-        || line.contains("/home/spectre/.codex")
-    {
+    if contains_home_path(line) {
         codes.insert("private_home_path");
     }
     if line.contains("tools/agents/")
@@ -349,20 +370,42 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         let path = "bridge.mjs";
-        let approved = "const path = '/home/spectre/alphazede/public';";
+        let approved = "const path = '/home/example-user/workspace/public';";
         fs::write(root.join(path), approved).unwrap();
         let policy = policy(path, approved);
         assert!(validate_public_boundary(&root, &policy).is_empty());
 
         fs::write(
             root.join(path),
-            "const path = '/home/spectre/alphazede/private';",
+            "const path = '/home/example-user/workspace/private';",
         )
         .unwrap();
         let findings = validate_public_boundary(&root, &policy);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].code, "private_home_path");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_home_path_is_detected_for_any_user_and_no_layout_is_hardcoded() {
+        for line in [
+            "const path = '/home/anyone/projects/x';",
+            "const path = '/home/other-user/Downloads/y';",
+            "const path = '/Users/someone/Library/z';",
+            "const path = 'C:\\Users\\someone\\AppData';",
+        ] {
+            assert!(
+                finding_codes(line).contains("private_home_path"),
+                "expected private_home_path for {line}"
+            );
+        }
+        // A bare home root with no path below it is not a private path leak.
+        for line in ["/home/", "/home/user", "see /Users/ for details"] {
+            assert!(
+                !finding_codes(line).contains("private_home_path"),
+                "unexpected private_home_path for {line}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,7 @@
+---
+type: Concept
+verified:
+  by: human:alice
+  at: 2026-07-02T00:00:00Z
+---
+Bare verified mapping normalizes to a one-element list.

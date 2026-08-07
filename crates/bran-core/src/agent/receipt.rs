@@ -2,7 +2,7 @@
 //! Standard library only. Uses existing agent/runtime/result_store and adapters::SqzReceipt.
 
 use super::result_store::ResultId;
-use super::runtime::{Attestation, InvocationOutcome};
+use super::runtime::{Attestation, InvocationOutcome, ProviderClaim};
 use super::{AgentProfile, ReasoningLevel, ToolPolicy};
 use crate::adapters::{DlpStatus, FidelityStatus, SqzReceipt, SqzStatus};
 
@@ -161,6 +161,7 @@ impl SqzStages {
 pub struct InlineResult {
     answer: String,
     citations: Vec<String>,
+    claims: Vec<ProviderClaim>,
 }
 
 impl InlineResult {
@@ -181,7 +182,25 @@ impl InlineResult {
                 return Err(ReceiptError { _p: () });
             }
         }
-        Ok(Self { answer, citations })
+        Ok(Self {
+            answer,
+            citations,
+            claims: Vec::new(),
+        })
+    }
+
+    pub fn with_claims(
+        answer: impl Into<String>,
+        citations: impl IntoIterator<Item = impl Into<String>>,
+        claims: impl IntoIterator<Item = ProviderClaim>,
+    ) -> Result<Self, ReceiptError> {
+        let mut result = Self::new(answer, citations)?;
+        let claims = claims.into_iter().collect::<Vec<_>>();
+        if claims.len() > 128 {
+            return Err(ReceiptError { _p: () });
+        }
+        result.claims = claims;
+        Ok(result)
     }
 
     pub fn answer(&self) -> &str {
@@ -192,16 +211,49 @@ impl InlineResult {
         &self.citations
     }
 
+    pub fn claims(&self) -> &[ProviderClaim] {
+        &self.claims
+    }
+
     /// Stable byte representation stored under `StoredResultRef::result_id`.
     pub fn encode_canonical(&self) -> Vec<u8> {
         let mut encoded = Vec::with_capacity(
-            self.answer.len() + self.citations.iter().map(String::len).sum::<usize>() + 32,
+            self.answer.len()
+                + self.citations.iter().map(String::len).sum::<usize>()
+                + self
+                    .claims
+                    .iter()
+                    .map(|claim| {
+                        claim.id().len()
+                            + claim.text().len()
+                            + claim.locator().len()
+                            + claim.content_digest().len()
+                            + claim.support().len()
+                            + 32
+                    })
+                    .sum::<usize>()
+                + 48,
         );
-        encoded.extend_from_slice(b"bran-agent-result-v1");
+        encoded.extend_from_slice(if self.claims.is_empty() {
+            b"bran-agent-result-v1"
+        } else {
+            b"bran-agent-result-v2"
+        });
         encode_field(&mut encoded, self.answer.as_bytes());
         encoded.extend_from_slice(&(self.citations.len() as u64).to_be_bytes());
         for citation in &self.citations {
             encode_field(&mut encoded, citation.as_bytes());
+        }
+        if !self.claims.is_empty() {
+            encoded.extend_from_slice(&(self.claims.len() as u64).to_be_bytes());
+            for claim in &self.claims {
+                encode_field(&mut encoded, claim.id().as_bytes());
+                encode_field(&mut encoded, claim.text().as_bytes());
+                encoded.push(u8::from(claim.material()));
+                encode_field(&mut encoded, claim.locator().as_bytes());
+                encode_field(&mut encoded, claim.content_digest().as_bytes());
+                encode_field(&mut encoded, claim.support().as_bytes());
+            }
         }
         encoded
     }
@@ -209,9 +261,14 @@ impl InlineResult {
     /// Decodes only the exact canonical representation; trailing or malformed
     /// bytes are rejected before the normal answer/citation bounds are applied.
     pub fn decode_canonical(encoded: &[u8]) -> Result<Self, ReceiptError> {
-        let Some(mut remaining) = encoded.strip_prefix(b"bran-agent-result-v1") else {
-            return Err(ReceiptError { _p: () });
-        };
+        let (version, mut remaining) =
+            if let Some(remaining) = encoded.strip_prefix(b"bran-agent-result-v2") {
+                (2, remaining)
+            } else if let Some(remaining) = encoded.strip_prefix(b"bran-agent-result-v1") {
+                (1, remaining)
+            } else {
+                return Err(ReceiptError { _p: () });
+            };
         let answer = decode_field(&mut remaining)?;
         let citation_count = decode_u64(&mut remaining)?;
         let citation_count =
@@ -223,15 +280,50 @@ impl InlineResult {
         for _ in 0..citation_count {
             citations.push(decode_field(&mut remaining)?);
         }
-        if !remaining.is_empty() {
-            return Err(ReceiptError { _p: () });
-        }
         let answer = String::from_utf8(answer).map_err(|_| ReceiptError { _p: () })?;
         let citations = citations
             .into_iter()
             .map(|citation| String::from_utf8(citation).map_err(|_| ReceiptError { _p: () }))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::new(answer, citations)
+        if version == 1 {
+            if !remaining.is_empty() {
+                return Err(ReceiptError { _p: () });
+            }
+            return Self::new(answer, citations);
+        }
+        let claim_count = decode_u64(&mut remaining)?;
+        let claim_count = usize::try_from(claim_count).map_err(|_| ReceiptError { _p: () })?;
+        if claim_count == 0 || claim_count > 128 {
+            return Err(ReceiptError { _p: () });
+        }
+        let mut claims = Vec::with_capacity(claim_count);
+        for _ in 0..claim_count {
+            let id = String::from_utf8(decode_field(&mut remaining)?)
+                .map_err(|_| ReceiptError { _p: () })?;
+            let text = String::from_utf8(decode_field(&mut remaining)?)
+                .map_err(|_| ReceiptError { _p: () })?;
+            let (&material, rest) = remaining.split_first().ok_or(ReceiptError { _p: () })?;
+            remaining = rest;
+            let material = match material {
+                0 => false,
+                1 => true,
+                _ => return Err(ReceiptError { _p: () }),
+            };
+            let locator = String::from_utf8(decode_field(&mut remaining)?)
+                .map_err(|_| ReceiptError { _p: () })?;
+            let content_digest = String::from_utf8(decode_field(&mut remaining)?)
+                .map_err(|_| ReceiptError { _p: () })?;
+            let support = String::from_utf8(decode_field(&mut remaining)?)
+                .map_err(|_| ReceiptError { _p: () })?;
+            claims.push(
+                ProviderClaim::new(id, text, material, locator, content_digest, support)
+                    .map_err(|_| ReceiptError { _p: () })?,
+            );
+        }
+        if !remaining.is_empty() {
+            return Err(ReceiptError { _p: () });
+        }
+        Self::with_claims(answer, citations, claims)
     }
 }
 
@@ -657,6 +749,7 @@ fn failure_name(failure: super::runtime::AgentFailure) -> &'static str {
         super::runtime::AgentFailure::InvalidOutput => "invalid_output",
         super::runtime::AgentFailure::DlpRejected => "dlp_rejected",
         super::runtime::AgentFailure::GroundingFailed => "grounding_failed",
+        super::runtime::AgentFailure::ClaimUnsupported => "claim_unsupported",
         super::runtime::AgentFailure::TokenBudgetUnattested => "token_budget_unattested",
         super::runtime::AgentFailure::TokenCeilingExceeded => "token_ceiling_exceeded",
         super::runtime::AgentFailure::SqzInputFailed => "sqz_input_failed",
@@ -888,6 +981,28 @@ fn field_inline(json: &mut String, name: &str, inline: Option<&InlineResult>) {
             field_str(json, "answer", inline.answer());
             json.push(',');
             field_strings(json, "citations", inline.citations());
+            json.push(',');
+            key(json, "claims");
+            json.push('[');
+            for (index, claim) in inline.claims().iter().enumerate() {
+                if index != 0 {
+                    json.push(',');
+                }
+                json.push('{');
+                field_str(json, "id", claim.id());
+                json.push(',');
+                field_str(json, "text", claim.text());
+                json.push(',');
+                field_bool(json, "material", claim.material());
+                json.push(',');
+                field_str(json, "locator", claim.locator());
+                json.push(',');
+                field_str(json, "content_digest", claim.content_digest());
+                json.push(',');
+                field_str(json, "support", claim.support());
+                json.push('}');
+            }
+            json.push(']');
             json.push('}');
         }
         None => json.push_str("null"),

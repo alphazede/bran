@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/okf-v0.2-normalized-bundle/schema.json",
+  "title": "BRAN normalized OKF v0.2 bundle evidence",
+  "description": "Normalized evidence for the okf-v0.2 compatibility profile. Builds on the v0.1 normalized shape (schema_version 2) and adds the optional OKF v0.2 family projections: provenance (sources, usage_window), trust (generated, verified), lifecycle (status, stale_after), and the Attested Computation contract fields. Every family is optional: absence is conformance-valid. This schema preserves producer extensions and does not resolve Markdown links or parse source Markdown/YAML.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "docs"],
+  "properties": {
+    "schema_version": { "const": "2" },
+    "docs": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/document" }
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path", "source", "body", "frontmatter"],
+      "properties": {
+        "path": { "type": "string" },
+        "source": { "type": "string" },
+        "body": { "type": "string" },
+        "frontmatter": { "$ref": "#/$defs/frontmatter" },
+        "sources": { "$ref": "#/$defs/sources" },
+        "usage_window": { "$ref": "#/$defs/usageWindow" },
+        "generated": { "$ref": "#/$defs/generated" },
+        "verified": { "$ref": "#/$defs/verified" },
+        "status": { "$ref": "#/$defs/status" },
+        "stale_after": { "$ref": "#/$defs/staleAfter" },
+        "runtime": { "type": "string" },
+        "parameters": { "$ref": "#/$defs/parameters" },
+        "computation": { "type": "string" },
+        "executor": { "$ref": "#/$defs/executor" },
+        "attester": { "$ref": "#/$defs/attester" }
+      }
+    },
+    "frontmatter": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["raw", "parsed", "status"],
+      "properties": {
+        "raw": { "type": "string" },
+        "parsed": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "object", "additionalProperties": { "$ref": "#/$defs/yamlValue" } }
+          ]
+        },
+        "status": {
+          "oneOf": [
+            { "const": "ok" },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["malformed"],
+              "properties": { "malformed": { "type": "string" } }
+            }
+          ]
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["resource"],
+        "properties": {
+          "resource": { "type": "string" },
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "author": { "type": "string" },
+          "usage_count": { "type": "integer" },
+          "last_modified": { "type": "string" }
+        }
+      }
+    },
+    "usageWindow": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" }
+      }
+    },
+    "generated": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["by"],
+      "properties": {
+        "by": { "type": "string" },
+        "at": { "type": "string" }
+      }
+    },
+    "verified": {
+      "oneOf": [
+        { "$ref": "#/$defs/verificationEvent" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/verificationEvent" }
+        }
+      ]
+    },
+    "verificationEvent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["by", "at"],
+      "properties": {
+        "by": { "type": "string" },
+        "at": { "type": "string" }
+      }
+    },
+    "status": {
+      "enum": ["draft", "stable", "active", "deprecated"]
+    },
+    "staleAfter": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "required": { "type": "boolean" }
+        }
+      }
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["resource"],
+      "properties": {
+        "resource": { "type": "string" },
+        "receipt": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "attester": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["resource"],
+      "properties": {
+        "resource": { "type": "string" }
+      }
+    },
+    "yamlValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "null" },
+            "__yaml_value__": { "type": "null" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "bool" },
+            "__yaml_value__": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "number" },
+            "__yaml_value__": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "string" },
+            "__yaml_value__": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "sequence" },
+            "__yaml_value__": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/yamlValue" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["__yaml_type__", "__yaml_value__"],
+          "properties": {
+            "__yaml_type__": { "const": "mapping" },
+            "__yaml_value__": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/yamlValue" }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "3cde6f06586d41b96cfad0da57015ed8919b9322",
+  "source_commit": "1938b3838e832e4e8035a86aab804257c6303124",
   "public_repository": "alphazede/bran",
   "files": [
     {
@@ -127,8 +127,8 @@
     {
       "path": "crates/bran-cli/src/main.rs",
       "mode": "100644",
-      "bytes": 303969,
-      "sha256": "0828f6a16e80b3f375a2af5fb7b0d27a1155d6919a67eef4ba0e1c2116bdd232"
+      "bytes": 322237,
+      "sha256": "ae35ec304b1c49cc01e3831e43f00b656af7d76fb2f4849f79a92034fa9eb924"
     },
     {
       "path": "crates/bran-core/Cargo.toml",
@@ -139,8 +139,8 @@
     {
       "path": "crates/bran-core/src/adapters/connected.rs",
       "mode": "100644",
-      "bytes": 41012,
-      "sha256": "e8b0a5dae90e6edbf1ee89553a7c3efee311c51a910d35616121a6ea18bbe5dd"
+      "bytes": 41177,
+      "sha256": "5d796d6104c3d712756bd6337f03c4debf96a8a6ea1f47adf95a0373b67d5111"
     },
     {
       "path": "crates/bran-core/src/adapters/mod.rs",
@@ -151,8 +151,8 @@
     {
       "path": "crates/bran-core/src/adapters/provider/mod.rs",
       "mode": "100644",
-      "bytes": 52658,
-      "sha256": "302a9908246982698cfb4865c4025658df231980523663ff0746386c797a2254"
+      "bytes": 55253,
+      "sha256": "c61f86ea5fbb926ce78515796d979d059644dddb553217ef5d65c5397c793a7e"
     },
     {
       "path": "crates/bran-core/src/adapters/sqz.rs",
@@ -163,14 +163,14 @@
     {
       "path": "crates/bran-core/src/agent/coordinator.rs",
       "mode": "100644",
-      "bytes": 102379,
-      "sha256": "96948a8bb47499b251267654edfd513f7c3b02084b1bff393ca208ec6d56e75d"
+      "bytes": 129321,
+      "sha256": "2ecca6b675070125689cd87a16a8fa70bebf81e277ea645b895b0e2126240ca9"
     },
     {
       "path": "crates/bran-core/src/agent/delegate.rs",
       "mode": "100644",
-      "bytes": 8796,
-      "sha256": "a084b13823e5b60a4e4d472a866767c9aa96dd477619e9d908209bfd2d8170e8"
+      "bytes": 16452,
+      "sha256": "f4cbe45b410c42d1eaac208c05dce00e738815286ff46f18ba7fbae07936dda1"
     },
     {
       "path": "crates/bran-core/src/agent/mod.rs",
@@ -181,8 +181,8 @@
     {
       "path": "crates/bran-core/src/agent/receipt.rs",
       "mode": "100644",
-      "bytes": 32228,
-      "sha256": "1be6db8e9acdf9bf79acc70f8735db9255989f4ec0f51c869e224e3240ea8fae"
+      "bytes": 36977,
+      "sha256": "0153d02bfd9bb0149372c305c1c316dce9fd4391e6413a031a1b7a874de4ca84"
     },
     {
       "path": "crates/bran-core/src/agent/result_store.rs",
@@ -193,8 +193,8 @@
     {
       "path": "crates/bran-core/src/agent/runtime.rs",
       "mode": "100644",
-      "bytes": 17781,
-      "sha256": "e0fc6b3ba16cb59f8cce459ea4eea256ae57b1d8e93c05fe7fbbb6141e492d4b"
+      "bytes": 20778,
+      "sha256": "01443bf113656bc5749d56e0ad6be5df051a1a0f09de4b62f54361031db49a91"
     },
     {
       "path": "crates/bran-core/src/agent/synthetic.rs",
@@ -205,8 +205,8 @@
     {
       "path": "crates/bran-core/src/boundary.rs",
       "mode": "100644",
-      "bytes": 14555,
-      "sha256": "88f6465645dc4181816569b9653ac14b2d1d5345096f8ccaf0c1bcae29c31076"
+      "bytes": 16201,
+      "sha256": "2c905fbd3a7802457d7b034de5841118c348dc20eb0093ca13874113058a316b"
     },
     {
       "path": "crates/bran-core/src/bundle.rs",
@@ -225,6 +225,12 @@
       "mode": "100644",
       "bytes": 28482,
       "sha256": "4ffc3752682049af4cca5a91e2f05e49ef3ed69579ca234482fc2dc39b718f8b"
+    },
+    {
+      "path": "crates/bran-core/src/frontmatter.rs",
+      "mode": "100644",
+      "bytes": 17047,
+      "sha256": "bec21f18b563fcaf6675d4a1435227e892be4ed9abd58697bdb4b7ab86b06c0c"
     },
     {
       "path": "crates/bran-core/src/graph/mod.rs",
@@ -247,8 +253,8 @@
     {
       "path": "crates/bran-core/src/lib.rs",
       "mode": "100644",
-      "bytes": 24783,
-      "sha256": "720e3f787d0d046c603e5935d0601aa642d57d8b64e72c8e7f029b7a52c736de"
+      "bytes": 24814,
+      "sha256": "dd2d8c4c2f66b171aa149423b805dd5c92de6d88b8ba4f6e5cd3f3587fafccd2"
     },
     {
       "path": "crates/bran-core/src/metadata/mod.rs",
@@ -277,8 +283,8 @@
     {
       "path": "crates/bran-core/src/profile.rs",
       "mode": "100644",
-      "bytes": 164523,
-      "sha256": "643c6cf2509a5c5382a22a1517d51e1c0fc47e381d56103b3dddbe702cb29808"
+      "bytes": 201864,
+      "sha256": "86041ed0e64e50bcfc87cd3a2144e90f96fd08be21da91bd5120e6c86f97f91e"
     },
     {
       "path": "crates/bran-core/src/repair/mod.rs",
@@ -373,8 +379,8 @@
     {
       "path": "docs/integrations/agent-setup.md",
       "mode": "100644",
-      "bytes": 4362,
-      "sha256": "ae7f8e79701bc0f59f137869e3a9aefe76f0a0889a1c070e35e30cd1ba5bd662"
+      "bytes": 6176,
+      "sha256": "f9ecccc289fd31330021a143c2e04ffe7b40ad273d3d75a8b63052789d5b1d88"
     },
     {
       "path": "examples/headless/README.md",
@@ -417,6 +423,66 @@
       "mode": "100644",
       "bytes": 88,
       "sha256": "24bff5202be999a46737153a06593bb64b90884142aa490028e1bd7dabee09cf"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-attested-computation.fixture",
+      "mode": "100644",
+      "bytes": 372,
+      "sha256": "19f1db346cf8336488fd572726658d51c3b32462a1712db9771d9b866347cdfa"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-index-version.fixture",
+      "mode": "100644",
+      "bytes": 123,
+      "sha256": "4c41d2b35b49c5b4d1f8237680ab4aa8aedf95bc4646959a943967ed4c69f8e5"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-legacy-fallback.fixture",
+      "mode": "100644",
+      "bytes": 179,
+      "sha256": "2d483aa30328162e09ab1c25c2350a54bd3169c1a8e445bef1850a52c62e0028"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-lifecycle.fixture",
+      "mode": "100644",
+      "bytes": 91,
+      "sha256": "bc707af353f5b32c97261b015a30c066e9d4adf7140345ce7b6b360a04f67740"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-malformed.fixture",
+      "mode": "100644",
+      "bytes": 192,
+      "sha256": "924cef8272dc95ec7dc513c40bf8a90bfa1bf1315e8130b7108380bd8a204154"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-minimal.fixture",
+      "mode": "100644",
+      "bytes": 70,
+      "sha256": "5623f2512a16c43f65ab95238869b703a569fcf83ff31f6f585dd129c2813a4d"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-sources.fixture",
+      "mode": "100644",
+      "bytes": 249,
+      "sha256": "44267f2cec7a06785efdc8c1e477dbf748d78c52201f3482e93ffe4220558727"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-trust-list.fixture",
+      "mode": "100644",
+      "bytes": 217,
+      "sha256": "5c4d12e4fed22a7c9c7efaf88a51b70d1f60012a8be0a7a4887426dd601f1371"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-unknown-tolerated.fixture",
+      "mode": "100644",
+      "bytes": 119,
+      "sha256": "2d80c613bd7cc7efd5380714e2b6ffb259082e08262bd350edef2397ceeaceba"
+    },
+    {
+      "path": "fixtures/conformance/okf-v0.2-verified-bare.fixture",
+      "mode": "100644",
+      "bytes": 133,
+      "sha256": "952faa1b3861ea3db5d1bd9a7ce905139fdcd23f0a24bd148df32b0562804acb"
     },
     {
       "path": "fixtures/conformance/strict-gap-strict-selected.fixture",
@@ -523,8 +589,8 @@
     {
       "path": "schemas/bran-profile-result.schema.json",
       "mode": "100644",
-      "bytes": 2096,
-      "sha256": "cb3a3bfcd515ba4488ac147e789a8d86fb9d9341d456f8e4c7be934e8dc4f1a4"
+      "bytes": 2330,
+      "sha256": "3ecd57b3af88fc43360280b426ae7665b8ef27c28041174f715ff85fe1792736"
     },
     {
       "path": "schemas/bran-release-manifest.schema.json",
@@ -567,6 +633,12 @@
       "mode": "100644",
       "bytes": 3647,
       "sha256": "f9361110b76a4b3e9a4cf4606aa51c5465a53e1f0d40e0b8b3af15e54e31cc04"
+    },
+    {
+      "path": "schemas/okf-v0.2-normalized-bundle.schema.json",
+      "mode": "100644",
+      "bytes": 6850,
+      "sha256": "558372e5490d7847049c464a919655233d0096f5540b4263b4fe44b4b1b166f8"
     },
     {
       "path": "schemas/repository-scan-snapshot.schema.json",
@@ -613,8 +685,8 @@
     {
       "path": "tools/ci/public_boundary_check.py",
       "mode": "100644",
-      "bytes": 9024,
-      "sha256": "1d43fc6615ef2b25ee27aa165a7b45779f8c0f0530a868de89ca740bfcd65c5d"
+      "bytes": 13392,
+      "sha256": "c33d14a56fd3f4c4e838c6e915088c6de6ae3d2d0df1d67390939db8c00a0583"
     },
     {
       "path": "tools/ci/public_export.py",
@@ -643,8 +715,8 @@
     {
       "path": "tools/ci/test-budget.json",
       "mode": "100644",
-      "bytes": 8932,
-      "sha256": "9937ae287e49aaca8bee5ff77cb4c30529290362f36ecd747c39b34bae2cf3c2"
+      "bytes": 9552,
+      "sha256": "866404a337764c0b351e7d7ae54c511691fa4a9638f7b8c6c7cf91d7782e9115"
     },
     {
       "path": "tools/ci/test_budget_check.py",

@@ -172,6 +172,22 @@ fn is_valid_name(s: &str) -> bool {
             .all(|&b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
 }
 
+pub(crate) fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Minimum trimmed byte length for claim support text.
+///
+/// Support is verified by substring existence against the cited file. A span
+/// shorter than this verifies against nearly any file, so it would prove only
+/// that the bytes occur somewhere, not that the claim rests on a meaningful
+/// span. The floor is deliberately below the shortest realistic symbol name so
+/// it rejects degenerate spans without rejecting legitimate short symbols.
+pub(crate) const MIN_CLAIM_SUPPORT_BYTES: usize = 12;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderError {
     Unavailable,
@@ -271,9 +287,76 @@ pub struct ProviderTokenUsage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderClaim {
+    id: String,
+    text: String,
+    material: bool,
+    locator: String,
+    content_digest: String,
+    support: String,
+}
+
+impl ProviderClaim {
+    pub fn new(
+        id: impl Into<String>,
+        text: impl Into<String>,
+        material: bool,
+        locator: impl Into<String>,
+        content_digest: impl Into<String>,
+        support: impl Into<String>,
+    ) -> Result<Self, ProviderOutputError> {
+        let claim = Self {
+            id: id.into(),
+            text: text.into(),
+            material,
+            locator: locator.into(),
+            content_digest: content_digest.into(),
+            support: support.into(),
+        };
+        if !is_valid_name(&claim.id)
+            || claim.text.trim().is_empty()
+            || claim.text.len() > 65_536
+            || claim.locator.trim().is_empty()
+            || claim.locator.len() > 1024
+            || !valid_sha256(&claim.content_digest)
+            || claim.support.trim().len() < MIN_CLAIM_SUPPORT_BYTES
+            || claim.support.len() > 65_536
+        {
+            return Err(ProviderOutputError { _p: () });
+        }
+        Ok(claim)
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn material(&self) -> bool {
+        self.material
+    }
+
+    pub fn locator(&self) -> &str {
+        &self.locator
+    }
+
+    pub fn content_digest(&self) -> &str {
+        &self.content_digest
+    }
+
+    pub fn support(&self) -> &str {
+        &self.support
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderOutput {
     answer: String,
     citations: Vec<String>,
+    claims: Vec<ProviderClaim>,
     provider_run_id: Option<String>,
     effective_model: Option<String>,
     effective_reasoning: Option<String>,
@@ -360,6 +443,7 @@ impl ProviderOutput {
         Ok(Self {
             answer,
             citations,
+            claims: Vec::new(),
             provider_run_id,
             effective_model,
             effective_reasoning,
@@ -406,6 +490,26 @@ impl ProviderOutput {
 
     pub fn citations(&self) -> &[String] {
         &self.citations
+    }
+
+    pub fn with_claims(
+        mut self,
+        claims: impl IntoIterator<Item = ProviderClaim>,
+    ) -> Result<Self, ProviderOutputError> {
+        let claims = claims.into_iter().collect::<Vec<_>>();
+        if claims.len() > 128 {
+            return Err(ProviderOutputError { _p: () });
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        if claims.iter().any(|claim| !ids.insert(claim.id.clone())) {
+            return Err(ProviderOutputError { _p: () });
+        }
+        self.claims = claims;
+        Ok(self)
+    }
+
+    pub fn claims(&self) -> &[ProviderClaim] {
+        &self.claims
     }
 
     pub fn provider_run_id(&self) -> Option<&str> {
@@ -543,6 +647,7 @@ pub enum AgentFailure {
     InvalidOutput,
     DlpRejected,
     GroundingFailed,
+    ClaimUnsupported,
     TokenBudgetUnattested,
     TokenCeilingExceeded,
     SqzInputFailed,

@@ -1,0 +1,12 @@
+---
+type: Concept
+generated:
+  by: agent/1
+  at: 2026-07-01T00:00:00Z
+verified:
+  - by: human:alice
+    at: 2026-07-02T00:00:00Z
+  - by: human:bob
+    at: 2026-07-03T00:00:00Z
+---
+Trust family as a verification list.

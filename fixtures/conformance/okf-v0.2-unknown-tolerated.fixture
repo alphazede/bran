@@ -1,0 +1,7 @@
+---
+type: Unknown Type
+frobnicate: 42
+---
+Unknown types and unknown fields are tolerated.
+
+- [Broken link](missing.md)
