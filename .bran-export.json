@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "32f37928f77b21b1d1a55a22862c91f61fce7ed0",
+  "source_commit": "cd396e16a2f4c9a53d95cab6eb2ef2d617964351",
   "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
@@ -740,8 +740,8 @@
     {
       "path": "xtask/src/archive.rs",
       "mode": "100644",
-      "bytes": 11299,
-      "sha256": "b62ebac302bd3d718a29d6c22d2e7440780372ead11b313e8d7bf1a0177025b4"
+      "bytes": 13176,
+      "sha256": "65241bbec66e7d6cbe542186126f8f52a7241ed2d3cdde75ed2727f6965cec28"
     },
     {
       "path": "xtask/src/main.rs",
