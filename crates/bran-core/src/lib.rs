@@ -30,7 +30,9 @@ use std::fmt;
 
 const DOWNLOAD_ROOT: &str = "https://github.com/alphazede/bran/releases/download/";
 const CHECKSUMS: &str = "SHA256SUMS";
-const CHECKSUMS_SIGNATURE: &str = "SHA256SUMS.sig";
+const CHECKSUMS_SIGNATURE: &str = "SHA256SUMS.sigstore";
+const SIGNATURE_FORMAT: &str = "sigstore-bundle";
+const SIGSTORE_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 const MANIFEST: &str = "bran-release-manifest.json";
 
 /// A validated immutable Bran release tag.
@@ -117,12 +119,13 @@ pub struct DeclaredChecksums {
     pub sha256: String,
 }
 
-/// Declared OpenPGP signature metadata (shape only).
+/// Declared Sigstore keyless signature metadata (shape only).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeclaredSignature {
     pub asset: String,
     pub format: String,
-    pub key_fingerprint: String,
+    pub certificate_identity: String,
+    pub certificate_oidc_issuer: String,
     pub signed_at: String,
 }
 
@@ -145,7 +148,7 @@ pub struct DeclaredProvenance {
 /// truth for the contract).
 ///
 /// This verifies declared Slice 1.1 metadata structure and semantic binding only.
-/// It does NOT fetch bytes, recompute digests, execute OpenPGP verification,
+/// It does NOT fetch bytes, recompute digests, execute signature verification,
 /// or attest provenance. Those later cryptographic operations remain outside
 /// this slice.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -187,7 +190,8 @@ pub enum ReleaseVerificationError {
     MalformedChecksumsDigest(String),
     SignatureAssetMismatch { expected: String, actual: String },
     SignatureFormatMismatch { expected: String, actual: String },
-    MalformedSignatureFingerprint(String),
+    MalformedCertificateIdentity(String),
+    CertificateOidcIssuerMismatch { expected: String, actual: String },
     MalformedSignatureTimestamp(String),
     ProvenanceFormatMismatch,
     ProvenancePredicateTypeMismatch,
@@ -270,10 +274,16 @@ impl fmt::Display for ReleaseVerificationError {
             Self::SignatureFormatMismatch { expected, actual } => {
                 write!(formatter, "signature.format must be {expected}: {actual}")
             }
-            Self::MalformedSignatureFingerprint(f) => {
+            Self::MalformedCertificateIdentity(i) => {
                 write!(
                     formatter,
-                    "signature.key_fingerprint must be exactly 40 or 64 lowercase hex: {f}"
+                    "signature.certificate_identity must be an https URL: {i}"
+                )
+            }
+            Self::CertificateOidcIssuerMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "signature.certificate_oidc_issuer must be {expected}: {actual}"
                 )
             }
             Self::MalformedSignatureTimestamp(t) => {
@@ -328,7 +338,7 @@ impl ReleaseVerifier {
     /// The complete immutable (hashed) asset names for this release.
     ///
     /// Exactly seven assets are required and order-insensitive:
-    /// five platform archives plus SHA256SUMS and SHA256SUMS.sig.
+    /// five platform archives plus SHA256SUMS and SHA256SUMS.sigstore.
     /// The bran-release-manifest.json is declared via manifest_asset
     /// but is distributed without a self-digest entry in the hashed assets.
     ///
@@ -406,15 +416,15 @@ impl ReleaseVerifier {
     /// - lowercase 64-hex lockfile_sha256
     /// - immutable == true
     /// - manifest_asset == "bran-release-manifest.json" (distributed without self-digest)
-    /// - exactly seven order-insensitive hashed assets (5 platform + SHA256SUMS + SHA256SUMS.sig)
+    /// - exactly seven order-insensitive hashed assets (5 platform + SHA256SUMS + SHA256SUMS.sigstore)
     /// - exact tag/name/direct URL binding for every asset (no /latest)
     /// - each asset has lowercase 64-hex sha256 and non-blank media_type
     /// - checksums bound to the SHA256SUMS asset's sha256 (with correct asset/algorithm)
-    /// - OpenPGP signature metadata: asset, format=openpgp, exactly 40 or 64 lowercase hex fingerprint, strict UTC YYYY-MM-DDTHH:MM:SSZ signed_at (full Gregorian calendar/leap-day validated)
+    /// - Sigstore keyless signature metadata: asset, format=sigstore-bundle, https URL certificate_identity, exact certificate_oidc_issuer const, strict UTC YYYY-MM-DDTHH:MM:SSZ signed_at (full Gregorian calendar/leap-day validated)
     /// - SLSA v1 provenance: format/predicate consts, repository const, source_commit/lockfile_sha256 cross-bound to top level (40/64 hex), build_type https://...
     ///
     /// This verifies declared Slice 1.1 metadata structure/semantic binding only.
-    /// It does NOT fetch bytes, recompute digests, execute OpenPGP verification,
+    /// It does NOT fetch bytes, recompute digests, execute signature verification,
     /// or attest provenance—those later cryptographic operations remain outside this slice.
     ///
     /// Python (tools/ci/release_contract_check.py) is the fixture/schema semantic oracle.
@@ -528,16 +538,22 @@ impl ReleaseVerifier {
                 actual: sig.asset.clone(),
             });
         }
-        if sig.format != "openpgp" {
+        if sig.format != SIGNATURE_FORMAT {
             return Err(ReleaseVerificationError::SignatureFormatMismatch {
-                expected: "openpgp".to_owned(),
+                expected: SIGNATURE_FORMAT.to_owned(),
                 actual: sig.format.clone(),
             });
         }
-        if !is_fingerprint(&sig.key_fingerprint) {
-            return Err(ReleaseVerificationError::MalformedSignatureFingerprint(
-                sig.key_fingerprint.clone(),
+        if !sig.certificate_identity.starts_with("https://") {
+            return Err(ReleaseVerificationError::MalformedCertificateIdentity(
+                sig.certificate_identity.clone(),
             ));
+        }
+        if sig.certificate_oidc_issuer != SIGSTORE_OIDC_ISSUER {
+            return Err(ReleaseVerificationError::CertificateOidcIssuerMismatch {
+                expected: SIGSTORE_OIDC_ISSUER.to_owned(),
+                actual: sig.certificate_oidc_issuer.clone(),
+            });
         }
         if !is_strict_utc_datetime(&sig.signed_at) {
             return Err(ReleaseVerificationError::MalformedSignatureTimestamp(
@@ -609,11 +625,6 @@ fn is_git_sha(s: &str) -> bool {
 
 fn is_sha256(s: &str) -> bool {
     is_lowercase_hex(s, 64)
-}
-
-fn is_fingerprint(s: &str) -> bool {
-    let l = s.len();
-    (l == 40 || l == 64) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Exact strict UTC shape: YYYY-MM-DDTHH:MM:SSZ (20 bytes, ASCII digits + separators + Z).

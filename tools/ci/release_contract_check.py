@@ -13,10 +13,10 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0.0"
 REPOSITORY = "alphazede/bran"
+OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 TAG_PATTERN = re.compile(r"bran-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
-FINGERPRINT_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 STRICT_SIGNED_AT_REGEX = r"^(?:(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:(?:0[13578]|1[02]))-(?:0[1-9]|[12][0-9]|3[01])|(?:(?:0[469]|11))-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:04|08|12|16|20|24|28|32|36|40|44|48|52|56|60|64|68|72|76|80|84|88|92|96)00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
 SIGNED_AT_PATTERN = re.compile(STRICT_SIGNED_AT_REGEX)
 RELEASE_BASE = "https://github.com/alphazede/bran/releases/download"
@@ -24,7 +24,8 @@ SEMANTIC_ORACLE = "tools/ci/release_contract_check.py"
 
 # Expected schema constants for drift detection (exact strings must match schema)
 # STRICT_SIGNED_AT_REGEX and EXPECTED_SIGNED_AT_PATTERN are identical (schema pattern uses $ anchors; datetime.strptime is semantic defense)
-EXPECTED_FINGERPRINT_PATTERN = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+EXPECTED_CERTIFICATE_IDENTITY_PATTERN = r"^https://"
+EXPECTED_OIDC_ISSUER = OIDC_ISSUER
 EXPECTED_SIGNED_AT_PATTERN = STRICT_SIGNED_AT_REGEX
 EXPECTED_SIGNED_AT_FORMAT = "date-time"
 
@@ -48,8 +49,8 @@ def is_git_sha(value: Any) -> bool:
     return isinstance(value, str) and GIT_SHA_PATTERN.fullmatch(value) is not None
 
 
-def is_fingerprint(value: Any) -> bool:
-    return isinstance(value, str) and FINGERPRINT_PATTERN.fullmatch(value) is not None
+def is_certificate_identity(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("https://")
 
 
 def is_strict_utc_datetime(value: Any) -> bool:
@@ -82,7 +83,7 @@ def expected_asset_names(tag: str) -> tuple[str, ...]:
         f"{tag}-aarch64-apple-darwin.tar.gz",
         f"{tag}-x86_64-pc-windows-msvc.zip",
         "SHA256SUMS",
-        "SHA256SUMS.sig",
+        "SHA256SUMS.sigstore",
     )
 
 
@@ -163,13 +164,16 @@ def validate_manifest(manifest: Any) -> list[str]:
             errors.append("checksums.sha256 must match the SHA256SUMS asset")
 
     signature = manifest["signature"]
-    if not is_object_with_keys(signature, {"asset", "format", "key_fingerprint", "signed_at"}):
-        errors.append("signature must contain exactly asset, format, key_fingerprint, and signed_at")
+    signature_keys = {"asset", "format", "certificate_identity", "certificate_oidc_issuer", "signed_at"}
+    if not is_object_with_keys(signature, signature_keys):
+        errors.append("signature must contain exactly asset, format, certificate_identity, certificate_oidc_issuer, and signed_at")
     else:
-        if signature["asset"] != "SHA256SUMS.sig" or signature["format"] != "openpgp":
-            errors.append("signature must describe SHA256SUMS.sig in openpgp format")
-        if not is_fingerprint(signature["key_fingerprint"]):
-            errors.append("signature.key_fingerprint must be exactly 40 or 64 lowercase hex")
+        if signature["asset"] != "SHA256SUMS.sigstore" or signature["format"] != "sigstore-bundle":
+            errors.append("signature must describe SHA256SUMS.sigstore as a sigstore-bundle")
+        if not is_certificate_identity(signature["certificate_identity"]):
+            errors.append("signature.certificate_identity must be an https URL")
+        if signature["certificate_oidc_issuer"] != OIDC_ISSUER:
+            errors.append(f"signature.certificate_oidc_issuer must be {OIDC_ISSUER}")
         if not is_strict_utc_datetime(signature["signed_at"]):
             errors.append("signature.signed_at must be strict UTC YYYY-MM-DDTHH:MM:SSZ")
 
@@ -217,8 +221,11 @@ def main() -> int:
         return 1
 
     signature = (schema.get("properties") or {}).get("signature", {}).get("properties", {}) or {}
-    if signature.get("key_fingerprint", {}).get("pattern") != EXPECTED_FINGERPRINT_PATTERN:
-        print("FAIL release contract check: schema key_fingerprint pattern drifted from expected constant")
+    if signature.get("certificate_identity", {}).get("pattern") != EXPECTED_CERTIFICATE_IDENTITY_PATTERN:
+        print("FAIL release contract check: schema certificate_identity pattern drifted from expected constant")
+        return 1
+    if signature.get("certificate_oidc_issuer", {}).get("const") != EXPECTED_OIDC_ISSUER:
+        print("FAIL release contract check: schema certificate_oidc_issuer const drifted from expected constant")
         return 1
     signed_at = signature.get("signed_at", {})
     if signed_at.get("pattern") != EXPECTED_SIGNED_AT_PATTERN or signed_at.get("format") != EXPECTED_SIGNED_AT_FORMAT:
