@@ -92,7 +92,17 @@ fn write_octal(field: &mut [u8], value: u64) -> io::Result<()> {
 /// (uncompressed), with no extra fields, no comments and no timestamps
 /// beyond the DOS epoch 1980-01-01 00:00:00.
 pub fn write_zip(path: &Path, member: &str, data: &[u8]) -> io::Result<()> {
-    write_zip_to(fs::File::create(path)?, member, data).map(|_| ())
+    // patch_zip_external_attr reads the end-of-central-directory record back,
+    // so the handle must be readable. File::create is write-only: that compiles
+    // (File: Read) but fails at runtime with os error 5 on Windows and os
+    // error 9 on Unix.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    write_zip_to(file, member, data).map(|_| ())
 }
 
 fn write_zip_to<W: Write + Read + Seek>(mut writer: W, member: &str, data: &[u8]) -> io::Result<W> {
@@ -281,5 +291,40 @@ mod tests {
             archive[eocd + 19],
         ]) as usize;
         (offset, count)
+    }
+
+    /// Regression: `write_zip` opens a real file, unlike the `Cursor`-based
+    /// tests above. `File::create` yields a write-only handle, and
+    /// `patch_zip_external_attr` reads the archive back — which compiles,
+    /// because `File: Read`, but fails at runtime. Windows reports os error 5
+    /// and Linux os error 9. This is the only test that covers the path-taking
+    /// entry point the release actually calls.
+    #[test]
+    fn write_zip_writes_a_real_file_it_can_read_back() {
+        let dir = std::env::temp_dir().join(format!("bran-xtask-zip-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bran-test-x86_64-pc-windows-msvc.zip");
+        let data = b"windows binary bytes".to_vec();
+
+        write_zip(&path, "bran.exe", &data).expect("write_zip must succeed against a real file");
+
+        let written = fs::read(&path).unwrap();
+        assert!(!written.is_empty(), "archive must not be empty");
+        assert_eq!(
+            &written[..4],
+            &[0x50, 0x4b, 0x03, 0x04],
+            "must start with a local file header"
+        );
+
+        // Deterministic: a second write of the same input is byte-identical.
+        let second = dir.join("second.zip");
+        write_zip(&second, "bran.exe", &data).unwrap();
+        assert_eq!(
+            written,
+            fs::read(&second).unwrap(),
+            "zip output must be deterministic"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
