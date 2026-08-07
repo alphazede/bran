@@ -227,6 +227,35 @@ def select_public(tree: dict[str, GitBlob], config: ExportConfig) -> dict[str, G
     return selected
 
 
+CLI_MANIFEST_PATH = "crates/bran-cli/Cargo.toml"
+
+
+def exported_version(selected: dict[str, GitBlob]) -> str | None:
+    """Read the shipped BRAN version from the committed CLI manifest.
+
+    Taken from the exported blob rather than the working tree so the receipt
+    stays a deterministic function of the source commit. Returns None when the
+    surface has no CLI manifest, so an export of a non-BRAN surface (the
+    contract self-test builds one) still produces a receipt.
+    """
+    blob = selected.get(CLI_MANIFEST_PATH)
+    if blob is None:
+        return None
+    in_package = False
+    for line in blob.data.decode("utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_package = stripped == "[package]"
+            continue
+        if in_package and stripped.startswith("version"):
+            _, _, raw = stripped.partition("=")
+            version = raw.strip().strip('"')
+            if version:
+                return version
+            break
+    raise ExportError(f"{CLI_MANIFEST_PATH} has no package version")
+
+
 def receipt_bytes(config: ExportConfig, commit: str, selected: dict[str, GitBlob]) -> bytes:
     receipt = {
         "schema_version": 1,
@@ -243,6 +272,15 @@ def receipt_bytes(config: ExportConfig, commit: str, selected: dict[str, GitBlob
             for blob in selected.values()
         ],
     }
+    version = exported_version(selected)
+    if version is not None:
+        # Keep the version next to the commit it was read from.
+        ordered = {}
+        for key, value in receipt.items():
+            ordered[key] = value
+            if key == "source_commit":
+                ordered["version"] = version
+        receipt = ordered
     return (json.dumps(receipt, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
