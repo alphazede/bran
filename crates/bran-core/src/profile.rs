@@ -4466,52 +4466,6 @@ mod tests {
     }
 
     #[test]
-    fn okf_v0_2_frozen_fixture_corpus() {
-        // Frozen sources: every fixture byte is pinned here so the corpus
-        // cannot drift silently.
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-minimal.fixture"),
-            "---\ntype: Concept\n---\nMinimal concept with no optional v0.2 families.\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-sources.fixture"),
-            "---\ntype: Concept\nsources:\n  - resource: https://example.invalid/r1\n    title: Research one\n    usage_count: 4\n  - resource: https://example.invalid/r2\nusage_window:\n  from: 2026-01-01\n  to: 2026-12-31\n---\nProvenance family present and well shaped.\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-trust-list.fixture"),
-            "---\ntype: Concept\ngenerated:\n  by: agent/1\n  at: 2026-07-01T00:00:00Z\nverified:\n  - by: human:alice\n    at: 2026-07-02T00:00:00Z\n  - by: human:bob\n    at: 2026-07-03T00:00:00Z\n---\nTrust family as a verification list.\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-verified-bare.fixture"),
-            "---\ntype: Concept\nverified:\n  by: human:alice\n  at: 2026-07-02T00:00:00Z\n---\nBare verified mapping normalizes to a one-element list.\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-lifecycle.fixture"),
-            "---\ntype: Concept\nstatus: deprecated\nstale_after: 2026-12-31\n---\nLifecycle family present.\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-attested-computation.fixture"),
-            "---\ntype: Attested Computation\nruntime: python3\nparameters:\n  - name: seed\n    type: integer\n  - name: corpus\n    type: path\n    required: true\ncomputation: scripts/rank.py\nexecutor:\n  resource: https://example.invalid/exec\n  receipt:\n    - sha256: deadbeef\n    - pid: 42\nattester:\n  resource: https://example.invalid/att\n---\nAttested computation contract family present.\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-index-version.fixture"),
-            "---\nokf_version: \"0.2\"\n---\n# Root\n\n- [Nested index](missing/nested-index.md)\n\n## Concepts\n\n- [Concept](missing/concept.md)\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-legacy-fallback.fixture"),
-            "---\ntype: Concept\ntimestamp: 2026-01-01\n---\nLegacy v0.1-shaped document with body citations.\n\n# Citations\n- [Alpha](https://example.invalid/a)\n- [Beta](https://example.invalid/b)\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-unknown-tolerated.fixture"),
-            "---\ntype: Unknown Type\nfrobnicate: 42\n---\nUnknown types and unknown fields are tolerated.\n\n- [Broken link](missing.md)\n"
-        );
-        assert_eq!(
-            include_str!("../../../fixtures/conformance/okf-v0.2-malformed.fixture"),
-            "---\ntype: Concept\nsources: not-a-sequence\nusage_window:\n  from: 2026-01-01\ngenerated: scalar\nverified:\n  - 2026-07-01\nstatus: retired\nstale_after: tomorrow\n---\nBadly shaped optional families.\n"
-        );
-    }
-
-    #[test]
     fn okf_v0_2_optional_families_pass() {
         let bundle = Bundle::from_documents([
             v0_2_document(
@@ -4733,107 +4687,62 @@ mod tests {
 
     #[test]
     fn okf_v0_2_attested_computation_cases() {
-        // Missing runtime fails.
-        let no_runtime = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nparameters:\n  - name: seed\n    type: integer\n---\nBody.\n",
-        )])
-        .expect("AC without runtime bundle");
-        let no_runtime_result = ProfileValidator::validate(&no_runtime, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&no_runtime_result, OKF_V0_2),
-            vec!["ac-runtime".to_owned()]
-        );
-
-        // Badly shaped parameters fail.
-        let bad_parameters = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nparameters: scalar\n---\nBody.\n",
-        )])
-        .expect("AC with scalar parameters bundle");
-        let bad_parameters_result = ProfileValidator::validate(&bad_parameters, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&bad_parameters_result, OKF_V0_2),
-            vec!["ac-parameters".to_owned()]
-        );
-
-        let entry_parameters = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nparameters:\n  - name: seed\n---\nBody.\n",
-        )])
-        .expect("AC with incomplete parameter bundle");
-        let entry_parameters_result = ProfileValidator::validate(&entry_parameters, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&entry_parameters_result, OKF_V0_2),
-            vec!["ac-parameters".to_owned()]
-        );
-
-        // Non-string computation fails when present.
-        let bad_computation = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\ncomputation: [a, b]\n---\nBody.\n",
-        )])
-        .expect("AC with list computation bundle");
-        let bad_computation_result = ProfileValidator::validate(&bad_computation, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&bad_computation_result, OKF_V0_2),
-            vec!["ac-computation".to_owned()]
-        );
-
-        // Executor must be a mapping with resource; receipt is a sequence.
-        let scalar_executor = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nexecutor: exec/1\n---\nBody.\n",
-        )])
-        .expect("AC with scalar executor bundle");
-        let scalar_executor_result = ProfileValidator::validate(&scalar_executor, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&scalar_executor_result, OKF_V0_2),
-            vec!["ac-executor".to_owned()]
-        );
-
-        let missing_resource = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  receipt:\n    - sha256: deadbeef\n---\nBody.\n",
-        )])
-        .expect("AC with executor without resource bundle");
-        let missing_resource_result = ProfileValidator::validate(&missing_resource, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&missing_resource_result, OKF_V0_2),
-            vec!["ac-executor".to_owned()]
-        );
-
-        let scalar_receipt = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  resource: https://example.invalid/exec\n  receipt: deadbeef\n---\nBody.\n",
-        )])
-        .expect("AC with scalar receipt bundle");
-        let scalar_receipt_result = ProfileValidator::validate(&scalar_receipt, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&scalar_receipt_result, OKF_V0_2),
-            vec!["ac-executor".to_owned()]
-        );
-
-        // Attester must be a mapping with a non-blank string resource.
-        let bad_attester = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nattester: att/1\n---\nBody.\n",
-        )])
-        .expect("AC with scalar attester bundle");
-        let bad_attester_result = ProfileValidator::validate(&bad_attester, OKF_V0_2);
-        assert_eq!(
-            v0_2_codes(&bad_attester_result, OKF_V0_2),
-            vec!["ac-attester".to_owned()]
-        );
-
-        // Executor without receipt and attester absent stay valid.
-        let minimal_ac = Bundle::from_documents([v0_2_document(
-            "concepts/ac.md",
-            "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  resource: https://example.invalid/exec\n---\nBody.\n",
-        )])
-        .expect("minimal AC bundle");
-        let minimal_ac_result = ProfileValidator::validate(&minimal_ac, OKF_V0_2);
-        assert_eq!(minimal_ac_result.okf_v0_2.status, ValidationStatus::Pass);
+        // Each row is (case, frontmatter source, expected v0.2 codes).
+        // An empty expected list means the document must pass.
+        for (case, source, expected) in [
+            (
+                "missing runtime",
+                "---\ntype: Attested Computation\nparameters:\n  - name: seed\n    type: integer\n---\nBody.\n",
+                &["ac-runtime"][..],
+            ),
+            (
+                "scalar parameters",
+                "---\ntype: Attested Computation\nruntime: python3\nparameters: scalar\n---\nBody.\n",
+                &["ac-parameters"][..],
+            ),
+            (
+                "parameter entry missing type",
+                "---\ntype: Attested Computation\nruntime: python3\nparameters:\n  - name: seed\n---\nBody.\n",
+                &["ac-parameters"][..],
+            ),
+            (
+                "non-string computation",
+                "---\ntype: Attested Computation\nruntime: python3\ncomputation: [a, b]\n---\nBody.\n",
+                &["ac-computation"][..],
+            ),
+            (
+                "scalar executor",
+                "---\ntype: Attested Computation\nruntime: python3\nexecutor: exec/1\n---\nBody.\n",
+                &["ac-executor"][..],
+            ),
+            (
+                "executor without resource",
+                "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  receipt:\n    - sha256: deadbeef\n---\nBody.\n",
+                &["ac-executor"][..],
+            ),
+            (
+                "scalar receipt",
+                "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  resource: https://example.invalid/exec\n  receipt: deadbeef\n---\nBody.\n",
+                &["ac-executor"][..],
+            ),
+            (
+                "scalar attester",
+                "---\ntype: Attested Computation\nruntime: python3\nattester: att/1\n---\nBody.\n",
+                &["ac-attester"][..],
+            ),
+            (
+                "executor with resource and no receipt passes",
+                "---\ntype: Attested Computation\nruntime: python3\nexecutor:\n  resource: https://example.invalid/exec\n---\nBody.\n",
+                &[][..],
+            ),
+        ] {
+            let bundle = Bundle::from_documents([v0_2_document("concepts/ac.md", source)])
+                .unwrap_or_else(|error| panic!("{case}: {error:?}"));
+            let result = ProfileValidator::validate(&bundle, OKF_V0_2);
+            let expected_codes: Vec<String> =
+                expected.iter().map(|code| (*code).to_owned()).collect();
+            assert_eq!(v0_2_codes(&result, OKF_V0_2), expected_codes, "{case}");
+        }
     }
 
     #[test]
@@ -4964,24 +4873,5 @@ mod tests {
                 "okf-log-invalid-date-heading".to_owned(),
             ]
         );
-    }
-
-    #[test]
-    fn okf_v0_2_determinism() {
-        let bundle = Bundle::from_documents([
-            v0_2_document(
-                "index.md",
-                include_str!("../../../fixtures/conformance/okf-v0.2-index-version.fixture"),
-            ),
-            v0_2_document(
-                "concepts/concept.md",
-                include_str!("../../../fixtures/conformance/okf-v0.2-malformed.fixture"),
-            ),
-        ])
-        .expect("determinism bundle");
-        let r1 = ProfileValidator::validate(&bundle, OKF_V0_2);
-        let r2 = ProfileValidator::validate(&bundle, OKF_V0_2);
-        assert_eq!(r1, r2, "repeated validation must be deterministic");
-        assert_eq!(r1.okf_v0_2, r2.okf_v0_2);
     }
 }

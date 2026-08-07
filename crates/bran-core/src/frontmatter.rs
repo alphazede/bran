@@ -370,126 +370,103 @@ mod tests {
         )
     }
 
+    /// Each row is one supported YAML shape: (case, input, key, expected).
     #[test]
-    fn parses_flat_scalars_and_fences() {
-        let map = parse_frontmatter("---\ntype: Concept\nokf_version: \"0.2\"\n---\n").unwrap();
-        assert_eq!(map.get("type"), Some(&string("Concept")));
-        assert_eq!(map.get("okf_version"), Some(&string("0.2")));
-    }
-
-    #[test]
-    fn parses_fence_free_content() {
-        let map = parse_frontmatter("type: Concept\n").unwrap();
-        assert_eq!(map.get("type"), Some(&string("Concept")));
-    }
-
-    #[test]
-    fn parses_nested_block_mapping() {
-        let map =
-            parse_frontmatter("generated:\n  by: agent/1\n  at: 2026-07-01T00:00:00Z\n").unwrap();
-        assert_eq!(
-            map.get("generated"),
-            Some(&mapping(&[
-                ("by", string("agent/1")),
-                ("at", string("2026-07-01T00:00:00Z")),
-            ]))
-        );
-    }
-
-    #[test]
-    fn parses_block_sequence_of_scalars() {
-        let map = parse_frontmatter("tags:\n  - internal\n  - public\n").unwrap();
-        assert_eq!(
-            map.get("tags"),
-            Some(&YamlValue::Sequence(vec![
-                string("internal"),
-                string("public")
-            ]))
-        );
-    }
-
-    #[test]
-    fn parses_block_sequence_of_mappings() {
-        let map = parse_frontmatter(
-            "verified:\n  - by: human:alice\n    at: 2026-07-01T00:00:00Z\n  - by: human:bob\n    at: 2026-07-02T00:00:00Z\n",
-        )
-        .unwrap();
-        assert_eq!(
-            map.get("verified"),
-            Some(&YamlValue::Sequence(vec![
+    fn parses_supported_yaml_shapes() {
+        let flow_and_comments = "tags: [a, b]  # inline comment\ntype: Concept # note\n";
+        let fenced = "---\ntype: Concept\nokf_version: \"0.2\"\n---\n";
+        for (case, input, key, expected) in [
+            ("flat scalar inside fences", fenced, "type", string("Concept")),
+            ("quoted scalar keeps its value", fenced, "okf_version", string("0.2")),
+            ("fence-free content", "type: Concept\n", "type", string("Concept")),
+            (
+                "nested block mapping",
+                "generated:\n  by: agent/1\n  at: 2026-07-01T00:00:00Z\n",
+                "generated",
                 mapping(&[
-                    ("by", string("human:alice")),
+                    ("by", string("agent/1")),
                     ("at", string("2026-07-01T00:00:00Z")),
                 ]),
-                mapping(&[
-                    ("by", string("human:bob")),
-                    ("at", string("2026-07-02T00:00:00Z")),
+            ),
+            (
+                "block sequence of scalars",
+                "tags:\n  - internal\n  - public\n",
+                "tags",
+                YamlValue::Sequence(vec![string("internal"), string("public")]),
+            ),
+            (
+                "block sequence of mappings",
+                "verified:\n  - by: human:alice\n    at: 2026-07-01T00:00:00Z\n  - by: human:bob\n    at: 2026-07-02T00:00:00Z\n",
+                "verified",
+                YamlValue::Sequence(vec![
+                    mapping(&[
+                        ("by", string("human:alice")),
+                        ("at", string("2026-07-01T00:00:00Z")),
+                    ]),
+                    mapping(&[
+                        ("by", string("human:bob")),
+                        ("at", string("2026-07-02T00:00:00Z")),
+                    ]),
                 ]),
-            ]))
-        );
-    }
-
-    #[test]
-    fn parses_nested_mapping_inside_sequence_item() {
-        let map = parse_frontmatter(
-            "sources:\n  - resource: https://example.invalid/a\n    usage_count: 3\n",
-        )
-        .unwrap();
-        assert_eq!(
-            map.get("sources"),
-            Some(&YamlValue::Sequence(vec![mapping(&[
-                ("resource", string("https://example.invalid/a")),
-                ("usage_count", string("3")),
-            ])]))
-        );
-    }
-
-    #[test]
-    fn parses_flow_lists_and_comments() {
-        let map =
-            parse_frontmatter("tags: [a, b]  # inline comment\ntype: Concept # note\n").unwrap();
-        assert_eq!(
-            map.get("tags"),
-            Some(&YamlValue::Sequence(vec![string("a"), string("b")]))
-        );
-        assert_eq!(map.get("type"), Some(&string("Concept")));
-    }
-
-    #[test]
-    fn url_scalar_keeps_colons() {
-        let map = parse_frontmatter("resource: https://example.invalid/a#frag\n").unwrap();
-        assert_eq!(
-            map.get("resource"),
-            Some(&string("https://example.invalid/a#frag"))
-        );
-        // A sequence item whose scalar contains a colon without whitespace stays scalar.
-        let map = parse_frontmatter("sources:\n  - https://example.invalid/b\n").unwrap();
-        assert_eq!(
-            map.get("sources"),
-            Some(&YamlValue::Sequence(vec![string(
-                "https://example.invalid/b"
-            )]))
-        );
-    }
-
-    #[test]
-    fn duplicate_keys_rejected() {
-        assert!(parse_frontmatter("type: A\ntype: B\n").is_err());
-    }
-
-    #[test]
-    fn malformed_inputs_rejected_without_echo() {
-        assert!(parse_frontmatter("type: [\n").is_err());
-        assert!(parse_frontmatter("generated:\n").is_err());
-        assert!(parse_frontmatter("type:\n").is_err());
-        assert!(parse_frontmatter("type: {by: x}\n").is_err());
-        for error in [
-            parse_frontmatter("type: [secret-value\n").err().unwrap(),
-            parse_frontmatter("generated: |secret-value\n")
-                .err()
-                .unwrap(),
-            parse_frontmatter("type: {secret-value\n").err().unwrap(),
+            ),
+            (
+                "nested mapping inside a sequence item",
+                "sources:\n  - resource: https://example.invalid/a\n    usage_count: 3\n",
+                "sources",
+                YamlValue::Sequence(vec![mapping(&[
+                    ("resource", string("https://example.invalid/a")),
+                    ("usage_count", string("3")),
+                ])]),
+            ),
+            (
+                "flow list with an inline comment",
+                flow_and_comments,
+                "tags",
+                YamlValue::Sequence(vec![string("a"), string("b")]),
+            ),
+            (
+                "scalar on a commented line",
+                flow_and_comments,
+                "type",
+                string("Concept"),
+            ),
+            (
+                "url scalar keeps its colons",
+                "resource: https://example.invalid/a#frag\n",
+                "resource",
+                string("https://example.invalid/a#frag"),
+            ),
+            (
+                "sequence item with a colon stays scalar",
+                "sources:\n  - https://example.invalid/b\n",
+                "sources",
+                YamlValue::Sequence(vec![string("https://example.invalid/b")]),
+            ),
         ] {
+            let map = parse_frontmatter(input).unwrap_or_else(|error| panic!("{case}: {error}"));
+            assert_eq!(map.get(key), Some(&expected), "{case}");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_input_without_echoing_values() {
+        for (case, input) in [
+            ("duplicate key", "type: A\ntype: B\n"),
+            ("unterminated flow sequence", "type: [\n"),
+            ("mapping key with no value", "generated:\n"),
+            ("scalar key with no value", "type:\n"),
+            ("flow mapping is unsupported", "type: {by: x}\n"),
+        ] {
+            assert!(parse_frontmatter(input).is_err(), "{case} must be rejected");
+        }
+
+        // A rejection must never echo the offending value back to the caller.
+        for input in [
+            "type: [secret-value\n",
+            "generated: |secret-value\n",
+            "type: {secret-value\n",
+        ] {
+            let error = parse_frontmatter(input).expect_err("must be rejected");
             assert!(
                 !error.contains("secret-value"),
                 "error echoes raw value: {error}"

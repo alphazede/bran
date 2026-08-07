@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "e195777e108c6c8aa170f1264f4eb63b86d7d4be",
+  "source_commit": "1938b3838e832e4e8035a86aab804257c6303124",
   "public_repository": "alphazede/bran",
   "files": [
     {
@@ -127,8 +127,8 @@
     {
       "path": "crates/bran-cli/src/main.rs",
       "mode": "100644",
-      "bytes": 323849,
-      "sha256": "d66bb197651c47022245567b82302a6905ca3e066b9d2b2ec21ba18db285da61"
+      "bytes": 322237,
+      "sha256": "ae35ec304b1c49cc01e3831e43f00b656af7d76fb2f4849f79a92034fa9eb924"
     },
     {
       "path": "crates/bran-core/Cargo.toml",
@@ -229,8 +229,8 @@
     {
       "path": "crates/bran-core/src/frontmatter.rs",
       "mode": "100644",
-      "bytes": 17077,
-      "sha256": "e075b25380d29687c2106b0aab968dac8d7d0b39ea14e0a207b140902137b068"
+      "bytes": 17047,
+      "sha256": "bec21f18b563fcaf6675d4a1435227e892be4ed9abd58697bdb4b7ab86b06c0c"
     },
     {
       "path": "crates/bran-core/src/graph/mod.rs",
@@ -283,8 +283,8 @@
     {
       "path": "crates/bran-core/src/profile.rs",
       "mode": "100644",
-      "bytes": 208066,
-      "sha256": "c0d9b9a7e2c8f8f80ca7e2b2b0336929b8414646105cc7a087af152f43e15eaa"
+      "bytes": 201864,
+      "sha256": "86041ed0e64e50bcfc87cd3a2144e90f96fd08be21da91bd5120e6c86f97f91e"
     },
     {
       "path": "crates/bran-core/src/repair/mod.rs",

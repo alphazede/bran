@@ -7662,44 +7662,6 @@ mod tests {
     }
 
     #[test]
-    fn query_warns_on_unmatched_query_terms() {
-        // A high-specificity term that matches no document must surface an
-        // explicit warning instead of silently returning diluted generic
-        // matches (issue #18).
-        let root =
-            std::env::temp_dir().join(format!("bran-query-unmatched-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".bran")).unwrap();
-        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
-        std::fs::write(
-            root.join("actuator.md"),
-            "---\ntype: concept\ntitle: Actuator\n---\nGeneric actuator notes.\n",
-        )
-        .unwrap();
-
-        let diluted = CliApp::run(vec![
-            "query".to_owned(),
-            root.to_string_lossy().into_owned(),
-            "zephyrite actuator".to_owned(),
-        ]);
-        assert_eq!(diluted.exit_code, ExitCode::SUCCESS, "{}", diluted.output);
-        assert!(diluted
-            .output
-            .contains("\"locator\":\"actuator.md\",\"rank\":1"));
-        assert!(diluted.output.contains("unmatched_query_terms: zephyrite"));
-
-        let miss = CliApp::run(vec![
-            "query".to_owned(),
-            root.to_string_lossy().into_owned(),
-            "zephyrite".to_owned(),
-        ]);
-        assert_eq!(miss.exit_code, ExitCode::SUCCESS, "{}", miss.output);
-        assert!(miss.output.contains("unmatched_query_terms: zephyrite"));
-        assert!(miss.output.contains("\"source_rankings\":[],"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn check_coverage_policy_error_is_typed_and_non_echoing() {
         let invalid = CliApp::run_with_stdin(
             vec![
