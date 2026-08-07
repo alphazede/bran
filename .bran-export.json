@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "1938b3838e832e4e8035a86aab804257c6303124",
+  "source_commit": "4e28fd5f0d45d47b05f97bc35abbd6e2c30b9c61",
+  "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
     {
@@ -691,8 +692,8 @@
     {
       "path": "tools/ci/public_export.py",
       "mode": "100644",
-      "bytes": 19157,
-      "sha256": "82629365b0fc24ab7c4077c7c45305e6010065745d9fedf0baa4946cf68d9bed"
+      "bytes": 20580,
+      "sha256": "a0fa15276e2e12a98dd3545578296ac2896602c7cc9d96bda1f77b3361f94b4a"
     },
     {
       "path": "tools/ci/release-check.sh",
