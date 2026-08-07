@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -20,6 +21,104 @@ ALLOWED_BINARIES = {
         "4f6f1c4a4d82b6ef661d80602831c562c0d824daa36c009394c40dcdef1b4a2d",
     ),
 }
+
+# Home-directory roots, assembled from fragments so this source file does not itself
+# contain a literal user-home path. The checker scans itself; a literal here would make
+# it report its own source.
+HOME_ROOTS: tuple[tuple[str, str], ...] = (
+    ("/ho" + "me/", "/"),
+    ("/Us" + "ers/", "/"),
+    ("C:\\Us" + "ers\\", "\\"),
+)
+
+# A home path may appear in public source only when the user segment is an obvious
+# placeholder. Any other segment is a real local layout and must not ship publicly.
+PLACEHOLDER_HOME_USERS = frozenset(
+    {
+        "user",
+        "users",
+        "username",
+        "example-user",
+        "home-user",
+        "someone",
+        "anyone",
+        "other-user",
+        "$USER",
+        "<user>",
+    }
+)
+
+
+def public_export_surface(root: Path) -> frozenset[str] | None:
+    """Repository-relative paths the exporter actually publishes.
+
+    The home-path rule applies to shipped files only. Private roots such as
+    plans and submissions legitimately reference local paths and never leave
+    this repository. Returns None when no manifest is present.
+    """
+    manifest_path = root / "public-export.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    allowed_files = set(manifest.get("allowed_files", []))
+    allowed_roots = tuple(manifest.get("allowed_roots", []))
+    excluded_files = set(manifest.get("excluded_files", []))
+    excluded_roots = tuple(manifest.get("excluded_roots", []))
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--cached"],
+        cwd=root,
+        capture_output=True,
+        check=True,
+    )
+    surface: set[str] = set()
+    for entry in result.stdout.split(b"\0"):
+        if not entry:
+            continue
+        rel = os.fsdecode(entry)
+        if rel in excluded_files or (excluded_roots and rel.startswith(excluded_roots)):
+            continue
+        if rel in allowed_files or (allowed_roots and rel.startswith(allowed_roots)):
+            surface.add(rel)
+    return frozenset(surface)
+
+
+SEGMENT_DELIMITERS = " \t\"'`,;:()[]{}<>*=|"
+
+
+def hardcoded_home_users(text: str) -> tuple[str, ...]:
+    """Return non-placeholder user segments of absolute home paths found in text.
+
+    Scans line by line. A user segment ends at the path separator or at any
+    delimiter that terminates a literal, so a bare home root mentioned in prose
+    is not treated as a layout leak.
+    """
+    found: list[str] = []
+    for line in text.splitlines():
+        for root, separator in HOME_ROOTS:
+            start = 0
+            while True:
+                index = line.find(root, start)
+                if index == -1:
+                    break
+                start = index + len(root)
+                segment = ""
+                has_path_below = False
+                for character in line[start:]:
+                    if character == separator:
+                        has_path_below = True
+                        break
+                    if character in SEGMENT_DELIMITERS:
+                        break
+                    segment += character
+                if (
+                    has_path_below
+                    and segment
+                    and segment not in PLACEHOLDER_HOME_USERS
+                    and segment not in found
+                ):
+                    found.append(segment)
+    return tuple(found)
+
 
 # Keep the complete canaries out of this source file so the checker (which is itself
 # scanned) does not mask an accidental literal copy here.
@@ -181,6 +280,12 @@ def main() -> int:
     allowed_skips = 0
     allowed_binaries = 0
     violations: list[tuple[Path, tuple[str, ...]]] = []
+    home_violations: list[tuple[Path, tuple[str, ...]]] = []
+    try:
+        export_surface = public_export_surface(repo)
+    except Exception as exc:
+        print(f"FAIL failed to read public export manifest: {exc}")
+        return 1
     for path in enumerated:
         try:
             rel = path.relative_to(repo)
@@ -212,6 +317,10 @@ def main() -> int:
         scanned += 1
         if matches:
             violations.append((path, matches))
+        if export_surface is not None and rel.as_posix() in export_surface:
+            leaked = hardcoded_home_users(text)
+            if leaked:
+                home_violations.append((path, leaked))
 
     if violations:
         print("FAIL synthetic public-boundary canary found outside rejected test fixture")
@@ -221,6 +330,20 @@ def main() -> int:
             except ValueError:
                 rel = path
             print(f"  {rel}: {', '.join(matches)}")
+        return 1
+
+    if home_violations:
+        print("FAIL hardcoded user-home path found in the public surface")
+        for path, users in home_violations:
+            try:
+                rel = path.relative_to(repo)
+            except ValueError:
+                rel = path
+            print(f"  {rel}: user segment(s) {', '.join(users)}")
+        print(
+            "  Public source must not contain a real local layout. Detect paths by "
+            "shape, or use a placeholder user segment."
+        )
         return 1
 
     if allowed_skips != 1:

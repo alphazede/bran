@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "037e415e7b18cb6e5377ea950bcdf519c9455ebc",
+  "source_commit": "e195777e108c6c8aa170f1264f4eb63b86d7d4be",
   "public_repository": "alphazede/bran",
   "files": [
     {
@@ -205,8 +205,8 @@
     {
       "path": "crates/bran-core/src/boundary.rs",
       "mode": "100644",
-      "bytes": 14555,
-      "sha256": "88f6465645dc4181816569b9653ac14b2d1d5345096f8ccaf0c1bcae29c31076"
+      "bytes": 16201,
+      "sha256": "2c905fbd3a7802457d7b034de5841118c348dc20eb0093ca13874113058a316b"
     },
     {
       "path": "crates/bran-core/src/bundle.rs",
@@ -685,8 +685,8 @@
     {
       "path": "tools/ci/public_boundary_check.py",
       "mode": "100644",
-      "bytes": 9024,
-      "sha256": "1d43fc6615ef2b25ee27aa165a7b45779f8c0f0530a868de89ca740bfcd65c5d"
+      "bytes": 13392,
+      "sha256": "c33d14a56fd3f4c4e838c6e915088c6de6ae3d2d0df1d67390939db8c00a0583"
     },
     {
       "path": "tools/ci/public_export.py",
