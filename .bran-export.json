@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "5e6f0f5379010dbbacdfcba8f61dc69c832c7883",
+  "source_commit": "73481c7ba1770624dc89129a152b295decad5808",
   "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
@@ -26,8 +26,8 @@
     {
       "path": ".github/workflows/release.yml",
       "mode": "100644",
-      "bytes": 7058,
-      "sha256": "53a63d2609b1ec1431894899f57dfc42256d211b163babc8a070fdde73acc661"
+      "bytes": 8251,
+      "sha256": "86796ba128a0ba82473dea045ff26c48e67a7531125d44b034e39415d48749e8"
     },
     {
       "path": ".gitignore",
@@ -38,14 +38,14 @@
     {
       "path": "Cargo.lock",
       "mode": "100644",
-      "bytes": 6486,
-      "sha256": "7305ad8cdf4a72f852943c840893720a9781c1445ed955d5fb9b019fb8d680a1"
+      "bytes": 8934,
+      "sha256": "84d67f2d5d5ec36a738e56400dab679d139cf7bb15b1012b3f9d9a48606a1602"
     },
     {
       "path": "Cargo.toml",
       "mode": "100644",
-      "bytes": 96,
-      "sha256": "3322881f7489b12e80a2b7a727cec3d2173f9615f03dc6fbb5a28490037f6da3"
+      "bytes": 105,
+      "sha256": "b8ff81cee89b842d6970d0ecb1670c77dd98f28ddfacacc5564d430570768372"
     },
     {
       "path": "LICENSE",
@@ -680,8 +680,8 @@
     {
       "path": "tools/ci/build-release.sh",
       "mode": "100755",
-      "bytes": 4290,
-      "sha256": "97b70095b0a16e8eb186fb24d2cfbd3bce14063b331c1b746e4582f6c74a1577"
+      "bytes": 2854,
+      "sha256": "f84343135189fb33fcbcb41e55792a87f63731bc9e2a710fc0e0adf4636e0204"
     },
     {
       "path": "tools/ci/check.sh",
@@ -730,6 +730,24 @@
       "mode": "100644",
       "bytes": 33505,
       "sha256": "ff60cd69b4a5e7994004095441491fe24b3635159676ea4133955006b9187f1c"
+    },
+    {
+      "path": "xtask/Cargo.toml",
+      "mode": "100644",
+      "bytes": 264,
+      "sha256": "a4786c44a9e41ef709353d292d586628775a6007115bfa33d64b68aa57b5fd75"
+    },
+    {
+      "path": "xtask/src/archive.rs",
+      "mode": "100644",
+      "bytes": 11299,
+      "sha256": "b62ebac302bd3d718a29d6c22d2e7440780372ead11b313e8d7bf1a0177025b4"
+    },
+    {
+      "path": "xtask/src/main.rs",
+      "mode": "100644",
+      "bytes": 5272,
+      "sha256": "142d55253c8c8912015a0c70a35675adc7dc899ffe5a998809a695b7e70cf169"
     }
   ]
 }

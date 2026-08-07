@@ -32,16 +32,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      # build-release.sh packages archives with python3. Windows runners expose
-      # Python as `python`, not `python3`, so pin an interpreter explicitly.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      # The xtask packages archives with only cargo; no python interpreter or
+      # /bin/sh shim is needed on any runner.
       - name: Build release archive
-        # build-release.sh is /bin/sh. The default shell on windows-latest is
-        # PowerShell, which cannot execute it; `bash` resolves to Git Bash there.
-        shell: bash
-        run: ./tools/ci/build-release.sh --target "${{ matrix.target }}" --tag "${{ github.ref_name }}" --dist dist
+        run: cargo run --locked -p xtask -- package --target "${{ matrix.target }}" --tag "${{ github.ref_name }}" --dist dist
       - uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.target }}
@@ -180,7 +174,43 @@ jobs:
               json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
           )
           PY
+      # Validate the generated manifest against the shipped release contract
+      # before anything is published. A manifest that violates its own contract
+      # must never reach a release.
+      - name: Verify the generated manifest satisfies the release contract
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          sys.path.insert(0, "tools/ci")
+          import release_contract_check as contract
+
+          manifest = json.loads(
+              pathlib.Path("dist/bran-release-manifest.json").read_text(encoding="utf-8")
+          )
+          errors = contract.validate_manifest(manifest)
+          if errors:
+              print("FAIL generated manifest violates the release contract")
+              for error in errors:
+                  print(f"  {error}")
+              raise SystemExit(1)
+          print("PASS generated manifest satisfies the release contract")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: release-files
           path: dist/
+      # Publish the release. Without this the assets exist only as workflow
+      # artifacts and every releases/download URL in the manifest would 404.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --notes "Release $TAG. Verify with cosign: see the Releases section of the README." \
+            dist/*

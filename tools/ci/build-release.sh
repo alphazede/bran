@@ -1,6 +1,8 @@
 #!/bin/sh
 # build-release.sh: plan + per-target package for exact 5 cross artifacts.
-# --plan validates names only (non-mutating). Build uses --locked, fails on missing target.
+# --plan validates names only (non-mutating). The build and packaging are
+# delegated to the Rust xtask (cargo run -p xtask -- package), so the release
+# path needs only cargo. Build uses --locked, fails on missing target.
 set -eu
 
 usage() {
@@ -93,6 +95,7 @@ if $plan_mode; then
     exit 0
 fi
 
+# Reject unknown targets before delegating (artifact_name exits non-zero).
 name=$(artifact_name "$target")
 script_dir=$(CDPATH="" cd "$(dirname "$0")" && pwd -P)
 bran_root=$(CDPATH="" cd "$script_dir/../.." && pwd -P)
@@ -102,60 +105,7 @@ if [ ! -f "$bran_root/Cargo.lock" ]; then
     exit 1
 fi
 
-mkdir -p "$dist"
-printf 'BUILD target=%s tag=%s artifact=%s\n' "$target" "$tag" "$name"
-
+# The xtask performs the build and the deterministic packaging; cargo is the
+# only runtime the release path needs.
 cd "$bran_root"
-cargo build --release --locked --target "$target" --bin bran
-
-case "$target" in
-    "$WX86") bin_path="target/$target/release/bran.exe" ;;
-    *) bin_path="target/$target/release/bran" ;;
-esac
-
-[ -f "$bin_path" ] || { printf 'FAIL binary not found: %s\n' "$bin_path" >&2; exit 1; }
-
-out="$dist/$name"
-case "$target" in
-    "$WX86") member=bran.exe; package=zip ;;
-    *) member=bran; package=tar.gz ;;
-esac
-
-python3 - "$bin_path" "$out" "$member" "$package" <<'PY'
-import gzip
-import io
-import os
-import sys
-import tarfile
-import zipfile
-
-binary, output, member, package = sys.argv[1:]
-with open(binary, "rb") as source:
-    data = source.read()
-
-if package == "tar.gz":
-    with open(output, "wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
-            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-                info = tarfile.TarInfo(member)
-                info.type = tarfile.REGTYPE
-                info.mode = 0o755
-                info.uid = info.gid = info.mtime = 0
-                info.uname = info.gname = ""
-                info.size = len(data)
-                archive.addfile(info, io.BytesIO(data))
-elif package == "zip":
-    info = zipfile.ZipInfo(member, (1980, 1, 1, 0, 0, 0))
-    info.create_system = 3
-    info.external_attr = 0o100755 << 16
-    info.compress_type = zipfile.ZIP_STORED
-    info.extra = info.comment = b""
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.comment = b""
-        archive.writestr(info, data)
-else:
-    raise RuntimeError("unsupported package format")
-PY
-[ -f "$out" ] || { printf 'FAIL no archive: %s\n' "$out" >&2; exit 1; }
-printf 'CREATED %s\n' "$out"
-exit 0
+exec cargo run --locked -p xtask -- package --target "$target" --tag "$tag" --dist "$dist"
