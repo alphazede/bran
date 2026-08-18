@@ -34,10 +34,14 @@ contain credential material.
    ```sh
    bran packet <repo-root> "<request>"
    bran query <repo-root> "<request>"
+   bran check <repo-root> okf-v0.1
+   bran check <repo-root> okf-v0.2
+   bran check <repo-root> bran-strict
    ```
 
 No generated answer is expected. Preserve provenance and label byte-derived
-token counts as estimates.
+token counts as estimates. `okf-v0.1` remains supported; `okf-v0.2` is
+additive. Only the selected profile controls the exit code.
 
 ## Journey 2: Optional connected task and removal
 

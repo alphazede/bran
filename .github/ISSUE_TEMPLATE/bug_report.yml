@@ -1,0 +1,60 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please don't paste anything private. Repository paths, source excerpts,
+        and query text often carry more than you'd expect.
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran
+      description: The exact command, verbatim.
+      render: shell
+      placeholder: bran query . "where is authentication handled"
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: What came back
+      description: >
+        The JSON BRAN printed. Include `warnings` and `failures`, since those
+        usually explain it. Trim it if it's long, but don't summarise it.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: >
+        For a ranking problem, name the file you expected and where it actually
+        landed. "Expected src/auth.rs, got it at rank 14 behind four test
+        files" is something I can chase.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `bran --version`.
+      placeholder: bran 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15 arm64, Ubuntu 24.04 x86_64, Windows 11
+    validations:
+      required: true
+  - type: checkboxes
+    id: offline
+    attributes:
+      label: Mode
+      options:
+        - label: This happened with no model connected (offline)
+        - label: This happened with a model connected

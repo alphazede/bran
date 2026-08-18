@@ -149,6 +149,10 @@ bran check . okf-v0.2
 
 All three results are reported independently and only the selected profile
 controls the exit code, so OKF conformance is never confused with house rules.
+`okf-v0.1` remains a supported selectable compatibility profile. `okf-v0.2` is
+additive and does not replace it. BRAN producer extensions (`okf_status`,
+`freshness`, `public_boundary`) stay valid and are not silently renamed to
+upstream `status` or `stale_after`.
 
 ## Export the knowledge graph
 
