@@ -1,21 +1,39 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "0a1de91258669123a3488af9b20d47a4d16b53c2",
+  "source_commit": "3feeba3ab30f0504a601ffbb732f98801e25c5e8",
   "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
     {
       "path": ".bran/policy.yaml",
       "mode": "100644",
-      "bytes": 975,
-      "sha256": "41e89d763cdd6beac49d0372e1758cc86c1e7cf6e15a494ded429fbbf7b6c7ac"
+      "bytes": 1470,
+      "sha256": "1310773d9ab2c879d66823174faa2ee81fdc67596c7189ab6237e6819d75b278"
     },
     {
       "path": ".branignore",
       "mode": "100644",
       "bytes": 86,
       "sha256": "fc3aedc03fe42a12f036c337a579efa7b47775a6f415d99e020f212cc38d4643"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
+      "mode": "100644",
+      "bytes": 1753,
+      "sha256": "199b767e0392a2a9c9a1fb452aa6b7410460636b239da46e80ca905aa4e6dc5f"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/config.yml",
+      "mode": "100644",
+      "bytes": 236,
+      "sha256": "639faef63a4c4deb8b3cb2ac86fdb888f12b51b06c767425c84db56bd8233558"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
+      "mode": "100644",
+      "bytes": 1386,
+      "sha256": "6fe630e14a84502ba6c59a961fb84894388369615de101aa70cf2ea3ebd3c6a0"
     },
     {
       "path": ".github/workflows/bran-fast.yml",
@@ -34,6 +52,18 @@
       "mode": "100644",
       "bytes": 100,
       "sha256": "e045528ae5373d1e7bbcd287702e6e7c0ccb096d2076acf9a7e6c9c708aefeab"
+    },
+    {
+      "path": "CODE_OF_CONDUCT.md",
+      "mode": "100644",
+      "bytes": 1346,
+      "sha256": "ea1c3b2cc119c76a7ce48d0ae84410eb6de22c6fbbe8a24b3aee08e86cf46ae4"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "mode": "100644",
+      "bytes": 2796,
+      "sha256": "3b268fa87dcfe4341f725bdb89c9d55e94139687d6e74e20f84ec71f201a7b4b"
     },
     {
       "path": "Cargo.lock",
@@ -68,8 +98,8 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "bytes": 9773,
-      "sha256": "e1e78f08b7f5bfe79f6a922d86df0d14de8a10d6e0771b2e602afda6ce502c3d"
+      "bytes": 10037,
+      "sha256": "2e0abb9ad0a78c411b75c72d798688c24110b0c57d426af199b8e376b9e37865"
     },
     {
       "path": "assets/brand/bran-repository-raven.png",
@@ -134,8 +164,8 @@
     {
       "path": "crates/bran-cli/src/main.rs",
       "mode": "100644",
-      "bytes": 322237,
-      "sha256": "ae35ec304b1c49cc01e3831e43f00b656af7d76fb2f4849f79a92034fa9eb924"
+      "bytes": 417784,
+      "sha256": "36b2ca5ae6b243b4d6ab0527e3e8b44100c532f14a33d7adc60a37edf7567f15"
     },
     {
       "path": "crates/bran-core/Cargo.toml",
@@ -386,8 +416,8 @@
     {
       "path": "docs/integrations/agent-setup.md",
       "mode": "100644",
-      "bytes": 6176,
-      "sha256": "f9ecccc289fd31330021a143c2e04ffe7b40ad273d3d75a8b63052789d5b1d88"
+      "bytes": 6388,
+      "sha256": "c26af274819ea9585fd3067abbdcd8ae6c79028b223d399bb3b5cfa01ae9e47c"
     },
     {
       "path": "examples/headless/README.md",
@@ -674,8 +704,8 @@
     {
       "path": "skill/use-bran/SKILL.md",
       "mode": "100644",
-      "bytes": 1214,
-      "sha256": "22c330b917abdf57e33b97ec44088b8278b61a7d1e0388672f358ae01b9258aa"
+      "bytes": 2244,
+      "sha256": "86006e16e96e8f5cf06b16c9bf362fa9272a228c6429a774d340918c615d6255"
     },
     {
       "path": "tools/ci/build-release.sh",
@@ -690,6 +720,12 @@
       "sha256": "3dbbcf9e9feeac7e84f9344620fff59810d4cd37f3de7d61456537bbdaf37163"
     },
     {
+      "path": "tools/ci/public-policy.yaml",
+      "mode": "100644",
+      "bytes": 1470,
+      "sha256": "1310773d9ab2c879d66823174faa2ee81fdc67596c7189ab6237e6819d75b278"
+    },
+    {
       "path": "tools/ci/public_boundary_check.py",
       "mode": "100644",
       "bytes": 13392,
@@ -698,8 +734,8 @@
     {
       "path": "tools/ci/public_export.py",
       "mode": "100644",
-      "bytes": 20580,
-      "sha256": "a0fa15276e2e12a98dd3545578296ac2896602c7cc9d96bda1f77b3361f94b4a"
+      "bytes": 33588,
+      "sha256": "c262d1860bc0ff312561b13035704f97eb326acc1587739e9715b2e7104bb8fe"
     },
     {
       "path": "tools/ci/release-check.sh",

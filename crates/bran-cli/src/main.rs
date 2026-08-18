@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -75,9 +75,13 @@ Usage: bran <command> [arguments]
 Commands:
   smoke
   query <repo-root> <request>
+  query <repo-root> --record <request>
+  query <repo-root> --add-dir <repo-root> <request>
+  query <repo-root> --add-dir <repo-root> --record <request>
   packet <repo-root> <request>
   check [--policy-stdin] <repo-root> <profile>
   maintain <propose|apply|revalidate> ...
+  evidence <summarize|propose|replay|clear> <repo-root>
   tui
   agents list
   doctor <--onboarding|--agent>
@@ -216,18 +220,53 @@ impl CliApp {
                     Some(r) => r,
                     None => return CliResult::usage(make_query_error("missing_root")),
                 };
-                let mut parts = vec![];
+                let mut added = Vec::new();
+                let mut parts = Vec::new();
+                let mut accept_flags = true;
+                let mut expect_add_dir = false;
+                let mut record = false;
                 for a in it {
-                    match a.as_ref().to_str() {
-                        Some(s) => parts.push(s.to_owned()),
+                    let value = match a.as_ref().to_str() {
+                        Some(s) => s.to_owned(),
                         None => return CliResult::usage(make_query_error("invalid_utf8")),
+                    };
+                    if expect_add_dir {
+                        if value.is_empty() {
+                            return CliResult::usage(make_query_error("missing_add_dir"));
+                        }
+                        added.push(value);
+                        expect_add_dir = false;
+                        continue;
                     }
+                    if accept_flags && value == "--add-dir" {
+                        expect_add_dir = true;
+                        continue;
+                    }
+                    if accept_flags && value == "--record" {
+                        if record {
+                            return CliResult::usage(make_query_error("duplicate_record"));
+                        }
+                        record = true;
+                        continue;
+                    }
+                    accept_flags = false;
+                    parts.push(value);
+                }
+                if expect_add_dir {
+                    return CliResult::usage(make_query_error("missing_add_dir"));
                 }
                 let qtext = parts.join(" ");
                 if qtext.trim().is_empty() {
                     return CliResult::usage(make_query_error("missing_query"));
                 }
-                match do_query(root, qtext) {
+                let result = if added.is_empty() {
+                    do_query(root, qtext, record)
+                } else {
+                    let mut roots = vec![root];
+                    roots.extend(added);
+                    do_query_multi(roots, qtext, record)
+                };
+                match result {
                     Ok((status, data, warns, fails, provenance, metrics)) => {
                         CliResult::success(make_envelope(
                             "query",
@@ -561,6 +600,34 @@ impl CliApp {
                     _ => CliResult::usage(make_maintain_error(&sub, "unknown_subcommand")),
                 }
             }
+            "evidence" => {
+                let sub = match it
+                    .next()
+                    .and_then(|o| o.as_ref().to_str().map(|s| s.to_owned()))
+                {
+                    Some(s) => s,
+                    None => return CliResult::usage(make_evidence_error("", "missing_subcommand")),
+                };
+                let root = match it
+                    .next()
+                    .and_then(|o| o.as_ref().to_str().map(|s| s.to_owned()))
+                {
+                    Some(r) => r,
+                    None => {
+                        return CliResult::usage(make_evidence_error(&sub, "missing_root"));
+                    }
+                };
+                if it.next().is_some() {
+                    return CliResult::usage(make_evidence_error(&sub, "too_many_args"));
+                }
+                match sub.as_str() {
+                    "summarize" => do_evidence_summarize(root),
+                    "propose" => do_evidence_propose(root),
+                    "replay" => do_evidence_replay(root),
+                    "clear" => do_evidence_clear(root),
+                    _ => CliResult::usage(make_evidence_error(&sub, "unknown_subcommand")),
+                }
+            }
             "tui" => {
                 if it.next().is_some() {
                     return CliResult::usage(UNKNOWN_COMMAND_ERROR.to_owned());
@@ -891,23 +958,32 @@ fn run_tui() -> ExitCode {
                         }
                         app.resolved = Some(resolved);
                     }
-                    TuiAction::Query { query, .. } => match do_query(".".to_owned(), query) {
-                        Ok((status, data, warnings, failures, provenance, metrics)) => {
-                            app.status = make_envelope(
-                                "query",
-                                status,
-                                &data,
-                                &warnings,
-                                &failures,
-                                &provenance,
-                                &metrics,
-                            )
+                    TuiAction::Query { query, .. } => {
+                        match do_query(".".to_owned(), query, false) {
+                            Ok((status, data, warnings, failures, provenance, metrics)) => {
+                                app.status = make_envelope(
+                                    "query",
+                                    status,
+                                    &data,
+                                    &warnings,
+                                    &failures,
+                                    &provenance,
+                                    &metrics,
+                                )
+                            }
+                            Err(error) => {
+                                app.status = make_envelope(
+                                    "query",
+                                    "error",
+                                    "null",
+                                    &[],
+                                    &[error],
+                                    "{}",
+                                    "{}",
+                                )
+                            }
                         }
-                        Err(error) => {
-                            app.status =
-                                make_envelope("query", "error", "null", &[], &[error], "{}", "{}")
-                        }
-                    },
+                    }
                     TuiAction::Apply => {
                         let path = Path::new(".bran/settings.conf");
                         let resolved = bran_tui::resolve_advanced(
@@ -1098,6 +1174,23 @@ fn make_maintain_error(sub: &str, detail: &str) -> String {
         "maintain".to_owned()
     } else {
         format!("maintain.{}", sub)
+    };
+    make_envelope(
+        &command,
+        "error",
+        "null",
+        &[],
+        &[detail.to_owned()],
+        "{}",
+        "{}",
+    )
+}
+
+fn make_evidence_error(sub: &str, detail: &str) -> String {
+    let command = if sub.is_empty() {
+        "evidence".to_owned()
+    } else {
+        format!("evidence.{sub}")
     };
     make_envelope(
         &command,
@@ -1413,6 +1506,7 @@ fn experimental_controls(
 
 #[derive(Clone, Debug)]
 struct SourceRanking {
+    bundle: String,
     id: NodeId,
     locator: String,
     rank: usize,
@@ -1506,22 +1600,64 @@ fn document_body(snapshot: &ScanSnapshot, locator: &str) -> Option<String> {
     Some(source[start..].to_owned())
 }
 
+/// Matched then unmatched query terms, with high-specificity entity units
+/// leading each list and named whole, never as their sub-tokens.
+fn query_term_coverage(
+    query_text: &str,
+    matched_terms: &BTreeSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let (terms, entities) = query_terms_and_entities(query_text);
+    let classify = |wanted_match: bool| {
+        entities
+            .iter()
+            .chain(terms.iter())
+            .filter(|term| matched_terms.contains(*term) == wanted_match)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    (classify(true), classify(false))
+}
+
+fn json_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| format!("\"{}\"", json_escape(value)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Semantic retrieval outcome for callers that must not treat command
+/// success or a non-empty ranking as full grounding (issue #18).
+///
+/// `grounded` means every extracted term matched. `miss` means there is no
+/// ranked evidence. `partial_unanchored` means some terms did not match;
+/// remaining rankings may still be useful. This classifies the result
+/// instead of guessing whether an unmatched bare word is English.
+fn query_semantic_outcome(
+    query_text: &str,
+    matched_terms: &BTreeSet<String>,
+    rankings: &[SourceRanking],
+) -> (&'static str, String, Vec<String>) {
+    let (matched, unmatched) = query_term_coverage(query_text, matched_terms);
+    let outcome = if rankings.is_empty() {
+        "miss"
+    } else if unmatched.is_empty() {
+        "grounded"
+    } else {
+        "partial_unanchored"
+    };
+    let coverage = format!(
+        "{{\"matched_terms\":[{}],\"unmatched_terms\":[{}]}}",
+        json_string_list(&matched),
+        json_string_list(&unmatched)
+    );
+    (outcome, coverage, unmatched)
+}
+
 /// One warning naming every query term or entity unit that matched no
 /// document, when any. Unmatched entity units lead the list and are named
 /// whole, never as their sub-tokens.
-fn unmatched_query_warnings(query_text: &str, matched_terms: &BTreeSet<String>) -> Vec<String> {
-    let (terms, entities) = query_terms_and_entities(query_text);
-    let unmatched = entities
-        .iter()
-        .filter(|term| !matched_terms.contains(*term))
-        .cloned()
-        .chain(
-            terms
-                .iter()
-                .filter(|term| !matched_terms.contains(*term))
-                .cloned(),
-        )
-        .collect::<Vec<_>>();
+fn unmatched_query_warnings(unmatched: &[String]) -> Vec<String> {
     if unmatched.is_empty() {
         return vec![];
     }
@@ -1539,9 +1675,23 @@ fn source_rankings(
     query_text: &str,
     max_sources: usize,
 ) -> (Vec<SourceRanking>, BTreeSet<String>) {
+    let (matches, matched_terms, entities) =
+        score_source_candidates(graph_input, snapshot, query_text);
+    let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
+    (
+        finalize_source_rankings(matches, max_sources, false),
+        matched_terms,
+    )
+}
+
+fn score_source_candidates(
+    graph_input: &GraphInput,
+    snapshot: &ScanSnapshot,
+    query_text: &str,
+) -> (Vec<SourceRanking>, BTreeSet<String>, BTreeSet<String>) {
     let (terms, entities) = query_terms_and_entities(query_text);
     let mut matched_terms = BTreeSet::new();
-    let mut matches = graph_input
+    let matches = graph_input
         .nodes()
         .iter()
         .filter(|node| node.role() == NodeRole::Document)
@@ -1688,6 +1838,7 @@ fn source_rankings(
                 .cloned()
                 .unwrap_or_default();
             (exact_matches + partial_matches > 0).then(|| SourceRanking {
+                bundle: String::new(),
                 id: node.id().clone(),
                 locator: node.provenance().locator().to_owned(),
                 rank: 0,
@@ -1712,37 +1863,63 @@ fn source_rankings(
             })
         })
         .collect::<Vec<_>>();
-    // A high-specificity entity unit that matched no document means the query
-    // names something this repository does not contain. When nothing else in
-    // the query matched at identity level (exact fact or path equality), the
-    // remaining generic body matches are not evidence for the entity: return
-    // no rankings so a caller cannot mistake command success for evidence
-    // coverage (issue #18). Exact content matches keep the rankings, with the
-    // unmatched unit still surfaced by name in the warnings.
+    (matches, matched_terms, entities)
+}
+
+/// A high-specificity entity unit that matched no document means the query
+/// names something this repository does not contain. When nothing else in
+/// the query matched at identity level (exact fact or path equality), the
+/// remaining generic body matches are not evidence for the entity: return
+/// no rankings so a caller cannot mistake command success for evidence
+/// coverage (issue #18). Exact content matches keep the rankings, with the
+/// unmatched unit still surfaced by name in the warnings.
+fn suppress_unanchored_entity_matches(
+    matches: Vec<SourceRanking>,
+    matched_terms: &BTreeSet<String>,
+    entities: &BTreeSet<String>,
+) -> Vec<SourceRanking> {
     if entities
         .iter()
         .any(|entity| !matched_terms.contains(entity))
         && !matches.iter().any(|ranking| ranking.exact_matches > 0)
     {
-        return (Vec::new(), matched_terms);
+        return Vec::new();
     }
+    matches
+}
+
+fn ranking_score_order(left: &SourceRanking, right: &SourceRanking) -> std::cmp::Ordering {
+    right
+        .exact_matches
+        .cmp(&left.exact_matches)
+        .then_with(|| right.partial_matches.cmp(&left.partial_matches))
+        .then_with(|| right.active.cmp(&left.active))
+        .then_with(|| right.canonical.cmp(&left.canonical))
+        .then_with(|| right.public_safe.cmp(&left.public_safe))
+        .then_with(|| right.confidence.cmp(&left.confidence))
+        .then_with(|| right.freshness.cmp(&left.freshness))
+}
+
+fn finalize_source_rankings(
+    mut matches: Vec<SourceRanking>,
+    max_sources: usize,
+    cross_bundle: bool,
+) -> Vec<SourceRanking> {
     matches.sort_by(|left, right| {
-        right
-            .exact_matches
-            .cmp(&left.exact_matches)
-            .then_with(|| right.partial_matches.cmp(&left.partial_matches))
-            .then_with(|| right.active.cmp(&left.active))
-            .then_with(|| right.canonical.cmp(&left.canonical))
-            .then_with(|| right.public_safe.cmp(&left.public_safe))
-            .then_with(|| right.confidence.cmp(&left.confidence))
-            .then_with(|| right.freshness.cmp(&left.freshness))
-            .then_with(|| left.id.cmp(&right.id))
+        let score = ranking_score_order(left, right);
+        if cross_bundle {
+            score
+                .then_with(|| left.bundle.cmp(&right.bundle))
+                .then_with(|| left.id.cmp(&right.id))
+        } else {
+            score.then_with(|| left.id.cmp(&right.id))
+        }
     });
     matches.truncate(max_sources);
     for (index, ranking) in matches.iter_mut().enumerate() {
         ranking.rank = index + 1;
     }
-    (matches, matched_terms)
+    matches
 }
 
 fn query_view_spec(rankings: &[SourceRanking], max_sources: usize) -> ViewSpec {
@@ -1771,6 +1948,53 @@ fn source_rankings_json(rankings: &[SourceRanking], selected_ids: &BTreeSet<Node
         ))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn source_rankings_json_with_bundle(
+    rankings: &[SourceRanking],
+    selected: &BTreeSet<(String, NodeId)>,
+) -> String {
+    rankings
+        .iter()
+        .filter(|ranking| selected.contains(&(ranking.bundle.clone(), ranking.id.clone())))
+        .map(|ranking| format!(
+            "{{\"bundle\":\"{}\",\"locator\":\"{}\",\"rank\":{},\"score\":{{\"exact\":{},\"partial\":{},\"active\":{},\"canonical\":{},\"public_safe\":{},\"confidence\":{},\"freshness\":\"{}\"}},\"match_reason\":\"{}\"}}",
+            json_escape(&ranking.bundle), json_escape(&ranking.locator), ranking.rank,
+            ranking.exact_matches, ranking.partial_matches, ranking.active, ranking.canonical,
+            ranking.public_safe, ranking.confidence, json_escape(&ranking.freshness),
+            json_escape(&ranking.match_reason)
+        ))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn selected_sources_json_with_bundle(
+    selected: &[(String, String, &'static str)],
+) -> (String, String) {
+    let locators = selected
+        .iter()
+        .map(|(bundle, locator, _)| {
+            format!(
+                "{{\"bundle\":\"{}\",\"locator\":\"{}\"}}",
+                json_escape(bundle),
+                json_escape(locator)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let reasons = selected
+        .iter()
+        .map(|(bundle, locator, reason)| {
+            format!(
+                "{{\"bundle\":\"{}\",\"locator\":\"{}\",\"reason\":\"{}\"}}",
+                json_escape(bundle),
+                json_escape(locator),
+                reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    (locators, reasons)
 }
 
 fn ranking_freshness(ranking: &SourceRanking) -> u64 {
@@ -1996,13 +2220,16 @@ fn selected_sources_json(selected: &[(String, &'static str)]) -> (String, String
     (locators, reasons)
 }
 
-fn do_query(root: String, query_text: String) -> QueryPacketResult {
+fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult {
     let root_path: &Path = Path::new(&root);
     let scanner = RepositoryScanner::new(root_path, ScanConfig::default())
         .map_err(|e| format!("scan_error: {:?}", e))?;
     if !root_path.join(POLICY_FILENAME).is_file() {
+        if record {
+            return Err("evidence_store_unavailable".to_owned());
+        }
         let data = format!(
-            "{{\"root\":\"{}\",\"query\":\"{}\",\"bran_status\":\"unavailable\",\"selected_locators\":[],\"why_selected\":[],\"source_rankings\":[],\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
+            "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"unavailable\",\"query_coverage\":{{\"matched_terms\":[],\"unmatched_terms\":[]}},\"bran_status\":\"unavailable\",\"selected_locators\":[],\"why_selected\":[],\"source_rankings\":[],\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
             json_escape(&root),
             json_escape(&query_text)
         );
@@ -2058,14 +2285,18 @@ fn do_query(root: String, query_text: String) -> QueryPacketResult {
         .iter()
         .map(|d| format!("{:?}", d))
         .collect();
-    warns.extend(unmatched_query_warnings(&query_text, &matched_terms));
+    let (query_outcome, query_coverage, unmatched) =
+        query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    warns.extend(unmatched_query_warnings(&unmatched));
 
     let (locs_json, why_selected_json) = selected_sources_json(&selected);
     let source_rankings_json = source_rankings_json(&rankings, &selected_ids);
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
         json_escape(&root),
         json_escape(&query_text),
+        query_outcome,
+        query_coverage,
         locs_json,
         why_selected_json,
         source_rankings_json,
@@ -2086,6 +2317,184 @@ fn do_query(root: String, query_text: String) -> QueryPacketResult {
         "{{\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}}",
         candidate_bytes, selected_bytes, context_bytes_avoided, estimated
     );
+    let evidence = query_evidence_record(
+        query_text,
+        vec![root],
+        query_outcome,
+        &matched_terms,
+        rankings.iter().map(evidence_ranking_from_source),
+    );
+    if record {
+        persist_query_evidence(&evidence)?;
+    }
+    Ok(("ok", data, warns, vec![], provenance, metrics))
+}
+
+struct ScannedQueryRoot {
+    requested: String,
+    snapshot: ScanSnapshot,
+    graph_input: GraphInput,
+}
+
+fn scan_policy_query_root(requested: &str) -> Result<ScannedQueryRoot, String> {
+    let root_path = Path::new(requested);
+    let scanner = RepositoryScanner::new(root_path, ScanConfig::default())
+        .map_err(|_| format!("scan_error: {requested}"))?;
+    if !root_path.join(POLICY_FILENAME).is_file() {
+        return Err(format!("native_policy_unavailable: {requested}"));
+    }
+    let snapshot = scanner
+        .scan()
+        .map_err(|_| format!("scan_error: {requested}"))?;
+    let graph_input = snapshot
+        .graph_input()
+        .map_err(|_| format!("graph_input_error: {requested}"))?;
+    Ok(ScannedQueryRoot {
+        requested: requested.to_owned(),
+        snapshot,
+        graph_input,
+    })
+}
+
+fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> QueryPacketResult {
+    let mut seen = BTreeSet::new();
+    for root in &roots {
+        if !seen.insert(root.as_str()) {
+            return Err(format!("duplicate_root: {root}"));
+        }
+    }
+    let scanned = roots
+        .iter()
+        .map(|root| scan_policy_query_root(root))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut matched_terms = BTreeSet::new();
+    let mut entities = BTreeSet::new();
+    let mut matches = Vec::new();
+    for root in &scanned {
+        let (mut root_matches, root_matched, root_entities) =
+            score_source_candidates(&root.graph_input, &root.snapshot, &query_text);
+        for ranking in &mut root_matches {
+            ranking.bundle = root.requested.clone();
+        }
+        matched_terms.extend(root_matched);
+        entities = root_entities;
+        matches.extend(root_matches);
+    }
+    let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
+    let rankings = finalize_source_rankings(matches, QUERY_RESULT_LIMIT, true);
+
+    let mut selected = BTreeMap::new();
+    let mut selected_keys = BTreeSet::new();
+    let mut warns = Vec::new();
+    let mut candidate_bytes = 0usize;
+    for root in &scanned {
+        candidate_bytes += root.snapshot.total_bytes;
+        warns.extend(
+            root.snapshot
+                .diagnostics
+                .iter()
+                .map(|diagnostic| format!("{diagnostic:?}")),
+        );
+        let root_rankings = rankings
+            .iter()
+            .filter(|ranking| ranking.bundle == root.requested)
+            .cloned()
+            .collect::<Vec<_>>();
+        if root_rankings.is_empty() {
+            continue;
+        }
+        let node_count = root.graph_input.nodes().len().max(1);
+        let edge_count = root.graph_input.edges().len().max(1);
+        let limits = GraphLimits::new(node_count, edge_count)
+            .map_err(|_| format!("limits_error: {}", root.requested))?;
+        let spec = query_view_spec(&root_rankings, QUERY_RESULT_LIMIT);
+        let graph = KnowledgeGraph::build(root.graph_input.clone(), limits)
+            .map_err(|_| format!("graph_error: {}", root.requested))?;
+        let compiled = ViewCompiler::new()
+            .compile(&spec, &graph)
+            .map_err(|_| format!("view_error: {}", root.requested))?;
+        let dependency_limits = DependencyClosureLimits::new(DEPENDENCY_DEPTH_LIMIT, 256)
+            .map_err(|_| format!("dep_limits: {}", root.requested))?;
+        let selected_ids = PacketAssembler::evidence_ids(&compiled, &graph, dependency_limits)
+            .map_err(|_| format!("packet_error: {}", root.requested))?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let seed_ids = compiled
+            .items()
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<BTreeSet<_>>();
+        for (locator, reason) in selected_sources(&selected_ids, &seed_ids, &graph, &root.snapshot)
+        {
+            selected.insert((root.requested.clone(), locator), reason);
+        }
+        for id in selected_ids {
+            selected_keys.insert((root.requested.clone(), id));
+        }
+    }
+
+    let selected = selected
+        .into_iter()
+        .map(|((bundle, locator), reason)| (bundle, locator, reason))
+        .collect::<Vec<_>>();
+    let selected_bytes = selected
+        .iter()
+        .map(|(bundle, locator, _)| {
+            scanned
+                .iter()
+                .find(|root| root.requested == *bundle)
+                .and_then(|root| root.snapshot.entries.get(locator.as_str()))
+                .map(|entry| entry.source.len())
+                .unwrap_or(0)
+        })
+        .sum::<usize>();
+    let estimated = selected_bytes / 4 + usize::from(!selected_bytes.is_multiple_of(4));
+    let context_bytes_avoided = candidate_bytes.saturating_sub(selected_bytes);
+
+    let (query_outcome, query_coverage, unmatched) =
+        query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    warns.extend(unmatched_query_warnings(&unmatched));
+
+    let (locs_json, why_selected_json) = selected_sources_json_with_bundle(&selected);
+    let source_rankings_json = source_rankings_json_with_bundle(&rankings, &selected_keys);
+    let data = format!(
+        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
+        json_escape(&roots[0]),
+        json_string_list(&roots),
+        json_escape(&query_text),
+        query_outcome,
+        query_coverage,
+        locs_json,
+        why_selected_json,
+        source_rankings_json,
+        candidate_bytes,
+        selected_bytes,
+        context_bytes_avoided,
+        estimated
+    );
+    let provenance = if locs_json.is_empty() {
+        "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
+    } else {
+        format!(
+            "{{\"sources\":[\"repository-scanner\",\"bran-core\"],\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}]}}",
+            locs_json, why_selected_json, source_rankings_json
+        )
+    };
+    let metrics = format!(
+        "{{\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}}",
+        candidate_bytes, selected_bytes, context_bytes_avoided, estimated
+    );
+    let evidence = query_evidence_record(
+        query_text,
+        roots,
+        query_outcome,
+        &matched_terms,
+        rankings.iter().map(evidence_ranking_from_source),
+    );
+    if record {
+        persist_query_evidence(&evidence)?;
+    }
     Ok(("ok", data, warns, vec![], provenance, metrics))
 }
 
@@ -2265,12 +2674,16 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         .iter()
         .map(|d| format!("{:?}", d))
         .collect();
-    warns.extend(unmatched_query_warnings(&query_text, &matched_terms));
+    let (query_outcome, query_coverage, unmatched) =
+        query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    warns.extend(unmatched_query_warnings(&unmatched));
 
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{}}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{}}}",
         json_escape(&root),
         json_escape(&query_text),
+        query_outcome,
+        query_coverage,
         controls.controls_json(),
         json_escape(&pkt.payload),
         selected_locators_json,
@@ -2904,6 +3317,1050 @@ fn do_maintain_revalidate(root: String) -> CliResult {
             is_interactive: false,
         },
     }
+}
+
+const EVIDENCE_STORE_VERSION: &str = "BRAN-QUERY-EVIDENCE/1";
+const EVIDENCE_STORE_RELATIVE: &str = ".bran/cache/query-evidence";
+const EVIDENCE_STORE_TMP_NAME: &str = "query-evidence.tmp";
+const MAX_EVIDENCE_RECORDS: usize = 32;
+const MAX_EVIDENCE_FILE_BYTES: usize = 64 * 1024;
+const MAX_EVIDENCE_REQUEST_BYTES: usize = 4096;
+const MAX_EVIDENCE_ROOTS: usize = 8;
+const MAX_EVIDENCE_FIELD_BYTES: usize = 4096;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QueryEvidenceRecord {
+    request: String,
+    requested_roots: Vec<String>,
+    outcome: String,
+    matched: Vec<String>,
+    unmatched: Vec<String>,
+    rankings: Vec<QueryEvidenceRanking>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QueryEvidenceRanking {
+    bundle: String,
+    locator: String,
+    rank: usize,
+    match_reason: String,
+    exact: usize,
+    partial: usize,
+    active: u8,
+    canonical: u8,
+    public_safe: u8,
+    confidence: u8,
+    freshness: String,
+}
+
+fn evidence_ranking_from_source(ranking: &SourceRanking) -> QueryEvidenceRanking {
+    QueryEvidenceRanking {
+        bundle: ranking.bundle.clone(),
+        locator: ranking.locator.clone(),
+        rank: ranking.rank,
+        match_reason: ranking.match_reason.clone(),
+        exact: ranking.exact_matches,
+        partial: ranking.partial_matches,
+        active: ranking.active,
+        canonical: ranking.canonical,
+        public_safe: ranking.public_safe,
+        confidence: ranking.confidence,
+        freshness: ranking.freshness.clone(),
+    }
+}
+
+fn query_evidence_record<I>(
+    request: String,
+    requested_roots: Vec<String>,
+    outcome: &str,
+    matched_terms: &BTreeSet<String>,
+    rankings: I,
+) -> QueryEvidenceRecord
+where
+    I: IntoIterator<Item = QueryEvidenceRanking>,
+{
+    let (matched, unmatched) = query_term_coverage(&request, matched_terms);
+    QueryEvidenceRecord {
+        request,
+        requested_roots,
+        outcome: outcome.to_owned(),
+        matched,
+        unmatched,
+        rankings: rankings.into_iter().collect(),
+    }
+}
+
+fn is_path_only_reason(reason: &str) -> bool {
+    matches!(reason, "exact:path" | "partial:path")
+}
+
+fn current_knowledge_documents(snapshot: &ScanSnapshot) -> Vec<String> {
+    snapshot
+        .entries
+        .keys()
+        .filter(|path| is_knowledge_document_path(path))
+        .cloned()
+        .collect()
+}
+
+fn evidence_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 8);
+    for character in value.chars() {
+        match character {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
+fn evidence_unescape(value: &str) -> Result<String, &'static str> {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            out.push(character);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            _ => return Err("evidence_store_corrupt"),
+        }
+    }
+    if out.len() > MAX_EVIDENCE_FIELD_BYTES {
+        return Err("evidence_store_oversized");
+    }
+    Ok(out)
+}
+
+fn evidence_store_path(root: &Path) -> Result<PathBuf, &'static str> {
+    if root
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("evidence_store_unsafe");
+    }
+    let bran = root.join(".bran");
+    match fs::symlink_metadata(&bran) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err("evidence_store_unsafe"),
+        Err(_) => return Err("evidence_store_unavailable"),
+    }
+    let policy = root.join(POLICY_FILENAME);
+    match fs::symlink_metadata(&policy) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err("evidence_store_unsafe"),
+        Err(_) => return Err("evidence_store_unavailable"),
+    }
+    let cache = bran.join("cache");
+    match fs::symlink_metadata(&cache) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err("evidence_store_unsafe"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("evidence_store_unavailable"),
+    }
+    let store = cache.join("query-evidence");
+    if store
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+        || store.parent().is_none_or(|parent| {
+            parent.file_name() != Some(OsStr::new("cache"))
+                || parent
+                    .parent()
+                    .is_none_or(|bran_parent| bran_parent.file_name() != Some(OsStr::new(".bran")))
+        })
+    {
+        return Err("evidence_store_unsafe");
+    }
+    Ok(store)
+}
+
+fn inspect_evidence_file(path: &Path) -> Result<Option<()>, &'static str> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("evidence_store_unavailable"),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err("evidence_store_unsafe")
+        }
+        Ok(metadata) if metadata.len() > MAX_EVIDENCE_FILE_BYTES as u64 => {
+            Err("evidence_store_oversized")
+        }
+        Ok(_) => Ok(Some(())),
+    }
+}
+
+fn load_evidence_records(root: &str) -> Result<Vec<QueryEvidenceRecord>, &'static str> {
+    let path = evidence_store_path(Path::new(root))?;
+    if inspect_evidence_file(&path)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let bytes =
+        read_regular_bounded(&path, MAX_EVIDENCE_FILE_BYTES).map_err(|error| match error {
+            ResultStoreError::NotFound => "evidence_store_unavailable",
+            ResultStoreError::Corrupt => "evidence_store_corrupt",
+            ResultStoreError::ItemTooLarge => "evidence_store_oversized",
+            _ => "evidence_store_unavailable",
+        })?;
+    parse_evidence_store(&bytes)
+}
+
+fn parse_evidence_store(bytes: &[u8]) -> Result<Vec<QueryEvidenceRecord>, &'static str> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "evidence_store_corrupt")?;
+    let mut lines = text.lines();
+    match lines.next() {
+        Some(EVIDENCE_STORE_VERSION) => {}
+        _ => return Err("evidence_store_corrupt"),
+    }
+    let mut records = Vec::new();
+    let mut current: Option<QueryEvidenceRecord> = None;
+    let mut seen_request = false;
+    let mut seen_outcome = false;
+    let finish = |record: QueryEvidenceRecord,
+                  seen_request: bool,
+                  seen_outcome: bool|
+     -> Result<QueryEvidenceRecord, &'static str> {
+        if !seen_request
+            || !seen_outcome
+            || record.requested_roots.is_empty()
+            || record.requested_roots.len() > MAX_EVIDENCE_ROOTS
+            || record.rankings.len() > QUERY_RESULT_LIMIT
+            || !matches!(
+                record.outcome.as_str(),
+                "grounded" | "miss" | "partial_unanchored" | "unavailable"
+            )
+        {
+            return Err("evidence_store_corrupt");
+        }
+        Ok(record)
+    };
+    for line in lines {
+        if line == "---" {
+            if let Some(record) = current.take() {
+                records.push(finish(record, seen_request, seen_outcome)?);
+                if records.len() > MAX_EVIDENCE_RECORDS {
+                    return Err("evidence_store_full");
+                }
+            }
+            current = Some(QueryEvidenceRecord {
+                request: String::new(),
+                requested_roots: Vec::new(),
+                outcome: String::new(),
+                matched: Vec::new(),
+                unmatched: Vec::new(),
+                rankings: Vec::new(),
+            });
+            seen_request = false;
+            seen_outcome = false;
+            continue;
+        }
+        let Some(record) = current.as_mut() else {
+            return Err("evidence_store_corrupt");
+        };
+        let Some((key, value)) = line.split_once('\t') else {
+            return Err("evidence_store_corrupt");
+        };
+        match key {
+            "request" if !seen_request => {
+                record.request = evidence_unescape(value)?;
+                if record.request.len() > MAX_EVIDENCE_REQUEST_BYTES {
+                    return Err("evidence_store_oversized");
+                }
+                seen_request = true;
+            }
+            "root" => {
+                record.requested_roots.push(evidence_unescape(value)?);
+            }
+            "outcome" if !seen_outcome => {
+                record.outcome = evidence_unescape(value)?;
+                seen_outcome = true;
+            }
+            "matched" => record.matched.push(evidence_unescape(value)?),
+            "unmatched" => record.unmatched.push(evidence_unescape(value)?),
+            "rank" => record.rankings.push(parse_evidence_rank(value)?),
+            _ => return Err("evidence_store_corrupt"),
+        }
+    }
+    if let Some(record) = current.take() {
+        records.push(finish(record, seen_request, seen_outcome)?);
+    }
+    if records.len() > MAX_EVIDENCE_RECORDS {
+        return Err("evidence_store_full");
+    }
+    Ok(records)
+}
+
+fn parse_evidence_rank(value: &str) -> Result<QueryEvidenceRanking, &'static str> {
+    let parts: Vec<&str> = value.split('\t').collect();
+    if parts.len() != 11 {
+        return Err("evidence_store_corrupt");
+    }
+    Ok(QueryEvidenceRanking {
+        rank: parts[0].parse().map_err(|_| "evidence_store_corrupt")?,
+        bundle: evidence_unescape(parts[1])?,
+        locator: evidence_unescape(parts[2])?,
+        match_reason: evidence_unescape(parts[3])?,
+        exact: parts[4].parse().map_err(|_| "evidence_store_corrupt")?,
+        partial: parts[5].parse().map_err(|_| "evidence_store_corrupt")?,
+        active: parts[6].parse().map_err(|_| "evidence_store_corrupt")?,
+        canonical: parts[7].parse().map_err(|_| "evidence_store_corrupt")?,
+        public_safe: parts[8].parse().map_err(|_| "evidence_store_corrupt")?,
+        confidence: parts[9].parse().map_err(|_| "evidence_store_corrupt")?,
+        freshness: evidence_unescape(parts[10])?,
+    })
+}
+
+fn encode_evidence_store(records: &[QueryEvidenceRecord]) -> Result<Vec<u8>, &'static str> {
+    if records.len() > MAX_EVIDENCE_RECORDS {
+        return Err("evidence_store_full");
+    }
+    let mut out = String::from(EVIDENCE_STORE_VERSION);
+    out.push('\n');
+    for record in records {
+        if record.request.len() > MAX_EVIDENCE_REQUEST_BYTES
+            || record.requested_roots.len() > MAX_EVIDENCE_ROOTS
+            || record.rankings.len() > QUERY_RESULT_LIMIT
+        {
+            return Err("evidence_store_oversized");
+        }
+        out.push_str("---\nrequest\t");
+        out.push_str(&evidence_escape(&record.request));
+        out.push('\n');
+        for root in &record.requested_roots {
+            out.push_str("root\t");
+            out.push_str(&evidence_escape(root));
+            out.push('\n');
+        }
+        out.push_str("outcome\t");
+        out.push_str(&evidence_escape(&record.outcome));
+        out.push('\n');
+        for term in &record.matched {
+            out.push_str("matched\t");
+            out.push_str(&evidence_escape(term));
+            out.push('\n');
+        }
+        for term in &record.unmatched {
+            out.push_str("unmatched\t");
+            out.push_str(&evidence_escape(term));
+            out.push('\n');
+        }
+        for ranking in &record.rankings {
+            out.push_str("rank\t");
+            out.push_str(&ranking.rank.to_string());
+            out.push('\t');
+            out.push_str(&evidence_escape(&ranking.bundle));
+            out.push('\t');
+            out.push_str(&evidence_escape(&ranking.locator));
+            out.push('\t');
+            out.push_str(&evidence_escape(&ranking.match_reason));
+            out.push('\t');
+            out.push_str(&ranking.exact.to_string());
+            out.push('\t');
+            out.push_str(&ranking.partial.to_string());
+            out.push('\t');
+            out.push_str(&ranking.active.to_string());
+            out.push('\t');
+            out.push_str(&ranking.canonical.to_string());
+            out.push('\t');
+            out.push_str(&ranking.public_safe.to_string());
+            out.push('\t');
+            out.push_str(&ranking.confidence.to_string());
+            out.push('\t');
+            out.push_str(&evidence_escape(&ranking.freshness));
+            out.push('\n');
+        }
+        if out.len() > MAX_EVIDENCE_FILE_BYTES {
+            return Err("evidence_store_oversized");
+        }
+    }
+    if out.len() > MAX_EVIDENCE_FILE_BYTES {
+        return Err("evidence_store_oversized");
+    }
+    Ok(out.into_bytes())
+}
+
+fn write_evidence_records(root: &Path, records: &[QueryEvidenceRecord]) -> Result<(), String> {
+    let store = evidence_store_path(root).map_err(str::to_owned)?;
+    if inspect_evidence_file(&store).is_err() {
+        return Err("evidence_store_unsafe".to_owned());
+    }
+    let cache = root.join(".bran").join("cache");
+    checked_directory(&cache).map_err(|error| match error {
+        ResultStoreError::Corrupt => "evidence_store_unsafe".to_owned(),
+        _ => "evidence_store_write_failed".to_owned(),
+    })?;
+    let encoded = encode_evidence_store(records).map_err(str::to_owned)?;
+    let tmp = cache.join(EVIDENCE_STORE_TMP_NAME);
+    match fs::symlink_metadata(&tmp) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("evidence_store_unavailable".to_owned()),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err("evidence_store_unsafe".to_owned());
+        }
+        Ok(_) => {
+            fs::remove_file(&tmp).map_err(|_| "evidence_store_write_failed".to_owned())?;
+        }
+    }
+    if let Err(error) = write_private_file(&tmp, &encoded) {
+        let _ = fs::remove_file(&tmp);
+        return Err(match error {
+            ResultStoreError::Corrupt => "evidence_store_corrupt".to_owned(),
+            _ => "evidence_store_write_failed".to_owned(),
+        });
+    }
+    if fs::rename(&tmp, &store).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return Err("evidence_store_write_failed".to_owned());
+    }
+    Ok(())
+}
+
+fn persist_query_evidence(record: &QueryEvidenceRecord) -> Result<(), String> {
+    let primary = record
+        .requested_roots
+        .first()
+        .ok_or_else(|| "evidence_store_unavailable".to_owned())?;
+    if record.request.len() > MAX_EVIDENCE_REQUEST_BYTES
+        || record.requested_roots.len() > MAX_EVIDENCE_ROOTS
+        || record.rankings.len() > QUERY_RESULT_LIMIT
+    {
+        return Err("evidence_store_oversized".to_owned());
+    }
+    let mut records = load_evidence_records(primary).map_err(str::to_owned)?;
+    records.retain(|existing| {
+        existing.request != record.request || existing.requested_roots != record.requested_roots
+    });
+    if records.len() >= MAX_EVIDENCE_RECORDS {
+        return Err("evidence_store_full".to_owned());
+    }
+    records.push(record.clone());
+    records.sort_by(|left, right| {
+        left.request
+            .cmp(&right.request)
+            .then_with(|| left.requested_roots.cmp(&right.requested_roots))
+    });
+    write_evidence_records(Path::new(primary), &records)
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct EvidenceDocRef {
+    bundle: String,
+    locator: String,
+}
+
+impl EvidenceDocRef {
+    fn new(bundle: impl Into<String>, locator: impl Into<String>) -> Self {
+        Self {
+            bundle: bundle.into(),
+            locator: locator.into(),
+        }
+    }
+
+    fn json(&self) -> String {
+        format!(
+            "{{\"bundle\":\"{}\",\"locator\":\"{}\"}}",
+            json_escape(&self.bundle),
+            json_escape(&self.locator)
+        )
+    }
+}
+
+fn json_doc_refs(values: &BTreeSet<EvidenceDocRef>) -> String {
+    values
+        .iter()
+        .map(EvidenceDocRef::json)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn ranking_bundle(record: &QueryEvidenceRecord, ranking: &QueryEvidenceRanking) -> String {
+    if ranking.bundle.is_empty() {
+        record.requested_roots.first().cloned().unwrap_or_default()
+    } else {
+        ranking.bundle.clone()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EvidenceBundleView {
+    available: bool,
+    documents: BTreeSet<String>,
+    unclassified: BTreeSet<String>,
+    stale: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl EvidenceBundleView {
+    fn unavailable() -> Self {
+        Self {
+            available: false,
+            documents: BTreeSet::new(),
+            unclassified: BTreeSet::new(),
+            stale: BTreeMap::new(),
+        }
+    }
+}
+
+fn map_primary_scan_error(error: String) -> String {
+    if error.starts_with("native_policy_unavailable") {
+        "evidence_store_unavailable".to_owned()
+    } else {
+        error
+    }
+}
+
+fn inspect_evidence_bundle(root: &str, snapshot: &ScanSnapshot) -> EvidenceBundleView {
+    EvidenceBundleView {
+        available: true,
+        documents: current_knowledge_documents(snapshot).into_iter().collect(),
+        unclassified: unclassified_documents(root, snapshot).into_iter().collect(),
+        stale: current_stale_documents(root, snapshot),
+    }
+}
+
+fn load_evidence_bundle_views(
+    primary: &str,
+    records: &[QueryEvidenceRecord],
+) -> Result<BTreeMap<String, EvidenceBundleView>, String> {
+    let scanned = scan_policy_query_root(primary).map_err(map_primary_scan_error)?;
+    let mut views = BTreeMap::new();
+    views.insert(
+        primary.to_owned(),
+        inspect_evidence_bundle(primary, &scanned.snapshot),
+    );
+    let mut extra = BTreeSet::new();
+    for record in records {
+        extra.extend(record.requested_roots.iter().cloned());
+    }
+    extra.remove(primary);
+    for root in extra {
+        match scan_policy_query_root(&root) {
+            Ok(scanned) => {
+                views.insert(
+                    root.clone(),
+                    inspect_evidence_bundle(&root, &scanned.snapshot),
+                );
+            }
+            Err(_) => {
+                views.insert(root, EvidenceBundleView::unavailable());
+            }
+        }
+    }
+    Ok(views)
+}
+
+fn is_stale_diagnostic_code(code: &str) -> bool {
+    matches!(
+        code,
+        "stale-frontmatter" | "stale-body" | "stale-after-shape" | "status-value"
+    )
+}
+
+fn current_stale_documents(
+    root: &str,
+    snapshot: &ScanSnapshot,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut stale: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let Ok(bundle) = derive_bundle_from_snapshot(snapshot) else {
+        return stale;
+    };
+    let policy = RepositoryPolicy::load(Path::new(root)).ok();
+    let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, policy.as_ref());
+    for outcome in [
+        &result.bran_strict,
+        &result.okf_v0_2,
+        &result.okf_compatibility,
+    ] {
+        for diagnostic in &outcome.diagnostics {
+            if is_stale_diagnostic_code(&diagnostic.code) {
+                stale
+                    .entry(diagnostic.path.clone())
+                    .or_default()
+                    .insert(diagnostic.code.clone());
+            }
+        }
+    }
+    for (path, doc) in bundle.docs() {
+        if let Some(map) = doc.frontmatter().parsed() {
+            if let Some(bran_core::schema::YamlValue::String(value)) = map.get("freshness") {
+                if value.trim().eq_ignore_ascii_case("stale") {
+                    stale
+                        .entry(path.clone())
+                        .or_default()
+                        .insert("stale-frontmatter".to_owned());
+                }
+            }
+        }
+        if doc.body().contains("STALE_CLAIM") {
+            stale
+                .entry(path.clone())
+                .or_default()
+                .insert("stale-body".to_owned());
+        }
+    }
+    stale
+}
+
+fn unclassified_documents(root: &str, snapshot: &ScanSnapshot) -> Vec<String> {
+    let coverage = RepositoryPolicy::load(Path::new(root))
+        .ok()
+        .and_then(|policy| policy.document_coverage);
+    let mut classified = BTreeSet::new();
+    let mut excluded = BTreeSet::new();
+    if let Some(coverage) = coverage {
+        classified.extend(coverage.native_bundle);
+        classified.extend(coverage.canonical_documents);
+        classified.extend(coverage.legacy_documents);
+        excluded.extend(coverage.excluded_documents.into_keys());
+    }
+    current_knowledge_documents(snapshot)
+        .into_iter()
+        .filter(|path| !excluded.contains(path) && !classified.contains(path))
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct StaleGap {
+    kind: String,
+    bundle: String,
+    locator: String,
+    request: Option<String>,
+}
+
+fn stale_gap_json(gap: &StaleGap, codes: &BTreeSet<String>) -> String {
+    let request = gap.request.as_deref().map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", json_escape(value)),
+    );
+    format!(
+        "{{\"kind\":\"{}\",\"bundle\":\"{}\",\"locator\":\"{}\",\"request\":{},\"codes\":[{}]}}",
+        json_escape(&gap.kind),
+        json_escape(&gap.bundle),
+        json_escape(&gap.locator),
+        request,
+        json_string_list(&codes.iter().cloned().collect::<Vec<_>>())
+    )
+}
+
+struct EvidenceGapSummary {
+    record_count: usize,
+    unanswered: BTreeSet<String>,
+    retrieved: BTreeSet<EvidenceDocRef>,
+    path_only: BTreeSet<EvidenceDocRef>,
+    never_retrieved: BTreeSet<EvidenceDocRef>,
+    unclassified: BTreeSet<EvidenceDocRef>,
+    stale: BTreeMap<StaleGap, BTreeSet<String>>,
+}
+
+fn collect_evidence_gaps(
+    primary: &str,
+    records: &[QueryEvidenceRecord],
+) -> Result<EvidenceGapSummary, String> {
+    let views = load_evidence_bundle_views(primary, records)?;
+    let mut unanswered = BTreeSet::new();
+    let mut retrieved = BTreeSet::new();
+    let mut path_only = BTreeSet::new();
+    let mut stale = BTreeMap::new();
+
+    for record in records {
+        unanswered.extend(record.unmatched.iter().cloned());
+        for ranking in &record.rankings {
+            let bundle = ranking_bundle(record, ranking);
+            let identity = EvidenceDocRef::new(bundle.clone(), ranking.locator.clone());
+            retrieved.insert(identity.clone());
+            if is_path_only_reason(&ranking.match_reason) {
+                path_only.insert(identity);
+            }
+            let missing = match views.get(&bundle) {
+                Some(view) if view.available => !view.documents.contains(&ranking.locator),
+                _ => true,
+            };
+            if missing {
+                stale.insert(
+                    StaleGap {
+                        kind: "missing_locator".to_owned(),
+                        bundle,
+                        locator: ranking.locator.clone(),
+                        request: Some(record.request.clone()),
+                    },
+                    BTreeSet::new(),
+                );
+            }
+        }
+        for requested in &record.requested_roots {
+            if views.get(requested).is_none_or(|view| !view.available) {
+                stale.insert(
+                    StaleGap {
+                        kind: "unavailable_root".to_owned(),
+                        bundle: requested.clone(),
+                        locator: String::new(),
+                        request: Some(record.request.clone()),
+                    },
+                    BTreeSet::new(),
+                );
+            }
+        }
+    }
+
+    let mut never_retrieved = BTreeSet::new();
+    let mut unclassified = BTreeSet::new();
+    for (bundle, view) in &views {
+        if !view.available {
+            continue;
+        }
+        for locator in &view.documents {
+            let identity = EvidenceDocRef::new(bundle.clone(), locator.clone());
+            if !retrieved.contains(&identity) {
+                never_retrieved.insert(identity);
+            }
+        }
+        for locator in &view.unclassified {
+            unclassified.insert(EvidenceDocRef::new(bundle.clone(), locator.clone()));
+        }
+        for (locator, codes) in &view.stale {
+            stale.insert(
+                StaleGap {
+                    kind: "stale_metadata".to_owned(),
+                    bundle: bundle.clone(),
+                    locator: locator.clone(),
+                    request: None,
+                },
+                codes.clone(),
+            );
+        }
+    }
+
+    Ok(EvidenceGapSummary {
+        record_count: records.len(),
+        unanswered,
+        retrieved,
+        path_only,
+        never_retrieved,
+        unclassified,
+        stale,
+    })
+}
+
+fn evidence_summary_data(root: &str) -> Result<String, String> {
+    let records = load_evidence_records(root).map_err(str::to_owned)?;
+    let summary = collect_evidence_gaps(root, &records)?;
+    let stale_json = summary
+        .stale
+        .iter()
+        .map(|(gap, codes)| stale_gap_json(gap, codes))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"root\":\"{}\",\"record_count\":{},\"unanswered_terms\":[{}],\"retrieved_documents\":[{}],\"path_only_retrievals\":[{}],\"never_retrieved_documents\":[{}],\"unclassified_documents\":[{}],\"stale_records\":[{}]}}",
+        json_escape(root),
+        summary.record_count,
+        json_string_list(&summary.unanswered.into_iter().collect::<Vec<_>>()),
+        json_doc_refs(&summary.retrieved),
+        json_doc_refs(&summary.path_only),
+        json_doc_refs(&summary.never_retrieved),
+        json_doc_refs(&summary.unclassified),
+        stale_json
+    ))
+}
+
+fn evidence_propose_data(root: &str) -> Result<String, String> {
+    let records = load_evidence_records(root).map_err(str::to_owned)?;
+    let summary = collect_evidence_gaps(root, &records)
+        .map_err(|_| "evidence_store_unavailable".to_owned())?;
+    let mut candidates = Vec::new();
+    let push_term = |candidates: &mut Vec<String>, term: &str| {
+        candidates.push(format!(
+            "{{\"kind\":\"unanswered_term\",\"target\":null,\"term\":\"{}\",\"replacement\":null,\"authority\":null}}",
+            json_escape(term)
+        ));
+    };
+    let push_doc = |candidates: &mut Vec<String>, kind: &str, target: &EvidenceDocRef| {
+        candidates.push(format!(
+            "{{\"kind\":\"{}\",\"target\":{},\"term\":null,\"replacement\":null,\"authority\":null}}",
+            kind,
+            target.json()
+        ));
+    };
+    for term in &summary.unanswered {
+        push_term(&mut candidates, term);
+    }
+    for locator in &summary.path_only {
+        push_doc(&mut candidates, "path_only_retrieval", locator);
+    }
+    for locator in &summary.never_retrieved {
+        push_doc(&mut candidates, "never_retrieved", locator);
+    }
+    for locator in &summary.unclassified {
+        push_doc(&mut candidates, "unclassified", locator);
+    }
+    for gap in summary.stale.keys() {
+        let locator = if gap.locator.is_empty() {
+            gap.bundle.clone()
+        } else {
+            gap.locator.clone()
+        };
+        let target = EvidenceDocRef::new(gap.bundle.clone(), locator);
+        push_doc(&mut candidates, "stale_record", &target);
+    }
+    Ok(format!("{{\"candidates\":[{}]}}", candidates.join(",")))
+}
+
+fn ranking_identity(ranking: &QueryEvidenceRanking) -> (String, String) {
+    (ranking.bundle.clone(), ranking.locator.clone())
+}
+
+fn ranking_payload(ranking: &QueryEvidenceRanking) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        ranking.rank,
+        ranking.match_reason,
+        ranking.exact,
+        ranking.partial,
+        ranking.active,
+        ranking.canonical,
+        ranking.public_safe,
+        ranking.confidence,
+        ranking.freshness
+    )
+}
+
+fn evaluate_query_record(record: &QueryEvidenceRecord) -> Result<QueryEvidenceRecord, String> {
+    let roots = record.requested_roots.clone();
+    if roots.is_empty() {
+        return Err("evidence_store_corrupt".to_owned());
+    }
+    query_evidence_from_live(
+        roots,
+        record.request.clone(),
+        record.requested_roots.len() > 1,
+    )
+}
+
+fn query_evidence_from_live(
+    roots: Vec<String>,
+    query_text: String,
+    multi: bool,
+) -> Result<QueryEvidenceRecord, String> {
+    if !multi {
+        let scanned = scan_policy_query_root(&roots[0])?;
+        let (rankings, matched_terms) = source_rankings(
+            &scanned.graph_input,
+            &scanned.snapshot,
+            &query_text,
+            QUERY_RESULT_LIMIT,
+        );
+        let (outcome, _, _) = query_semantic_outcome(&query_text, &matched_terms, &rankings);
+        return Ok(query_evidence_record(
+            query_text,
+            roots,
+            outcome,
+            &matched_terms,
+            rankings.into_iter().map(move |ranking| {
+                let mut item = evidence_ranking_from_source(&ranking);
+                item.bundle = String::new();
+                item
+            }),
+        ));
+    }
+    let scanned = roots
+        .iter()
+        .map(|root| scan_policy_query_root(root))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut matched_terms = BTreeSet::new();
+    let mut entities = BTreeSet::new();
+    let mut matches = Vec::new();
+    for root in &scanned {
+        let (mut root_matches, root_matched, root_entities) =
+            score_source_candidates(&root.graph_input, &root.snapshot, &query_text);
+        for ranking in &mut root_matches {
+            ranking.bundle = root.requested.clone();
+        }
+        matched_terms.extend(root_matched);
+        entities = root_entities;
+        matches.extend(root_matches);
+    }
+    let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
+    let rankings = finalize_source_rankings(matches, QUERY_RESULT_LIMIT, true);
+    let (outcome, _, _) = query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    Ok(query_evidence_record(
+        query_text,
+        roots,
+        outcome,
+        &matched_terms,
+        rankings
+            .into_iter()
+            .map(|ranking| evidence_ranking_from_source(&ranking)),
+    ))
+}
+
+fn ranking_differences(
+    recorded: &[QueryEvidenceRanking],
+    current: &[QueryEvidenceRanking],
+) -> Vec<String> {
+    let mut recorded_map = BTreeMap::new();
+    for ranking in recorded {
+        recorded_map.insert(ranking_identity(ranking), ranking);
+    }
+    let mut current_map = BTreeMap::new();
+    for ranking in current {
+        current_map.insert(ranking_identity(ranking), ranking);
+    }
+    let mut keys = BTreeSet::new();
+    keys.extend(recorded_map.keys().cloned());
+    keys.extend(current_map.keys().cloned());
+    let mut diffs = Vec::new();
+    for key in keys {
+        match (recorded_map.get(&key), current_map.get(&key)) {
+            (Some(before), Some(after)) if ranking_payload(before) == ranking_payload(after) => {}
+            (Some(before), Some(after)) => diffs.push(format!(
+                "{{\"kind\":\"changed\",\"bundle\":\"{}\",\"locator\":\"{}\",\"recorded_rank\":{},\"current_rank\":{},\"recorded_match_reason\":\"{}\",\"current_match_reason\":\"{}\"}}",
+                json_escape(&before.bundle),
+                json_escape(&before.locator),
+                before.rank,
+                after.rank,
+                json_escape(&before.match_reason),
+                json_escape(&after.match_reason)
+            )),
+            (Some(before), None) => diffs.push(format!(
+                "{{\"kind\":\"removed\",\"bundle\":\"{}\",\"locator\":\"{}\",\"recorded_rank\":{},\"current_rank\":null,\"recorded_match_reason\":\"{}\",\"current_match_reason\":null}}",
+                json_escape(&before.bundle),
+                json_escape(&before.locator),
+                before.rank,
+                json_escape(&before.match_reason)
+            )),
+            (None, Some(after)) => diffs.push(format!(
+                "{{\"kind\":\"added\",\"bundle\":\"{}\",\"locator\":\"{}\",\"recorded_rank\":null,\"current_rank\":{},\"recorded_match_reason\":null,\"current_match_reason\":\"{}\"}}",
+                json_escape(&after.bundle),
+                json_escape(&after.locator),
+                after.rank,
+                json_escape(&after.match_reason)
+            )),
+            (None, None) => {}
+        }
+    }
+    diffs
+}
+
+fn do_evidence_summarize(root: String) -> CliResult {
+    match evidence_summary_data(&root) {
+        Ok(data) => CliResult::success(make_envelope(
+            "evidence.summarize",
+            "ok",
+            &data,
+            &[],
+            &[],
+            "{}",
+            "{}",
+        )),
+        Err(detail) => CliResult::operation(make_evidence_error("summarize", &detail)),
+    }
+}
+
+fn do_evidence_propose(root: String) -> CliResult {
+    match evidence_propose_data(&root) {
+        Ok(data) => CliResult::success(make_envelope(
+            "evidence.propose",
+            "ok",
+            &data,
+            &[],
+            &[],
+            "{}",
+            "{}",
+        )),
+        Err(detail) => CliResult::operation(make_evidence_error("propose", &detail)),
+    }
+}
+
+fn do_evidence_replay(root: String) -> CliResult {
+    let records = match load_evidence_records(&root) {
+        Ok(records) => records,
+        Err(detail) => return CliResult::operation(make_evidence_error("replay", detail)),
+    };
+    if let Err(detail) = evidence_store_path(Path::new(&root)) {
+        return CliResult::operation(make_evidence_error("replay", detail));
+    }
+    let mut replays = Vec::new();
+    let mut difference_count = 0usize;
+    for record in &records {
+        let current = match evaluate_query_record(record) {
+            Ok(current) => current,
+            Err(_) => QueryEvidenceRecord {
+                request: record.request.clone(),
+                requested_roots: record.requested_roots.clone(),
+                outcome: "unavailable".to_owned(),
+                matched: Vec::new(),
+                unmatched: Vec::new(),
+                rankings: Vec::new(),
+            },
+        };
+        let diffs = ranking_differences(&record.rankings, &current.rankings);
+        let outcome_changed = record.outcome != current.outcome;
+        if outcome_changed || !diffs.is_empty() {
+            difference_count += 1;
+        }
+        replays.push(format!(
+            "{{\"request\":\"{}\",\"requested_roots\":[{}],\"recorded_outcome\":\"{}\",\"current_outcome\":\"{}\",\"outcome_changed\":{},\"ranking_differences\":[{}]}}",
+            json_escape(&record.request),
+            json_string_list(&record.requested_roots),
+            json_escape(&record.outcome),
+            json_escape(&current.outcome),
+            if outcome_changed { "true" } else { "false" },
+            diffs.join(",")
+        ));
+    }
+    let data = format!(
+        "{{\"root\":\"{}\",\"replays\":[{}],\"difference_count\":{}}}",
+        json_escape(&root),
+        replays.join(","),
+        difference_count
+    );
+    CliResult::success(make_envelope(
+        "evidence.replay",
+        "ok",
+        &data,
+        &[],
+        &[],
+        "{}",
+        "{}",
+    ))
+}
+
+fn do_evidence_clear(root: String) -> CliResult {
+    let path = match evidence_store_path(Path::new(&root)) {
+        Ok(path) => path,
+        Err(detail) => return CliResult::operation(make_evidence_error("clear", detail)),
+    };
+    let removed = match inspect_evidence_file(&path) {
+        Ok(None) => false,
+        Err(detail) => return CliResult::operation(make_evidence_error("clear", detail)),
+        Ok(Some(())) => {
+            if fs::remove_file(&path).is_err() {
+                return CliResult::operation(make_evidence_error(
+                    "clear",
+                    "evidence_store_write_failed",
+                ));
+            }
+            true
+        }
+    };
+    let data = format!(
+        "{{\"path\":\"{}\",\"removed\":{}}}",
+        EVIDENCE_STORE_RELATIVE,
+        if removed { "true" } else { "false" }
+    );
+    CliResult::success(make_envelope(
+        "evidence.clear",
+        "ok",
+        &data,
+        &[],
+        &[],
+        "{}",
+        "{}",
+    ))
 }
 
 fn do_agents_list() -> CliResult {
@@ -7662,6 +9119,484 @@ mod tests {
     }
 
     #[test]
+    fn query_distinguishes_grounded_miss_and_partial_unanchored() {
+        // A bare unmatched entity in a natural-language query must never look
+        // fully grounded. Rankings from the generic words around it may stay
+        // useful, but the outcome has to be machine-readable as partial /
+        // unanchored rather than guessed from word length or English (issue #18).
+        let root = std::env::temp_dir().join(format!(
+            "bran-query-outcome-classification-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
+        std::fs::write(
+            root.join("notes.md"),
+            "---\ntype: concept\ntitle: Notes\n---\nNotes about where the collector is configured and tested.\n",
+        )
+        .unwrap();
+        let root_arg = root.to_string_lossy().into_owned();
+
+        let diluted = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "where is the zephyrite collector configured and tested".to_owned(),
+        ]);
+        assert_eq!(diluted.exit_code, ExitCode::SUCCESS, "{}", diluted.output);
+        assert!(
+            diluted.output.contains("\"status\":\"ok\""),
+            "{}",
+            diluted.output
+        );
+        assert!(
+            diluted
+                .output
+                .contains("\"query_outcome\":\"partial_unanchored\""),
+            "{}",
+            diluted.output
+        );
+        assert!(!diluted.output.contains("\"query_outcome\":\"grounded\""));
+        assert!(
+            diluted.output.contains("\"locator\":\"notes.md\""),
+            "{}",
+            diluted.output
+        );
+        assert!(
+            diluted
+                .output
+                .contains("\"unmatched_terms\":[\"zephyrite\"]"),
+            "{}",
+            diluted.output
+        );
+        assert!(diluted.output.contains("unmatched_query_terms: zephyrite"));
+
+        let packet = CliApp::run(vec![
+            "packet".to_owned(),
+            root_arg.clone(),
+            "where is the zephyrite collector configured and tested".to_owned(),
+        ]);
+        assert_eq!(packet.exit_code, ExitCode::SUCCESS, "{}", packet.output);
+        assert!(
+            packet
+                .output
+                .contains("\"query_outcome\":\"partial_unanchored\""),
+            "{}",
+            packet.output
+        );
+        assert!(
+            packet.output.contains("\"locator\":\"notes.md\""),
+            "{}",
+            packet.output
+        );
+
+        let miss = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "zephyrite".to_owned(),
+        ]);
+        assert_eq!(miss.exit_code, ExitCode::SUCCESS, "{}", miss.output);
+        assert!(
+            miss.output.contains("\"query_outcome\":\"miss\""),
+            "{}",
+            miss.output
+        );
+        assert!(
+            miss.output.contains("\"source_rankings\":[],"),
+            "{}",
+            miss.output
+        );
+        assert!(!miss.output.contains("\"locator\":\"notes.md\""));
+        assert!(miss.output.contains("unmatched_query_terms: zephyrite"));
+
+        let grounded = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "collector configured".to_owned(),
+        ]);
+        assert_eq!(grounded.exit_code, ExitCode::SUCCESS, "{}", grounded.output);
+        assert!(
+            grounded.output.contains("\"query_outcome\":\"grounded\""),
+            "{}",
+            grounded.output
+        );
+        assert!(
+            grounded.output.contains("\"unmatched_terms\":[]"),
+            "{}",
+            grounded.output
+        );
+        assert!(grounded.output.contains("\"locator\":\"notes.md\""));
+        assert!(!grounded.output.contains("unmatched_query_terms"));
+
+        let ordinary = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "unfortunately where is the collector configured".to_owned(),
+        ]);
+        assert_eq!(ordinary.exit_code, ExitCode::SUCCESS, "{}", ordinary.output);
+        assert!(
+            ordinary.output.contains("\"locator\":\"notes.md\""),
+            "{}",
+            ordinary.output
+        );
+        assert!(
+            ordinary
+                .output
+                .contains("\"query_outcome\":\"partial_unanchored\""),
+            "{}",
+            ordinary.output
+        );
+        assert!(ordinary
+            .output
+            .contains("unmatched_query_terms: unfortunately"));
+        assert!(!ordinary.output.contains("\"source_rankings\":[],"));
+
+        let compound = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg,
+            "where is the zzq-entity-unit-8873 collector configured and tested".to_owned(),
+        ]);
+        assert_eq!(compound.exit_code, ExitCode::SUCCESS, "{}", compound.output);
+        assert!(
+            compound.output.contains("\"query_outcome\":\"miss\""),
+            "{}",
+            compound.output
+        );
+        assert!(
+            compound.output.contains("\"source_rankings\":[],"),
+            "{}",
+            compound.output
+        );
+        assert!(!compound.output.contains("\"locator\":\"notes.md\""));
+        assert!(compound
+            .output
+            .contains("unmatched_query_terms: zzq-entity-unit-8873"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn scratch_query_root(prefix: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("bran-query-{}-{}", prefix, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), minimal_valid_policy()).unwrap();
+        root
+    }
+
+    fn write_query_doc(root: &std::path::Path, name: &str, title: &str, body: &str) {
+        std::fs::write(
+            root.join(name),
+            format!("---\ntype: concept\ntitle: {title}\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn query_add_dir_ranks_across_two_policy_roots() {
+        // One query over two policy-bearing roots must return a single
+        // ranking that names each bundle and the ordered requested roots.
+        // A match in either root is returned. Repeated identical input is
+        // byte-identical. Ranks are unique and contiguous (issue #21).
+        let primary = scratch_query_root("multi-root-a");
+        let added = scratch_query_root("multi-root-b");
+        write_query_doc(
+            &primary,
+            "alpha.md",
+            "Alpha notes",
+            "The zzq-alpha-unit-2101 token lives only in the first bundle.",
+        );
+        write_query_doc(
+            &added,
+            "beta.md",
+            "Beta notes",
+            "The zzq-beta-unit-2101 token lives only in the second bundle.",
+        );
+        let primary_arg = primary.to_string_lossy().into_owned();
+        let added_arg = added.to_string_lossy().into_owned();
+        let args = vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            added_arg.clone(),
+            "zzq-alpha-unit-2101 zzq-beta-unit-2101".to_owned(),
+        ];
+
+        let first = CliApp::run(args.clone());
+        let second = CliApp::run(args);
+        assert_eq!(first.exit_code, ExitCode::SUCCESS, "{}", first.output);
+        assert!(!first.is_error);
+        assert_eq!(first.output, second.output);
+
+        assert!(
+            first.output.contains(&format!(
+                "\"requested_roots\":[\"{}\",\"{}\"]",
+                primary_arg, added_arg
+            )),
+            "{}",
+            first.output
+        );
+        assert!(
+            first.output.contains(&format!(
+                "\"bundle\":\"{}\",\"locator\":\"alpha.md\",\"rank\":",
+                primary_arg
+            )),
+            "{}",
+            first.output
+        );
+        assert!(
+            first.output.contains(&format!(
+                "\"bundle\":\"{}\",\"locator\":\"beta.md\",\"rank\":",
+                added_arg
+            )),
+            "{}",
+            first.output
+        );
+        let data_rankings = first
+            .output
+            .split_once("\"candidate_source_bytes\"")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(&first.output);
+        assert!(data_rankings.contains("\"rank\":1"), "{}", first.output);
+        assert!(data_rankings.contains("\"rank\":2"), "{}", first.output);
+        assert!(!data_rankings.contains("\"rank\":3"), "{}", first.output);
+        assert_eq!(
+            data_rankings.matches("\"rank\":1").count(),
+            1,
+            "{}",
+            first.output
+        );
+        assert_eq!(
+            data_rankings.matches("\"rank\":2").count(),
+            1,
+            "{}",
+            first.output
+        );
+
+        let only_added = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            added_arg.clone(),
+            "zzq-beta-unit-2101".to_owned(),
+        ]);
+        assert_eq!(
+            only_added.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            only_added.output
+        );
+        assert!(only_added.output.contains(&format!(
+            "\"bundle\":\"{}\",\"locator\":\"beta.md\"",
+            added_arg
+        )));
+        assert!(!only_added.output.contains("\"locator\":\"alpha.md\""));
+
+        let single = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "zzq-alpha-unit-2101".to_owned(),
+        ]);
+        assert_eq!(single.exit_code, ExitCode::SUCCESS, "{}", single.output);
+        assert!(!single.output.contains("requested_roots"));
+        assert!(!single.output.contains("\"bundle\":"));
+        assert!(single.output.contains(
+            "\"source_rankings\":[{\"locator\":\"alpha.md\",\"rank\":1,\"score\":{\"exact\":1"
+        ));
+
+        let _ = std::fs::remove_dir_all(primary);
+        let _ = std::fs::remove_dir_all(added);
+    }
+
+    #[test]
+    fn query_add_dir_uses_one_cross_root_score_order() {
+        // Scores are one shared tuple over the union. An exact title match
+        // in the added root outranks a body-only match in the primary root.
+        // Equal scores break ties by bundle identity then node identity,
+        // not by concatenating per-root rank numbers (issue #21).
+        let primary = scratch_query_root("multi-score-a");
+        let added = scratch_query_root("multi-score-b");
+        write_query_doc(
+            &primary,
+            "notes.md",
+            "Primary notes",
+            "sharedtokenxyz appears only in this body.",
+        );
+        write_query_doc(
+            &added,
+            "notes.md",
+            "sharedtokenxyz",
+            "title is the exact identity match.",
+        );
+        let primary_arg = primary.to_string_lossy().into_owned();
+        let added_arg = added.to_string_lossy().into_owned();
+
+        let result = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            added_arg.clone(),
+            "sharedtokenxyz".to_owned(),
+        ]);
+        assert_eq!(result.exit_code, ExitCode::SUCCESS, "{}", result.output);
+        let added_first = format!(
+            "\"bundle\":\"{}\",\"locator\":\"notes.md\",\"rank\":1",
+            added_arg
+        );
+        let primary_second = format!(
+            "\"bundle\":\"{}\",\"locator\":\"notes.md\",\"rank\":2",
+            primary_arg
+        );
+        assert!(result.output.contains(&added_first), "{}", result.output);
+        assert!(result.output.contains(&primary_second), "{}", result.output);
+
+        let left = scratch_query_root("multi-tie-aaa");
+        let right = scratch_query_root("multi-tie-zzz");
+        write_query_doc(
+            &left,
+            "notes.md",
+            "Tied notes",
+            "tiedtokenxyz appears in this body.",
+        );
+        write_query_doc(
+            &right,
+            "notes.md",
+            "Tied notes",
+            "tiedtokenxyz appears in this body.",
+        );
+        let left_arg = left.to_string_lossy().into_owned();
+        let right_arg = right.to_string_lossy().into_owned();
+        let tied = CliApp::run(vec![
+            "query".to_owned(),
+            left_arg.clone(),
+            "--add-dir".to_owned(),
+            right_arg.clone(),
+            "tiedtokenxyz".to_owned(),
+        ]);
+        assert_eq!(tied.exit_code, ExitCode::SUCCESS, "{}", tied.output);
+        let (first_bundle, second_bundle) = if left_arg <= right_arg {
+            (left_arg.as_str(), right_arg.as_str())
+        } else {
+            (right_arg.as_str(), left_arg.as_str())
+        };
+        assert!(tied.output.contains(&format!(
+            "\"bundle\":\"{}\",\"locator\":\"notes.md\",\"rank\":1",
+            first_bundle
+        )));
+        assert!(tied.output.contains(&format!(
+            "\"bundle\":\"{}\",\"locator\":\"notes.md\",\"rank\":2",
+            second_bundle
+        )));
+
+        let _ = std::fs::remove_dir_all(primary);
+        let _ = std::fs::remove_dir_all(added);
+        let _ = std::fs::remove_dir_all(left);
+        let _ = std::fs::remove_dir_all(right);
+    }
+
+    #[test]
+    fn query_add_dir_refuses_invalid_or_policy_less_root() {
+        // One invalid or policy-less added root refuses the whole request
+        // and names only that root argument. Valid-root results are not
+        // returned (issue #21).
+        let primary = scratch_query_root("multi-refuse-ok");
+        write_query_doc(
+            &primary,
+            "alpha.md",
+            "Alpha notes",
+            "The zzq-alpha-unit-2101 token lives here.",
+        );
+        let policy_less = std::env::temp_dir().join(format!(
+            "bran-query-multi-refuse-nopolicy-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&policy_less);
+        std::fs::create_dir_all(&policy_less).unwrap();
+        std::fs::write(policy_less.join("readme.md"), "no policy\n").unwrap();
+        let missing = std::env::temp_dir().join(format!(
+            "bran-query-multi-refuse-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+
+        let primary_arg = primary.to_string_lossy().into_owned();
+        let policy_less_arg = policy_less.to_string_lossy().into_owned();
+        let missing_arg = missing.to_string_lossy().into_owned();
+
+        let refused = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            policy_less_arg.clone(),
+            "zzq-alpha-unit-2101".to_owned(),
+        ]);
+        assert_eq!(
+            refused.exit_code,
+            TypedExit::Operation.code(),
+            "{}",
+            refused.output
+        );
+        assert!(refused.is_error);
+        assert!(refused.output.contains("native_policy_unavailable"));
+        assert!(refused.output.contains(&policy_less_arg));
+        assert!(!refused.output.contains("\"locator\":\"alpha.md\""));
+        assert!(!refused
+            .output
+            .contains(&format!("\"bundle\":\"{primary_arg}\"")));
+        assert!(!refused.output.contains("source_rankings"));
+
+        let invalid = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            missing_arg.clone(),
+            "zzq-alpha-unit-2101".to_owned(),
+        ]);
+        assert_eq!(
+            invalid.exit_code,
+            TypedExit::Operation.code(),
+            "{}",
+            invalid.output
+        );
+        assert!(invalid.is_error);
+        assert!(invalid.output.contains("scan_error"));
+        assert!(invalid.output.contains(&missing_arg));
+        assert!(!invalid.output.contains("\"locator\":\"alpha.md\""));
+        assert!(!invalid
+            .output
+            .contains(&format!("\"bundle\":\"{primary_arg}\"")));
+
+        let missing_flag = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+        ]);
+        assert_eq!(missing_flag.exit_code, TypedExit::Usage.code());
+        assert_eq!(
+            missing_flag.output,
+            super::make_query_error("missing_add_dir")
+        );
+
+        let late_flag = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "zzq-alpha-unit-2101".to_owned(),
+            "--add-dir".to_owned(),
+            policy_less_arg,
+        ]);
+        assert_eq!(
+            late_flag.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            late_flag.output
+        );
+        assert!(!late_flag.output.contains("requested_roots"));
+        assert!(late_flag.output.contains("\"locator\":\"alpha.md\""));
+
+        let _ = std::fs::remove_dir_all(primary);
+        let _ = std::fs::remove_dir_all(policy_less);
+    }
+
+    #[test]
     fn check_coverage_policy_error_is_typed_and_non_echoing() {
         let invalid = CliApp::run_with_stdin(
             vec![
@@ -8344,5 +10279,728 @@ mod tests {
         assert_eq!(result.exit_code, TypedExit::Validation.code());
         assert!(!result.output.contains("oversized"));
         assert!(!result.output.contains("manifest_too_large"));
+    }
+
+    fn evidence_policy() -> String {
+        "schema_version: \"1\"\ndocument_coverage:\n  roots:\n    - \".\"\n  canonical_documents:\n    - \"notes.md\"\n"
+            .to_owned()
+    }
+
+    fn scratch_evidence_root(prefix: &str) -> (std::path::PathBuf, String) {
+        let root =
+            std::env::temp_dir().join(format!("bran-evidence-{}-{}", prefix, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::fs::write(root.join(".bran/policy.yaml"), evidence_policy()).unwrap();
+        let arg = root.to_string_lossy().into_owned();
+        (root, arg)
+    }
+
+    fn write_evidence_doc(root: &std::path::Path, name: &str, title: &str, body: &str) {
+        std::fs::write(
+            root.join(name),
+            format!("---\ntype: concept\ntitle: {title}\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    fn query_data_section(output: &str) -> &str {
+        let start = output.find("\"data\":").expect("data");
+        let rest = &output[start..];
+        let end = rest
+            .find(",\"warnings\":")
+            .or_else(|| rest.find(",\"failures\":"))
+            .expect("data end");
+        &rest[..end]
+    }
+
+    #[test]
+    fn query_evidence_store_is_opt_in_and_does_not_change_ranking() {
+        let (root, root_arg) = scratch_evidence_root("rank-stable");
+        write_evidence_doc(
+            &root,
+            "notes.md",
+            "Notes",
+            "UNIQUE-BODY-SENTINEL-22 collector configured here.",
+        );
+        write_evidence_doc(&root, "orphan.md", "Orphan", "never retrieved unique body");
+        write_evidence_doc(&root, "path-zephyrite.md", "Path only", "no matching body");
+
+        let unrecorded = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "collector configured".to_owned(),
+        ]);
+        assert_eq!(
+            unrecorded.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            unrecorded.output
+        );
+        assert!(unrecorded.output.contains("\"query_outcome\":\"grounded\""));
+        assert!(unrecorded.output.contains("\"locator\":\"notes.md\""));
+
+        let recorded = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "--record".to_owned(),
+            "collector configured".to_owned(),
+        ]);
+        assert_eq!(recorded.exit_code, ExitCode::SUCCESS, "{}", recorded.output);
+        assert_eq!(
+            query_data_section(&unrecorded.output),
+            query_data_section(&recorded.output)
+        );
+
+        let store = root.join(".bran/cache/query-evidence");
+        assert!(store.is_file(), "opt-in record must persist a store file");
+        let stored = std::fs::read_to_string(&store).unwrap();
+        assert!(stored.contains("collector configured"));
+        assert!(!stored.contains("UNIQUE-BODY-SENTINEL-22"));
+        assert_eq!(
+            stored.matches("collector configured").count(),
+            1,
+            "one record per opted-in query"
+        );
+
+        let again = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "--record".to_owned(),
+            "collector configured".to_owned(),
+        ]);
+        assert_eq!(again.exit_code, ExitCode::SUCCESS, "{}", again.output);
+        let stored_again = std::fs::read_to_string(&store).unwrap();
+        assert_eq!(
+            stored_again.matches("collector configured").count(),
+            1,
+            "re-recording the same request replaces, not appends"
+        );
+
+        let with_store = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg,
+            "collector configured".to_owned(),
+        ]);
+        assert_eq!(unrecorded.output, with_store.output);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_summarize_propose_replay_clear_and_fail_closed() {
+        let (root, root_arg) = scratch_evidence_root("lifecycle");
+        write_evidence_doc(
+            &root,
+            "notes.md",
+            "Notes",
+            "UNIQUE-BODY-SENTINEL-22 collector configured here.",
+        );
+        write_evidence_doc(&root, "orphan.md", "Orphan", "never retrieved unique body");
+        write_evidence_doc(&root, "path-zephyrite.md", "Path only", "no matching body");
+
+        for request in ["collector configured", "zephyrite", "missingtokenxyz"] {
+            let recorded = CliApp::run(vec![
+                "query".to_owned(),
+                root_arg.clone(),
+                "--record".to_owned(),
+                request.to_owned(),
+            ]);
+            assert_eq!(recorded.exit_code, ExitCode::SUCCESS, "{}", recorded.output);
+        }
+
+        let notes_before = std::fs::read(root.join("notes.md")).unwrap();
+        let summarize = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            summarize.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            summarize.output
+        );
+        assert!(summarize
+            .output
+            .contains("\"command\":\"evidence.summarize\""));
+        assert!(summarize
+            .output
+            .contains("\"unanswered_terms\":[\"missingtokenxyz\"]"));
+        assert!(
+            summarize.output.contains("\"locator\":\"notes.md\"")
+                || summarize.output.contains("notes.md")
+        );
+        assert!(summarize.output.contains("path-zephyrite.md"));
+        assert!(summarize.output.contains("orphan.md"));
+        assert!(summarize.output.contains("unclassified"));
+        assert!(
+            summarize.output.contains("never_retrieved")
+                || summarize.output.contains("never-retrieved")
+                || summarize.output.contains("never_retrieved_documents")
+        );
+        assert!(
+            summarize.output.contains("path_only")
+                || summarize.output.contains("path-only")
+                || summarize.output.contains("path_only_retrievals")
+        );
+        assert!(summarize.output.contains("stale_records"));
+        assert!(!summarize.output.contains("UNIQUE-BODY-SENTINEL-22"));
+
+        let propose = CliApp::run(vec![
+            "evidence".to_owned(),
+            "propose".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(propose.exit_code, ExitCode::SUCCESS, "{}", propose.output);
+        assert!(propose.output.contains("\"command\":\"evidence.propose\""));
+        assert!(propose.output.contains("candidates"));
+        assert!(
+            propose.output.contains("unanswered_term")
+                || propose.output.contains("missingtokenxyz")
+        );
+        assert!(!propose.output.contains("UNIQUE-BODY-SENTINEL-22"));
+        assert_eq!(std::fs::read(root.join("notes.md")).unwrap(), notes_before);
+        assert!(!std::fs::read(root.join("orphan.md")).unwrap().is_empty());
+        assert!(!std::fs::read_to_string(root.join("notes.md"))
+            .unwrap()
+            .contains("p3-replacement"));
+
+        let replay_same = CliApp::run(vec![
+            "evidence".to_owned(),
+            "replay".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            replay_same.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            replay_same.output
+        );
+        assert!(replay_same
+            .output
+            .contains("\"command\":\"evidence.replay\""));
+        assert!(
+            replay_same.output.contains("\"difference_count\":0"),
+            "{}",
+            replay_same.output
+        );
+        assert!(!replay_same.output.contains("UNIQUE-BODY-SENTINEL-22"));
+
+        write_evidence_doc(
+            &root,
+            "notes.md",
+            "Notes",
+            "UNIQUE-BODY-SENTINEL-22 changed body.",
+        );
+        let replay_changed = CliApp::run(vec![
+            "evidence".to_owned(),
+            "replay".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            replay_changed.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            replay_changed.output
+        );
+        assert!(
+            replay_changed.output.contains("\"difference_count\":1")
+                || replay_changed.output.contains("\"outcome_changed\":true")
+                || replay_changed.output.contains("\"kind\":\"removed\""),
+            "{}",
+            replay_changed.output
+        );
+        assert!(
+            replay_changed.output.contains("notes.md"),
+            "{}",
+            replay_changed.output
+        );
+        assert!(!replay_changed.output.contains("UNIQUE-BODY-SENTINEL-22"));
+
+        std::fs::write(
+            root.join("notes.md"),
+            "---\ntype: concept\ntitle: Notes\n---\nUNIQUE-BODY-SENTINEL-22 collector configured here.\n",
+        )
+        .unwrap();
+        std::fs::remove_file(root.join("notes.md")).unwrap();
+        let summarize_stale = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            summarize_stale.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            summarize_stale.output
+        );
+        assert!(
+            summarize_stale.output.contains("stale"),
+            "{}",
+            summarize_stale.output
+        );
+        assert!(!summarize_stale.output.contains("UNIQUE-BODY-SENTINEL-22"));
+        write_evidence_doc(
+            &root,
+            "notes.md",
+            "Notes",
+            "UNIQUE-BODY-SENTINEL-22 collector configured here.",
+        );
+
+        let other = root.join("orphan.md");
+        let other_before = std::fs::read(&other).unwrap();
+        let store_path = root.join(".bran/cache/query-evidence");
+        assert!(store_path.is_file());
+        let cleared = CliApp::run(vec![
+            "evidence".to_owned(),
+            "clear".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(cleared.exit_code, ExitCode::SUCCESS, "{}", cleared.output);
+        assert!(cleared.output.contains("\"command\":\"evidence.clear\""));
+        assert!(cleared.output.contains(".bran/cache/query-evidence"));
+        assert!(!store_path.exists());
+        assert_eq!(std::fs::read(&other).unwrap(), other_before);
+        assert!(root.join("notes.md").is_file());
+        assert!(root.join(".bran/policy.yaml").is_file());
+
+        let cleared_again = CliApp::run(vec![
+            "evidence".to_owned(),
+            "clear".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            cleared_again.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            cleared_again.output
+        );
+        assert!(!store_path.exists());
+
+        let secret = "SECRET_LEAK_TOKEN_22";
+        std::fs::write(&store_path, format!("not-a-valid-store\n{secret}\n")).unwrap();
+        let malformed = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert!(malformed.is_error, "{}", malformed.output);
+        assert!(!malformed.output.contains(secret));
+        assert!(!malformed.output.contains("not-a-valid-store"));
+
+        let _ = std::fs::remove_file(&store_path);
+        std::fs::write(root.join("outside-secret.txt"), secret).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("outside-secret.txt"), &store_path).unwrap();
+            let linked = CliApp::run(vec![
+                "evidence".to_owned(),
+                "summarize".to_owned(),
+                root_arg.clone(),
+            ]);
+            assert!(linked.is_error, "{}", linked.output);
+            assert!(!linked.output.contains(secret));
+            let _ = std::fs::remove_file(&store_path);
+        }
+
+        let oversized = vec![b'x'; 65 * 1024];
+        std::fs::write(&store_path, &oversized).unwrap();
+        let big = CliApp::run(vec![
+            "evidence".to_owned(),
+            "replay".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert!(big.is_error, "{}", big.output);
+        assert!(!big.output.contains(&"x".repeat(32)));
+        let _ = std::fs::remove_file(&store_path);
+
+        std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
+        std::fs::create_dir(&store_path).unwrap();
+        let blocked = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "--record".to_owned(),
+            "collector configured".to_owned(),
+        ]);
+        assert!(blocked.is_error, "{}", blocked.output);
+        assert!(
+            blocked.output.contains("evidence_store"),
+            "{}",
+            blocked.output
+        );
+        let _ = std::fs::remove_dir(&store_path);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_multi_root_records_only_primary_and_preserves_bundles() {
+        let (primary, primary_arg) = scratch_evidence_root("multi-a");
+        let (added, added_arg) = scratch_evidence_root("multi-b");
+        write_evidence_doc(
+            &primary,
+            "alpha.md",
+            "Alpha notes",
+            "The zzq-alpha-unit-2201 token lives only in the first bundle.",
+        );
+        write_evidence_doc(
+            &added,
+            "beta.md",
+            "Beta notes",
+            "The zzq-beta-unit-2201 token lives only in the second bundle.",
+        );
+
+        let recorded = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            added_arg.clone(),
+            "--record".to_owned(),
+            "zzq-alpha-unit-2201 zzq-beta-unit-2201".to_owned(),
+        ]);
+        assert_eq!(recorded.exit_code, ExitCode::SUCCESS, "{}", recorded.output);
+        assert!(recorded.output.contains(&format!(
+            "\"bundle\":\"{primary_arg}\",\"locator\":\"alpha.md\""
+        )));
+        assert!(recorded.output.contains(&format!(
+            "\"bundle\":\"{added_arg}\",\"locator\":\"beta.md\""
+        )));
+        assert!(primary.join(".bran/cache/query-evidence").is_file());
+        assert!(!added.join(".bran/cache/query-evidence").exists());
+        let stored = std::fs::read_to_string(primary.join(".bran/cache/query-evidence")).unwrap();
+        assert!(stored.contains(&primary_arg));
+        assert!(stored.contains(&added_arg));
+        assert!(stored.contains("alpha.md"));
+        assert!(stored.contains("beta.md"));
+        assert!(!stored.contains("zzq-alpha-unit-2201 token lives"));
+
+        let replay = CliApp::run(vec![
+            "evidence".to_owned(),
+            "replay".to_owned(),
+            primary_arg.clone(),
+        ]);
+        assert_eq!(replay.exit_code, ExitCode::SUCCESS, "{}", replay.output);
+        assert!(
+            replay.output.contains("\"difference_count\":0"),
+            "{}",
+            replay.output
+        );
+        assert!(replay.output.contains(&primary_arg) || replay.output.contains("alpha.md"));
+        assert!(!added.join(".bran/cache/query-evidence").exists());
+
+        let _ = std::fs::remove_dir_all(primary);
+        let _ = std::fs::remove_dir_all(added);
+    }
+
+    fn evidence_identity(bundle: &str, locator: &str) -> String {
+        format!("\"bundle\":\"{bundle}\",\"locator\":\"{locator}\"")
+    }
+
+    #[test]
+    fn evidence_summarize_covers_secondary_bundle_gaps_and_identities() {
+        let (primary, primary_arg) = scratch_evidence_root("sec-a");
+        let (added, added_arg) = scratch_evidence_root("sec-b");
+        write_evidence_doc(
+            &primary,
+            "notes.md",
+            "Primary notes",
+            "The zzq-sec-alpha-2201 token lives only here.",
+        );
+        write_evidence_doc(
+            &primary,
+            "shared.md",
+            "Shared primary",
+            "The zzq-shared-both-2201 token appears in primary shared.",
+        );
+        write_evidence_doc(
+            &added,
+            "shared.md",
+            "Shared secondary",
+            "The zzq-shared-both-2201 token appears in secondary shared.",
+        );
+        write_evidence_doc(&added, "path-zephyrite.md", "Path only", "no matching body");
+        write_evidence_doc(&added, "orphan.md", "Orphan", "never retrieved unique body");
+
+        let recorded = CliApp::run(vec![
+            "query".to_owned(),
+            primary_arg.clone(),
+            "--add-dir".to_owned(),
+            added_arg.clone(),
+            "--record".to_owned(),
+            "zzq-sec-alpha-2201 zzq-shared-both-2201 zephyrite".to_owned(),
+        ]);
+        assert_eq!(recorded.exit_code, ExitCode::SUCCESS, "{}", recorded.output);
+
+        let summarize = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            primary_arg.clone(),
+        ]);
+        assert_eq!(
+            summarize.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            summarize.output
+        );
+
+        let primary_notes = evidence_identity(&primary_arg, "notes.md");
+        let primary_shared = evidence_identity(&primary_arg, "shared.md");
+        let added_shared = evidence_identity(&added_arg, "shared.md");
+        let added_path = evidence_identity(&added_arg, "path-zephyrite.md");
+        let added_orphan = evidence_identity(&added_arg, "orphan.md");
+        assert!(
+            summarize.output.contains(&primary_notes),
+            "{}",
+            summarize.output
+        );
+        assert!(
+            summarize.output.contains(&primary_shared),
+            "{}",
+            summarize.output
+        );
+        assert!(
+            summarize.output.contains(&added_shared),
+            "{}",
+            summarize.output
+        );
+        assert!(
+            summarize.output.contains(&added_path),
+            "{}",
+            summarize.output
+        );
+        assert!(
+            summarize.output.contains(&added_orphan),
+            "{}",
+            summarize.output
+        );
+        assert!(
+            summarize.output.contains("path_only_retrievals"),
+            "{}",
+            summarize.output
+        );
+        assert!(
+            summarize.output.contains("never_retrieved_documents"),
+            "{}",
+            summarize.output
+        );
+
+        let propose = CliApp::run(vec![
+            "evidence".to_owned(),
+            "propose".to_owned(),
+            primary_arg.clone(),
+        ]);
+        assert_eq!(propose.exit_code, ExitCode::SUCCESS, "{}", propose.output);
+        assert!(
+            propose.output.contains("path_only_retrieval"),
+            "{}",
+            propose.output
+        );
+        assert!(propose.output.contains(&added_path), "{}", propose.output);
+        assert!(
+            propose.output.contains("never_retrieved"),
+            "{}",
+            propose.output
+        );
+        assert!(propose.output.contains(&added_orphan), "{}", propose.output);
+        assert!(propose.output.contains("\"replacement\":null"));
+        assert!(propose.output.contains("\"authority\":null"));
+
+        let _ = std::fs::remove_dir_all(&added);
+        let summarize_missing = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            primary_arg.clone(),
+        ]);
+        assert_eq!(
+            summarize_missing.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            summarize_missing.output
+        );
+        assert!(
+            summarize_missing.output.contains(&added_arg),
+            "{}",
+            summarize_missing.output
+        );
+        assert!(
+            summarize_missing.output.contains("unavailable")
+                || summarize_missing.output.contains("stale"),
+            "{}",
+            summarize_missing.output
+        );
+        let propose_missing = CliApp::run(vec![
+            "evidence".to_owned(),
+            "propose".to_owned(),
+            primary_arg.clone(),
+        ]);
+        assert_eq!(
+            propose_missing.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            propose_missing.output
+        );
+        assert!(
+            propose_missing.output.contains(&added_arg),
+            "{}",
+            propose_missing.output
+        );
+        assert!(propose_missing.output.contains("\"replacement\":null"));
+        assert!(propose_missing.output.contains("\"authority\":null"));
+
+        let _ = std::fs::remove_dir_all(primary);
+    }
+
+    #[test]
+    fn evidence_summarize_reports_unclassified_without_coverage_roots() {
+        let (root, root_arg) = scratch_evidence_root("unclass");
+        std::fs::write(
+            root.join(".bran/policy.yaml"),
+            "schema_version: \"1\"\ndocument_coverage:\n  canonical_documents:\n    - \"notes.md\"\n",
+        )
+        .unwrap();
+        write_evidence_doc(
+            &root,
+            "notes.md",
+            "Notes",
+            "The zzq-unclass-2201 collector configured here.",
+        );
+        write_evidence_doc(&root, "stray.md", "Stray", "unclassified scanned document");
+
+        let recorded = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "--record".to_owned(),
+            "zzq-unclass-2201".to_owned(),
+        ]);
+        assert_eq!(recorded.exit_code, ExitCode::SUCCESS, "{}", recorded.output);
+
+        let summarize = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            summarize.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            summarize.output
+        );
+        let stray = evidence_identity(&root_arg, "stray.md");
+        assert!(
+            summarize.output.contains("unclassified_documents"),
+            "{}",
+            summarize.output
+        );
+        assert!(summarize.output.contains(&stray), "{}", summarize.output);
+
+        let propose = CliApp::run(vec![
+            "evidence".to_owned(),
+            "propose".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(propose.exit_code, ExitCode::SUCCESS, "{}", propose.output);
+        assert!(
+            propose.output.contains("unclassified"),
+            "{}",
+            propose.output
+        );
+        assert!(propose.output.contains(&stray), "{}", propose.output);
+        assert!(propose.output.contains("\"replacement\":null"));
+        assert!(propose.output.contains("\"authority\":null"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_summarize_reports_deterministic_stale_metadata_and_validator_gaps() {
+        let (root, root_arg) = scratch_evidence_root("stale-meta");
+        std::fs::write(
+            root.join(".bran/policy.yaml"),
+            "schema_version: \"1\"\ndocument_coverage:\n  roots:\n    - \".\"\n  canonical_documents:\n    - \"notes.md\"\n    - \"stale.md\"\n    - \"stale-body.md\"\n    - \"bad-lifecycle.md\"\n    - \"dated.md\"\n",
+        )
+        .unwrap();
+        write_evidence_doc(
+            &root,
+            "notes.md",
+            "Notes",
+            "The zzq-stale-2201 collector configured here.",
+        );
+        std::fs::write(
+            root.join("stale.md"),
+            "---\ntype: concept\ntitle: Stale freshness\nfreshness: stale\n---\nCurrent but stale metadata.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("stale-body.md"),
+            "---\ntype: concept\ntitle: Stale body\n---\nThis body contains STALE_CLAIM on purpose.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("bad-lifecycle.md"),
+            "---\ntype: concept\ntitle: Bad lifecycle\nstatus: not-a-status\nstale_after: not-a-date\n---\nMalformed lifecycle fields.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("dated.md"),
+            "---\ntype: concept\ntitle: Dated\nstale_after: 2020-01-01\n---\nValid past date is not expired without a clock.\n",
+        )
+        .unwrap();
+
+        let recorded = CliApp::run(vec![
+            "query".to_owned(),
+            root_arg.clone(),
+            "--record".to_owned(),
+            "zzq-stale-2201".to_owned(),
+        ]);
+        assert_eq!(recorded.exit_code, ExitCode::SUCCESS, "{}", recorded.output);
+
+        let summarize = CliApp::run(vec![
+            "evidence".to_owned(),
+            "summarize".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(
+            summarize.exit_code,
+            ExitCode::SUCCESS,
+            "{}",
+            summarize.output
+        );
+
+        let stale_id = evidence_identity(&root_arg, "stale.md");
+        let body_id = evidence_identity(&root_arg, "stale-body.md");
+        let bad_id = evidence_identity(&root_arg, "bad-lifecycle.md");
+        let dated_stale = format!(
+            "\"kind\":\"stale_record\",\"target\":{{{}}}",
+            evidence_identity(&root_arg, "dated.md")
+        );
+        assert!(summarize.output.contains(&stale_id), "{}", summarize.output);
+        assert!(summarize.output.contains(&body_id), "{}", summarize.output);
+        assert!(summarize.output.contains(&bad_id), "{}", summarize.output);
+        assert!(
+            summarize.output.contains("stale-frontmatter")
+                || summarize.output.contains("stale-body")
+                || summarize.output.contains("stale-after-shape")
+                || summarize.output.contains("status-value"),
+            "{}",
+            summarize.output
+        );
+
+        let propose = CliApp::run(vec![
+            "evidence".to_owned(),
+            "propose".to_owned(),
+            root_arg.clone(),
+        ]);
+        assert_eq!(propose.exit_code, ExitCode::SUCCESS, "{}", propose.output);
+        assert!(propose.output.contains(&stale_id), "{}", propose.output);
+        assert!(
+            propose.output.contains("stale_record"),
+            "{}",
+            propose.output
+        );
+        assert!(!propose.output.contains(&dated_stale), "{}", propose.output);
+        assert!(propose.output.contains("\"replacement\":null"));
+        assert!(propose.output.contains("\"authority\":null"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

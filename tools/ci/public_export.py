@@ -17,7 +17,35 @@ from typing import Any
 
 CONFIG_PATH = "public-export.json"
 RECEIPT_PATH = ".bran-export.json"
+PUBLIC_POLICY_PATH = "tools/ci/public-policy.yaml"
+EXPORTED_POLICY_PATH = ".bran/policy.yaml"
 ALLOWED_MODES = {"100644", "100755"}
+FORBIDDEN_PUBLIC_POLICY_MARKERS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/bugs",
+    "docs/integrations/proposals",
+    "docs/plans",
+    "docs/submissions",
+)
+# Exact SHA-256 of the reviewed committed tools/ci/public-policy.yaml
+# bytes. Any template change requires an explicit template-plus-pin review.
+# Structural substring checks below are defense in depth only; they are not
+# YAML parsing and must not be treated as a semantic policy validator.
+EXPECTED_PUBLIC_POLICY_SHA256 = (
+    "1310773d9ab2c879d66823174faa2ee81fdc67596c7189ab6237e6819d75b278"
+)
+CONTRACT_INTERNAL_POLICY = (
+    'schema_version: "1"\n'
+    "document_coverage:\n"
+    "  canonical_documents:\n"
+    "    - AGENTS.md\n"
+    "    - CLAUDE.md\n"
+    "    - docs/bugs/private.md\n"
+    "    - docs/integrations/proposals/draft.md\n"
+    "    - docs/plans/secret.md\n"
+    "    - docs/submissions/secret.md\n"
+)
 CONFIG_KEYS = {
     "schema_version",
     "source_repository",
@@ -203,7 +231,7 @@ def matches_root(path: str, roots: tuple[str, ...]) -> bool:
 def forbid_selected_path(path: str) -> None:
     if PurePosixPath(path).name in {"AGENTS.md", "CLAUDE.md"}:
         raise ExportError(f"agent instruction file selected for public export: {path}")
-    if path.startswith(".bran/") and path != ".bran/policy.yaml":
+    if path.startswith(".bran/") and path != EXPORTED_POLICY_PATH:
         raise ExportError(f"local BRAN runtime path selected for public export: {path}")
     if matches_root(path, FORBIDDEN_PUBLIC_ROOTS):
         raise ExportError(f"private root selected for public export: {path}")
@@ -222,9 +250,58 @@ def select_public(tree: dict[str, GitBlob], config: ExportConfig) -> dict[str, G
             if path == RECEIPT_PATH:
                 raise ExportError(f"source repository may not track generated receipt {RECEIPT_PATH}")
             selected[path] = blob
-    if ".bran/policy.yaml" not in selected:
-        raise ExportError("public export must include .bran/policy.yaml")
+    if EXPORTED_POLICY_PATH not in selected:
+        raise ExportError(f"public export must include {EXPORTED_POLICY_PATH}")
     return selected
+
+
+def is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def public_policy_blob(tree: dict[str, GitBlob]) -> GitBlob:
+    blob = tree.get(PUBLIC_POLICY_PATH)
+    if blob is None:
+        raise ExportError(f"source commit must contain regular {PUBLIC_POLICY_PATH}")
+    if blob.mode != "100644":
+        raise ExportError(f"{PUBLIC_POLICY_PATH} must be a regular file")
+    if not blob.data:
+        raise ExportError(f"{PUBLIC_POLICY_PATH} is empty")
+    if not is_sha256(EXPECTED_PUBLIC_POLICY_SHA256):
+        raise ExportError("public policy pin is not a lowercase 64-hex SHA-256 digest")
+    digest = hashlib.sha256(blob.data).hexdigest()
+    if digest != EXPECTED_PUBLIC_POLICY_SHA256:
+        raise ExportError(
+            f"{PUBLIC_POLICY_PATH} sha256 {digest} does not match reviewed pin "
+            f"{EXPECTED_PUBLIC_POLICY_SHA256}"
+        )
+    if b"\0" in blob.data:
+        raise ExportError(f"{PUBLIC_POLICY_PATH} is not valid UTF-8 text")
+    try:
+        text = blob.data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ExportError(f"{PUBLIC_POLICY_PATH} is not valid UTF-8") from exc
+    # Defense in depth only. The pin above is the fail-closed identity check.
+    if "schema_version" not in text:
+        raise ExportError(f"{PUBLIC_POLICY_PATH} is missing schema_version")
+    leaked = [marker for marker in FORBIDDEN_PUBLIC_POLICY_MARKERS if marker in text]
+    if leaked:
+        raise ExportError(f"{PUBLIC_POLICY_PATH} names private paths: {', '.join(leaked)}")
+    return blob
+
+
+def substitute_public_policy(tree: dict[str, GitBlob], selected: dict[str, GitBlob]) -> dict[str, GitBlob]:
+    template = public_policy_blob(tree)
+    if PUBLIC_POLICY_PATH not in selected:
+        raise ExportError(f"{PUBLIC_POLICY_PATH} must be selected for public export")
+    replaced = dict(selected)
+    replaced[EXPORTED_POLICY_PATH] = GitBlob(
+        path=EXPORTED_POLICY_PATH,
+        mode=template.mode,
+        object_id=template.object_id,
+        data=template.data,
+    )
+    return replaced
 
 
 CLI_MANIFEST_PATH = "crates/bran-cli/Cargo.toml"
@@ -291,7 +368,7 @@ def build_export(root: Path, reference: str) -> tuple[str, ExportConfig, dict[st
     if config_blob is None or config_blob.mode != "100644":
         raise ExportError(f"source commit must contain regular {CONFIG_PATH}")
     config = parse_config(config_blob.data)
-    selected = select_public(tree, config)
+    selected = substitute_public_policy(tree, select_public(tree, config))
     return commit, config, selected, receipt_bytes(config, commit, selected)
 
 
@@ -368,9 +445,33 @@ def write_text(path: Path, value: str) -> None:
     path.write_text(value, encoding="utf-8")
 
 
+def write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def reviewed_public_policy_bytes() -> bytes:
+    """Load the workspace template and require it to match the code-owned pin.
+
+    Used only by the standalone contract check. Export hashes the committed
+    blob against EXPECTED_PUBLIC_POLICY_SHA256 and never reads this file.
+    """
+    data = (source_root() / PUBLIC_POLICY_PATH).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != EXPECTED_PUBLIC_POLICY_SHA256:
+        raise AssertionError(
+            f"{PUBLIC_POLICY_PATH} digest {digest} does not match reviewed pin "
+            f"{EXPECTED_PUBLIC_POLICY_SHA256}"
+        )
+    return data
+
+
 def commit_all(root: Path, message: str) -> None:
     git_ok(root, ["add", "-A"])
     git_ok(root, ["commit", "-m", message])
+
+
+CONTRACT_CHILD_ENV = "BRAN_PUBLIC_EXPORT_CONTRACT_CHILD"
 
 
 def contract_config() -> dict[str, Any]:
@@ -379,8 +480,8 @@ def contract_config() -> dict[str, Any]:
         "source_repository": "example/bran-dev",
         "public_repository": "example/bran",
         "public_remote": "https://example.invalid/example/bran.git",
-        "allowed_files": [".bran/policy.yaml", "README.md"],
-        "allowed_roots": ["product"],
+        "allowed_files": [EXPORTED_POLICY_PATH, "README.md"],
+        "allowed_roots": ["product", "tools/ci"],
         "excluded_files": [
             ".bran/settings.conf",
             ".closeout.json",
@@ -395,8 +496,63 @@ def contract_config() -> dict[str, Any]:
             "docs/integrations/proposals",
             "docs/plans",
             "docs/submissions",
+            "tools/cutover",
         ],
     }
+
+
+def prove_exported_exporter_self_contained(reviewed_policy: bytes) -> None:
+    """Fail if an exported snapshot cannot run this exporter's own contract.
+
+    tools/cutover is excluded from public export. The full public gate runs
+    this file from the snapshot, so the pinned template must be present on
+    an exported root or reviewed_public_policy_bytes() cannot load it.
+    """
+    if os.environ.get(CONTRACT_CHILD_ENV) == "1":
+        return
+    with tempfile.TemporaryDirectory(prefix="bran-export-self-") as temporary:
+        base = Path(temporary)
+        source = base / "source"
+        public = base / "public"
+        source.mkdir()
+        git_ok(source, ["init", "-b", "main"])
+        git_ok(source, ["config", "user.name", "BRAN Export Check"])
+        git_ok(source, ["config", "user.email", "bran-export@example.invalid"])
+        config = contract_config()
+        write_text(source / "README.md", "public product\n")
+        write_text(source / EXPORTED_POLICY_PATH, CONTRACT_INTERNAL_POLICY)
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        write_bytes(source / "tools/ci/public_export.py", Path(__file__).read_bytes())
+        write_text(source / "product/data.txt", "deterministic\n")
+        write_text(source / "AGENTS.md", "private instructions\n")
+        write_text(source / CONFIG_PATH, json.dumps(config, indent=2) + "\n")
+        commit_all(source, "seed self-contained export contract")
+        write_snapshot(source, public, "HEAD")
+        if not (public / "tools/ci/public_export.py").is_file():
+            raise AssertionError("exported snapshot is missing tools/ci/public_export.py")
+        if not (public / PUBLIC_POLICY_PATH).is_file():
+            raise AssertionError(f"exported snapshot is missing {PUBLIC_POLICY_PATH}")
+        if (public / PUBLIC_POLICY_PATH).read_bytes() != reviewed_policy:
+            raise AssertionError(f"exported {PUBLIC_POLICY_PATH} does not match the pinned template")
+        env = os.environ.copy()
+        env[CONTRACT_CHILD_ENV] = "1"
+        completed = subprocess.run(
+            [sys.executable, str(public / "tools/ci/public_export.py")],
+            cwd=str(public),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                "exported snapshot failed its own exporter contract:\n"
+                f"{completed.stdout}\n{completed.stderr}"
+            )
+        if "PASS P1-PUBLIC-EXPORT" not in completed.stdout:
+            raise AssertionError(
+                "exported snapshot did not report exporter contract success:\n"
+                f"{completed.stdout}\n{completed.stderr}"
+            )
 
 
 def run_contract_check() -> None:
@@ -408,8 +564,10 @@ def run_contract_check() -> None:
         git_ok(source, ["init", "-b", "main"])
         git_ok(source, ["config", "user.name", "BRAN Export Check"])
         git_ok(source, ["config", "user.email", "bran-export@example.invalid"])
+        reviewed_policy = reviewed_public_policy_bytes()
         write_text(source / "README.md", "public product\n")
-        write_text(source / ".bran/policy.yaml", 'schema_version: "1"\n')
+        write_text(source / EXPORTED_POLICY_PATH, CONTRACT_INTERNAL_POLICY)
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
         write_text(source / "product/data.txt", "deterministic\n")
         write_text(source / "AGENTS.md", "private instructions\n")
         write_text(source / ".bran/results/run.json", "private runtime\n")
@@ -423,11 +581,31 @@ def run_contract_check() -> None:
         expect_export_error(lambda: write_snapshot(source, nonempty, "HEAD"), "nonempty output")
 
         commit, count = write_snapshot(source, public, "HEAD")
-        assert count == 4
+        assert count == 5
         assert len(commit) == 40
         assert not (public / "AGENTS.md").exists()
         assert not (public / ".bran/results/run.json").exists()
         assert not (public / "docs/integrations/proposals/draft.md").exists()
+        assert not (public / "tools/cutover/public-policy.yaml").exists()
+        exported_policy = (public / EXPORTED_POLICY_PATH).read_bytes()
+        exported_template = (public / PUBLIC_POLICY_PATH).read_bytes()
+        expected_policy = reviewed_policy
+        assert exported_policy == expected_policy
+        assert exported_template == expected_policy
+        for marker in FORBIDDEN_PUBLIC_POLICY_MARKERS:
+            assert marker.encode("utf-8") not in exported_policy
+            assert marker.encode("utf-8") not in exported_template
+        receipt = json.loads((public / RECEIPT_PATH).read_text(encoding="utf-8"))
+        policy_entry = next(item for item in receipt["files"] if item["path"] == EXPORTED_POLICY_PATH)
+        template_entry = next(item for item in receipt["files"] if item["path"] == PUBLIC_POLICY_PATH)
+        assert policy_entry["mode"] == template_entry["mode"] == "100644"
+        assert policy_entry["bytes"] == template_entry["bytes"] == len(expected_policy)
+        assert (
+            policy_entry["sha256"]
+            == template_entry["sha256"]
+            == hashlib.sha256(expected_policy).hexdigest()
+            == EXPECTED_PUBLIC_POLICY_SHA256
+        )
 
         git_ok(public, ["init", "-b", "main"])
         git_ok(public, ["config", "user.name", "BRAN Export Check"])
@@ -472,9 +650,106 @@ def run_contract_check() -> None:
         expect_export_error(lambda: build_export(source, "HEAD"), "symbolic link")
         link.unlink()
         commit_all(source, "remove unsafe link")
+
+        git_ok(source, ["rm", PUBLIC_POLICY_PATH])
+        commit_all(source, "remove public policy template")
+        expect_export_error(lambda: build_export(source, "HEAD"), "missing public policy template")
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        commit_all(source, "restore public policy template")
+
+        write_bytes(source / PUBLIC_POLICY_PATH, CONTRACT_INTERNAL_POLICY.encode("utf-8"))
+        commit_all(source, "add private paths to public policy template")
+        expect_export_error(lambda: build_export(source, "HEAD"), "private paths in public policy template")
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        commit_all(source, "restore public policy template")
+
+        write_bytes(source / PUBLIC_POLICY_PATH, b"")
+        commit_all(source, "empty public policy template")
+        expect_export_error(lambda: build_export(source, "HEAD"), "empty public policy template")
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        commit_all(source, "restore public policy template")
+
+        write_bytes(source / PUBLIC_POLICY_PATH, b"coverage: []\n")
+        commit_all(source, "malformed public policy template")
+        expect_export_error(lambda: build_export(source, "HEAD"), "malformed public policy template")
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        commit_all(source, "restore public policy template")
+
+        write_bytes(source / PUBLIC_POLICY_PATH, b'schema_version: "1"\n\0')
+        commit_all(source, "binary public policy template")
+        expect_export_error(lambda: build_export(source, "HEAD"), "binary public policy template")
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        commit_all(source, "restore public policy template")
+
+        (source / PUBLIC_POLICY_PATH).chmod(0o755)
+        commit_all(source, "unsafe public policy mode")
+        expect_export_error(lambda: build_export(source, "HEAD"), "unsafe public policy mode")
+        (source / PUBLIC_POLICY_PATH).chmod(0o644)
+        commit_all(source, "restore public policy mode")
+
+        policy_mutations = (
+            (
+                b'schema_version: "1"\n: : :\n[[[\n',
+                "malformed YAML with schema_version present",
+            ),
+            (
+                b'schema_version: "999"\nfrontmatter: {}\n',
+                "unsupported schema_version",
+            ),
+            (
+                b'schema_version: "1"\npath: docs\\/plans\n',
+                "escaped private path",
+            ),
+            (
+                b'schema_version: "1"\n- .bran/settings.conf\n',
+                "private .bran path",
+            ),
+            (
+                reviewed_policy[:-1] + bytes([reviewed_policy[-1] ^ 0x01]),
+                "one-byte public policy mutation",
+            ),
+        )
+        for payload, label in policy_mutations:
+            write_bytes(source / PUBLIC_POLICY_PATH, payload)
+            commit_all(source, f"mutate public policy: {label}")
+            expect_export_error(lambda: build_export(source, "HEAD"), label)
+            write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+            commit_all(source, "restore public policy template")
+
+        git_ok(source, ["rm", PUBLIC_POLICY_PATH])
+        write_bytes(source / "tools/cutover/public-policy.yaml", reviewed_policy)
+        commit_all(source, "leave template only on excluded cutover path")
+        expect_export_error(
+            lambda: build_export(source, "HEAD"),
+            "template only at excluded cutover path",
+        )
+        git_ok(source, ["rm", "tools/cutover/public-policy.yaml"])
+        write_bytes(source / PUBLIC_POLICY_PATH, reviewed_policy)
+        commit_all(source, "restore public policy template")
+
+        write_bytes(source / "tools/cutover/public-policy.yaml", CONTRACT_INTERNAL_POLICY.encode("utf-8"))
+        commit_all(source, "add decoy cutover policy")
+        _, _, selected, _ = build_export(source, "HEAD")
+        assert selected[PUBLIC_POLICY_PATH].data == reviewed_policy
+        assert selected[EXPORTED_POLICY_PATH].data == reviewed_policy
+        assert "tools/cutover/public-policy.yaml" not in selected
+        git_ok(source, ["rm", "tools/cutover/public-policy.yaml"])
+        commit_all(source, "remove decoy cutover policy")
+
+        config = contract_config()
+        config["allowed_roots"] = ["product"]
+        config["excluded_files"] = sorted({*config["excluded_files"], PUBLIC_POLICY_PATH})
+        write_text(source / CONFIG_PATH, json.dumps(config, indent=2) + "\n")
+        commit_all(source, "exclude public policy template")
+        expect_export_error(lambda: build_export(source, "HEAD"), "unselected public policy template")
+        write_text(source / CONFIG_PATH, json.dumps(contract_config(), indent=2) + "\n")
+        commit_all(source, "restore export config")
+
         write_text(source / "unknown.txt", "unclassified\n")
         commit_all(source, "add unclassified path")
         expect_export_error(lambda: build_export(source, "HEAD"), "unclassified path")
+
+        prove_exported_exporter_self_contained(reviewed_policy)
 
 
 def source_root() -> Path:
