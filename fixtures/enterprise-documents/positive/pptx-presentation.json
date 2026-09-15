@@ -1,0 +1,135 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "anchors": [
+    {
+      "family": "presentation",
+      "id": "anc:pptx:slide-1:notes-1",
+      "locator": {
+        "family": "presentation",
+        "shape": 2,
+        "slide": 1,
+        "z_index": 1
+      },
+      "role": "notes",
+      "text": "Speaker notes stay presentation-family evidence.",
+      "text_digest": "f671405b8c45e362a585b61460393312d0f8a0a2e8c6c3f33a6e12a2bc9ba050"
+    },
+    {
+      "family": "presentation",
+      "id": "anc:pptx:slide-1:title-1",
+      "locator": {
+        "family": "presentation",
+        "shape": 1,
+        "slide": 1,
+        "z_index": 0
+      },
+      "role": "title",
+      "text": "Synthetic PPTX slide brief",
+      "text_digest": "3ee5fc442de4df623ab1c8ab0dcb67623ef07c8c43dca52d725f8ca0e071a437"
+    }
+  ],
+  "assets": [
+    {
+      "byte_length": 96,
+      "id": "asset:pptx:hero",
+      "media_type": "image/png",
+      "path": "assets/hero.png",
+      "role": "figure",
+      "sha256": "7016666e782a5bfc09882879665af02f34aadfe6ce4024f6e015bf5403d5b4f7"
+    }
+  ],
+  "envelope_digest": "51b6df50314793574a50f454b01af9d8631b2af2df3324e2ad41e97c122159e9",
+  "evidence_id": "evd:pptx:synthetic-slide-brief",
+  "fidelity": {
+    "animations": "unsupported",
+    "macros": "unsupported",
+    "shapes": "normalized",
+    "slides": "exact",
+    "speaker_notes": "exact",
+    "text": "normalized",
+    "z_order": "approximated"
+  },
+  "hazards": {
+    "active_content": {
+      "kinds": [],
+      "present": false
+    },
+    "external_references": {
+      "count": 0,
+      "present": false
+    }
+  },
+  "normalized": {
+    "content": {
+      "family": "presentation",
+      "language": "en",
+      "text": "Synthetic PPTX slide brief Speaker notes stay presentation-family evidence."
+    },
+    "digest": "ebb5f6b2e681e68eaaae2d129268c82d910927560cbee111475b2429f2ce88ee"
+  },
+  "original": {
+    "byte_length": 5120,
+    "media_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "sha256": "0f6c8ac9091893bca211dd52ef534c3b1f12ae444b4e06929f168ab18f188e1f"
+  },
+  "parser": {
+    "attestation": "unavailable",
+    "identity": "google-document-ai",
+    "processor": "pretrained-layout-parser-v1.0-2024-06-03",
+    "version": "1.0"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "receipts": {
+    "malformed_input": {
+      "present": false,
+      "reason": null
+    },
+    "truncation": {
+      "omitted_anchor_count": 0,
+      "omitted_bytes": 0,
+      "reason": null,
+      "truncated": false
+    },
+    "unavailable": {
+      "features": [
+        "animations",
+        "macros"
+      ],
+      "parser_attestation": true,
+      "revision": true
+    }
+  },
+  "relations": [
+    {
+      "from": "anc:pptx:slide-1:notes-1",
+      "kind": "cites",
+      "to": "anc:pptx:slide-1:title-1"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "source": {
+    "locator": "synthetic:enterprise-documents/pptx-presentation",
+    "revision": {
+      "state": "unavailable",
+      "value": null
+    }
+  }
+}

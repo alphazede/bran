@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/google-source-attestation/v1/schema.json",
+  "title": "BRAN Google source attestation",
+  "description": "Deterministic V1 attestation over named Google-managed products and existing BRAN Git/OKF evidence. Gemini Enterprise and Agent Search own connectors and search, Document AI owns parsing, and Knowledge Catalog owns BigQuery metadata and lineage. bran-git and bran-okf record existing repository and bundle snapshots; they are not Google connectors. BRAN owns attestation, provenance, replay, DLP, public-boundary, and packet admission. This schema does not define a connector, parser, catalog, or live adapter. Each product has an exact locator grammar and required scope fields. Unknown, opaque, malformed, or cross-scope locators fail closed. Locators are not local filesystem paths. Canonical bytes are UTF-8 json.dumps(value, sort_keys=True, separators=(\",\", \":\"), ensure_ascii=False). attestation_digest is SHA-256 of those bytes after omitting attestation_digest. Document AI output.digest is the issue #5 envelope_digest. Search, catalog, and git-okf output.digest is SHA-256 of canonical output.normalized. Schema cannot bind digest equality, #5 envelope linkage, locator grammar, or typed fail-closed outcomes; x-semantic-oracle is the mandatory stdlib checker. Fixtures are synthetic recorded outputs and do not call Google.",
+  "x-semantic-oracle": "tools/ci/google_attestation_contract_check.py",
+  "x-product-capabilities": {
+    "agent-search": ["federated", "imported", "indexed", "unavailable"],
+    "bran-git": ["git-okf", "unavailable"],
+    "bran-okf": ["git-okf", "unavailable"],
+    "document-ai": ["parsed", "unavailable"],
+    "gemini-enterprise": ["federated", "imported", "indexed", "unavailable"],
+    "knowledge-catalog": ["metadata-only", "unavailable"]
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "admission",
+    "attestation_digest",
+    "attestation_id",
+    "capability",
+    "checkpoint",
+    "cost",
+    "failures",
+    "output",
+    "permission",
+    "policy",
+    "product",
+    "profile",
+    "runtime",
+    "schema_version",
+    "source",
+    "tenancy",
+    "truncation"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "attestation_id": { "$ref": "#/$defs/id" },
+    "attestation_digest": { "$ref": "#/$defs/sha256" },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "version"],
+      "properties": {
+        "identity": { "const": "bran-google-enterprise-v1" },
+        "version": { "const": "1.0.0" }
+      }
+    },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "identity", "component", "version"],
+      "properties": {
+        "name": {
+          "enum": [
+            "agent-search",
+            "bran-git",
+            "bran-okf",
+            "document-ai",
+            "gemini-enterprise",
+            "knowledge-catalog"
+          ]
+        },
+        "identity": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "component": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "effective", "attested"],
+      "properties": {
+        "requested": { "$ref": "#/$defs/capability_state" },
+        "effective": { "$ref": "#/$defs/capability_state" },
+        "attested": { "$ref": "#/$defs/capability_state" }
+      }
+    },
+    "tenancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant", "project", "location", "account_ref", "perimeter"],
+      "properties": {
+        "tenant": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "project": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "location": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "account_ref": { "$ref": "#/$defs/account_ref" },
+        "perimeter": { "enum": ["allowed", "denied", "unavailable"] }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locator", "filters", "configured_digest", "filter_digest", "revision"],
+      "properties": {
+        "locator": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "filters": { "$ref": "#/$defs/filters" },
+        "configured_digest": { "$ref": "#/$defs/sha256" },
+        "filter_digest": { "$ref": "#/$defs/sha256" },
+        "revision": { "$ref": "#/$defs/revision" }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "authorization_proof"],
+      "properties": {
+        "status": { "enum": ["attested", "partial", "unavailable"] },
+        "authorization_proof": { "type": "boolean" }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "digest", "envelope_path", "normalized"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "catalog-entry",
+            "enterprise-document-evidence-envelope",
+            "git-okf",
+            "search-result",
+            "unavailable"
+          ]
+        },
+        "digest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+        "envelope_path": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 256 }]
+        },
+        "normalized": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/normalized" }]
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "digest", "state", "revision_value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "digest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+        "state": { "enum": ["conflict", "current", "stale", "unavailable"] },
+        "revision_value": {
+          "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 256 }]
+        }
+      }
+    },
+    "truncation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["truncated", "omitted_bytes", "omitted_item_count", "reason"],
+      "properties": {
+        "truncated": { "type": "boolean" },
+        "omitted_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "omitted_item_count": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "reason": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 256 }] }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "quota"],
+      "properties": {
+        "status": { "enum": ["recorded", "unavailable"] },
+        "quota": { "enum": ["exhausted", "unavailable", "within-quota"] }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network"],
+      "properties": {
+        "network": { "enum": ["disabled", "not-invoked"] }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "dlp", "public_boundary"],
+      "properties": {
+        "classification": { "$ref": "#/$defs/classification" },
+        "dlp": { "$ref": "#/$defs/dlp" },
+        "public_boundary": { "$ref": "#/$defs/public_boundary" }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "maxItems": 14,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "completeness-overclaim",
+          "conflict",
+          "dlp-findings",
+          "history-incomplete",
+          "location-mismatch",
+          "mixed-revision",
+          "network-disabled",
+          "perimeter-denied",
+          "permission-unavailable",
+          "quota-exhausted",
+          "secret-reflection",
+          "stale",
+          "tenant-escape",
+          "unauthorized-action"
+        ]
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "packet", "query", "reasons"],
+      "properties": {
+        "status": { "enum": ["admitted", "rejected"] },
+        "packet": { "enum": ["eligible", "ineligible"] },
+        "query": { "enum": ["eligible", "ineligible"] },
+        "reasons": {
+          "type": "array",
+          "maxItems": 14,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9./:_-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "account_ref": {
+      "type": "string",
+      "minLength": 13,
+      "maxLength": 256,
+      "pattern": "^acct:opaque:[A-Za-z0-9._-]+$"
+    },
+    "capability_state": {
+      "enum": [
+        "federated",
+        "git-okf",
+        "imported",
+        "indexed",
+        "metadata-only",
+        "parsed",
+        "unavailable"
+      ]
+    },
+    "filters": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 },
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "kind", "value"],
+      "properties": {
+        "state": { "enum": ["attested", "unavailable"] },
+        "kind": { "enum": ["entry", "generation", "revision", "unavailable"] },
+        "value": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 256 }] }
+      }
+    },
+    "normalized": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_count", "result_ids"],
+      "properties": {
+        "item_count": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "result_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value"],
+      "properties": {
+        "status": { "enum": ["evaluated", "unavailable"] },
+        "value": {
+          "oneOf": [
+            { "type": "null" },
+            { "enum": ["public", "public-compatible", "private", "internal"] }
+          ]
+        }
+      }
+    },
+    "dlp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "findings"],
+      "properties": {
+        "status": { "enum": ["not-evaluated", "passed", "findings"] },
+        "findings": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      }
+    },
+    "public_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "value"],
+      "properties": {
+        "outcome": { "enum": ["admit-export", "reject-export", "unavailable"] },
+        "value": {
+          "oneOf": [
+            { "type": "null" },
+            { "enum": ["public", "public-compatible", "private", "internal"] }
+          ]
+        }
+      }
+    }
+  }
+}

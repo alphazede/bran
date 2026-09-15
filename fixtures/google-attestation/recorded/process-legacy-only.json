@@ -1,0 +1,20 @@
+{
+  "document": {
+    "mimeType": "application/pdf",
+    "pages": [
+      {
+        "pageNumber": 1,
+        "paragraphs": [
+          {
+            "layout": {
+              "textAnchor": {
+                "content": "Legacy paragraph text"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "text": "Legacy document text without documentLayout blocks."
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "defaultProcessorVersion": "projects/synthetic-project/locations/us/processors/synthetic-processor/processorVersions/pretrained-layout-parser-v1.0-2024-06-03",
+  "displayName": "synthetic-layout-parser",
+  "name": "projects/synthetic-project/locations/us/processors/synthetic-processor",
+  "state": "ENABLED",
+  "type": "LAYOUT_PARSER_PROCESSOR"
+}

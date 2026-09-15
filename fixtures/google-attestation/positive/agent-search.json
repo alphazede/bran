@@ -1,0 +1,98 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "attestation_digest": "7edbcf2172111175f7123cd18ffab8c447170753f09f9a9b86c75505757eb7f4",
+  "attestation_id": "att:google:agent-search:synthetic-store",
+  "capability": {
+    "attested": "federated",
+    "effective": "federated",
+    "requested": "federated"
+  },
+  "checkpoint": {
+    "digest": "d6bb12fb757bf153def9e9f2c6662693ace5828865da2969963dc3ebd40284d7",
+    "id": "ckpt:synthetic:agent-search-1",
+    "revision_value": null,
+    "state": "current"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [],
+  "output": {
+    "digest": "c5f390e9dead113a1e5810a153904ff0fbcdacfe03627f2c11d879aa7d3b9b0d",
+    "envelope_path": null,
+    "kind": "search-result",
+    "normalized": {
+      "item_count": 2,
+      "result_ids": [
+        "res:synthetic:store-1",
+        "res:synthetic:store-2"
+      ]
+    }
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "attested"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "synthetic-data-store",
+    "identity": "google-agent-search",
+    "name": "agent-search",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "0b4b2d20b8c773d323955f26de1eb3e3a45691a0da9677097b0ab51a63fb91ae",
+    "filter_digest": "4de3f857f78988660e288a67a01ba003881410b196176a3e7751c01d5b9e974b",
+    "filters": {
+      "access_control": "reader-acl",
+      "data_store": "synthetic-search-store",
+      "mode": "federated"
+    },
+    "locator": "projects/synthetic-project/locations/global/collections/default_collection/dataStores/synthetic-store",
+    "revision": {
+      "kind": "unavailable",
+      "state": "unavailable",
+      "value": null
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "global",
+    "perimeter": "unavailable",
+    "project": "synthetic-project",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}

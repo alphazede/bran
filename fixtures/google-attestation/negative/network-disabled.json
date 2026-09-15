@@ -1,0 +1,96 @@
+{
+  "admission": {
+    "packet": "ineligible",
+    "query": "ineligible",
+    "reasons": [
+      "network-disabled"
+    ],
+    "status": "rejected"
+  },
+  "attestation_digest": "a86a047030257cb21edeae9cd5141c8d103d989660dd99e96615e908edc54672",
+  "attestation_id": "att:google:gemini-enterprise:network-disabled",
+  "capability": {
+    "attested": "unavailable",
+    "effective": "unavailable",
+    "requested": "indexed"
+  },
+  "checkpoint": {
+    "digest": null,
+    "id": "ckpt:synthetic:gemini-offline-1",
+    "revision_value": null,
+    "state": "unavailable"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [
+    "network-disabled"
+  ],
+  "output": {
+    "digest": null,
+    "envelope_path": null,
+    "kind": "unavailable",
+    "normalized": null
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "unavailable"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "synthetic-engine",
+    "identity": "google-gemini-enterprise",
+    "name": "gemini-enterprise",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "disabled"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "3d03f54761d3f9bd5b36155cb651e0394795c407a9115d718fd78c37bfe4553b",
+    "filter_digest": "77b8437827ff79cfa39b4b50769f1057b0e8aa1307e07218b3e7cff7dd786108",
+    "filters": {
+      "access_control": "reader-acl",
+      "connector": "synthetic-workspace-connector",
+      "data_store": "synthetic-engine-store"
+    },
+    "locator": "projects/synthetic-project/locations/global/collections/default_collection/engines/synthetic-engine",
+    "revision": {
+      "kind": "unavailable",
+      "state": "unavailable",
+      "value": null
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "global",
+    "perimeter": "unavailable",
+    "project": "synthetic-project",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}

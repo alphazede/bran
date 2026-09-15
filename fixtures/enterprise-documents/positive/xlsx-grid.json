@@ -1,0 +1,126 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "anchors": [
+    {
+      "family": "grid",
+      "id": "anc:xlsx:metrics:cell-2-1",
+      "locator": {
+        "column": 1,
+        "family": "grid",
+        "row": 2,
+        "sheet": "Metrics"
+      },
+      "role": "cell",
+      "text": "42",
+      "text_digest": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049"
+    },
+    {
+      "family": "grid",
+      "id": "anc:xlsx:metrics:header-1-1",
+      "locator": {
+        "column": 1,
+        "family": "grid",
+        "row": 1,
+        "sheet": "Metrics"
+      },
+      "role": "header",
+      "text": "Metric",
+      "text_digest": "2d275a74912cca2e02e6d41f9cae3a75ceef3ed0ef734eff3710e10eb7112228"
+    }
+  ],
+  "assets": [],
+  "envelope_digest": "2f912e7d7d7b690b14f22bf676b644008ea8f84b9553f1d80b2824e585287818",
+  "evidence_id": "evd:xlsx:synthetic-grid-brief",
+  "fidelity": {
+    "cells": "exact",
+    "charts": "unsupported",
+    "formulas": "unsupported",
+    "macros": "unsupported",
+    "sheets": "exact",
+    "text": "exact"
+  },
+  "hazards": {
+    "active_content": {
+      "kinds": [],
+      "present": false
+    },
+    "external_references": {
+      "count": 0,
+      "present": false
+    }
+  },
+  "normalized": {
+    "content": {
+      "family": "grid",
+      "language": "en",
+      "text": "Metric 42"
+    },
+    "digest": "7753860c9b6bdd2eb1be980594f3cb78a337abde893382ea2454002abfabdf5d"
+  },
+  "original": {
+    "byte_length": 2048,
+    "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "sha256": "c892b3194922538d021c4c89ee52b14d2c9a31ee146a442e31676fd1d78b166c"
+  },
+  "parser": {
+    "attestation": "unavailable",
+    "identity": "google-document-ai",
+    "processor": "pretrained-layout-parser-v1.0-2024-06-03",
+    "version": "1.0"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "receipts": {
+    "malformed_input": {
+      "present": false,
+      "reason": null
+    },
+    "truncation": {
+      "omitted_anchor_count": 0,
+      "omitted_bytes": 0,
+      "reason": null,
+      "truncated": false
+    },
+    "unavailable": {
+      "features": [
+        "charts",
+        "formulas",
+        "macros"
+      ],
+      "parser_attestation": true,
+      "revision": true
+    }
+  },
+  "relations": [
+    {
+      "from": "anc:xlsx:metrics:cell-2-1",
+      "kind": "derived-from",
+      "to": "anc:xlsx:metrics:header-1-1"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "source": {
+    "locator": "synthetic:enterprise-documents/xlsx-grid",
+    "revision": {
+      "state": "unavailable",
+      "value": null
+    }
+  }
+}

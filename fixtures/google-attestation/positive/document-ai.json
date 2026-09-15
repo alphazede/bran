@@ -1,0 +1,91 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "attestation_digest": "7d89d834bb7e10a0c2a6ca3daa38f6728a6296371f4a28f2b10909a87e6d5711",
+  "attestation_id": "att:google:document-ai:synthetic-processor",
+  "capability": {
+    "attested": "parsed",
+    "effective": "parsed",
+    "requested": "parsed"
+  },
+  "checkpoint": {
+    "digest": null,
+    "id": "ckpt:synthetic:document-ai-1",
+    "revision_value": null,
+    "state": "unavailable"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [],
+  "output": {
+    "digest": "95e35bfdba0098ad721582c3d6aa37f158b57e2bb9bca8d74456909cf7a52f60",
+    "envelope_path": "fixtures/enterprise-documents/positive/pdf-fixed-layout.json",
+    "kind": "enterprise-document-evidence-envelope",
+    "normalized": null
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "attested"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "pretrained-layout-parser-v1.0-2024-06-03",
+    "identity": "google-document-ai",
+    "name": "document-ai",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "a98c48e55f8d74651aa8e0d8b02796fc1c970ecab898b259be3c06e90d392f1a",
+    "filter_digest": "a210d49bbb474e58b3a378f027a4eda391fc2b052509faa9ee0738855c1b6317",
+    "filters": {
+      "page_limit": "15",
+      "processor": "pretrained-layout-parser-v1.0-2024-06-03"
+    },
+    "locator": "projects/synthetic-project/locations/us/processors/synthetic-processor/processorVersions/pretrained-layout-parser-v1.0-2024-06-03",
+    "revision": {
+      "kind": "unavailable",
+      "state": "unavailable",
+      "value": null
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "us",
+    "perimeter": "unavailable",
+    "project": "synthetic-project",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}

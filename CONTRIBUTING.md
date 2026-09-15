@@ -4,18 +4,13 @@ Thanks for taking a look. Bug reports are genuinely useful, and the ranking
 heuristics are where I've been wrong most often, so that's a good place to
 push.
 
-## First, a note about this repository
+## This repository
 
-This repository is a published snapshot. BRAN is developed somewhere else, and
-the code here is exported from there and signed.
+This is the canonical BRAN source. Issues and pull requests belong here.
 
-**That means pull requests opened here can't be merged.** Not because they
-aren't welcome, but because the next export would overwrite them. Sorry. If you
-want to change something, open an issue and we'll work out the shape of it
-first. If a change is worth making, I'll carry it upstream and credit you in
-the commit.
-
-Issues, questions, and bug reports are all in the right place here.
+Open a branch, send a PR against `main`, and keep `./tools/ci/check.sh --fast`
+green. Please don't include anything private in issues or PRs. Repository
+paths, source excerpts, and query text often carry more than you'd expect.
 
 ## Building and testing
 
@@ -66,8 +61,9 @@ reported separately, on purpose.
 
 ## Security
 
-Don't open a public issue for a security problem. Email 1wgrumph@gmail.com
-instead and I'll deal with it.
+Don't open a public issue for a security problem. Report it privately through
+[GitHub Security Advisories](https://github.com/alphazede/bran/security/advisories/new).
+See [SECURITY.md](SECURITY.md).
 
 ## Licence
 

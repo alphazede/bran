@@ -1,0 +1,105 @@
+{
+  "admission": {
+    "packet": "ineligible",
+    "query": "ineligible",
+    "reasons": [
+      "history-incomplete",
+      "permission-unavailable",
+      "stale"
+    ],
+    "status": "rejected"
+  },
+  "attestation_digest": "23b2e9867096885625b8e33e5148064d99e525d6cbda17c91d2b35181de31ad9",
+  "attestation_id": "att:google:gemini-enterprise:incomplete-permission",
+  "capability": {
+    "attested": "indexed",
+    "effective": "indexed",
+    "requested": "indexed"
+  },
+  "checkpoint": {
+    "digest": "73addb5906e6aa7b3bad0e401b80b9e844f93fbf8fdcde06dce4105b7f448ffa",
+    "id": "ckpt:synthetic:gemini-stale-1",
+    "revision_value": null,
+    "state": "stale"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [
+    "history-incomplete",
+    "permission-unavailable",
+    "stale"
+  ],
+  "output": {
+    "digest": "6b2d7961a0b0379e968853236e4195b27cda104f61292f95a95dea14ce19e1cb",
+    "envelope_path": null,
+    "kind": "search-result",
+    "normalized": {
+      "item_count": 1,
+      "result_ids": [
+        "res:synthetic:1"
+      ]
+    }
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "partial"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "synthetic-engine",
+    "identity": "google-gemini-enterprise",
+    "name": "gemini-enterprise",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "3d03f54761d3f9bd5b36155cb651e0394795c407a9115d718fd78c37bfe4553b",
+    "filter_digest": "77b8437827ff79cfa39b4b50769f1057b0e8aa1307e07218b3e7cff7dd786108",
+    "filters": {
+      "access_control": "reader-acl",
+      "connector": "synthetic-workspace-connector",
+      "data_store": "synthetic-engine-store"
+    },
+    "locator": "projects/synthetic-project/locations/global/collections/default_collection/engines/synthetic-engine",
+    "revision": {
+      "kind": "unavailable",
+      "state": "unavailable",
+      "value": null
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "global",
+    "perimeter": "unavailable",
+    "project": "synthetic-project",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 128,
+    "omitted_item_count": 3,
+    "reason": "item-budget",
+    "truncated": true
+  }
+}

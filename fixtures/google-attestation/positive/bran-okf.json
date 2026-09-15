@@ -1,0 +1,96 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "attestation_digest": "88bd2d466c0e1895951842edd0c44c3618867d9ee7fa95333e5a824dc301be5c",
+  "attestation_id": "att:bran-okf:synthetic-bundle",
+  "capability": {
+    "attested": "git-okf",
+    "effective": "git-okf",
+    "requested": "git-okf"
+  },
+  "checkpoint": {
+    "digest": "8d00021688727357ec2969d44526f895d2da2bb562be5d2a8f0e758fdd5b213d",
+    "id": "ckpt:synthetic:bran-okf-1",
+    "revision_value": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "state": "current"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [],
+  "output": {
+    "digest": "bc1b2cf49be49e5dff6115a08169f986c1ddef16814718891397374f3466f5ea",
+    "envelope_path": null,
+    "kind": "git-okf",
+    "normalized": {
+      "item_count": 1,
+      "result_ids": [
+        "res:synthetic:okf-1"
+      ]
+    }
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "attested"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "bundle",
+    "identity": "bran-okf",
+    "name": "bran-okf",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "fe0fa132f10ca17776574a6436a0a842931b2e07645098b112ded99c82d4c9ee",
+    "filter_digest": "2db91e2109c5644371aa400131ed60f1425f09dea87f015ccb32cc66c23bdc3f",
+    "filters": {
+      "bundle": "synthetic-bundle",
+      "source": "snapshot"
+    },
+    "locator": "okf:bundle/synthetic-bundle/snapshot/fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "revision": {
+      "kind": "revision",
+      "state": "attested",
+      "value": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "snapshot",
+    "perimeter": "unavailable",
+    "project": "synthetic-bundle",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}
