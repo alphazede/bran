@@ -1,0 +1,98 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "attestation_digest": "a7873a1d5053326eee8d8f1043cbd6da5a5ad53954d87263b0835656a84d6489",
+  "attestation_id": "att:google:gemini-enterprise:synthetic-engine",
+  "capability": {
+    "attested": "indexed",
+    "effective": "indexed",
+    "requested": "indexed"
+  },
+  "checkpoint": {
+    "digest": "6a1f1085a974cb53e742fbcf4fc03ae6a10e0a7534987de76b0a8757eafd7fc7",
+    "id": "ckpt:synthetic:gemini-enterprise-1",
+    "revision_value": "rev-indexed-1",
+    "state": "current"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [],
+  "output": {
+    "digest": "8264f81ebc04ca38b249be0add9a46598301bc80904f8bfdda114c6f67711421",
+    "envelope_path": null,
+    "kind": "search-result",
+    "normalized": {
+      "item_count": 2,
+      "result_ids": [
+        "res:synthetic:engine-1",
+        "res:synthetic:engine-2"
+      ]
+    }
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "attested"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "synthetic-engine",
+    "identity": "google-gemini-enterprise",
+    "name": "gemini-enterprise",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "3d03f54761d3f9bd5b36155cb651e0394795c407a9115d718fd78c37bfe4553b",
+    "filter_digest": "77b8437827ff79cfa39b4b50769f1057b0e8aa1307e07218b3e7cff7dd786108",
+    "filters": {
+      "access_control": "reader-acl",
+      "connector": "synthetic-workspace-connector",
+      "data_store": "synthetic-engine-store"
+    },
+    "locator": "projects/synthetic-project/locations/global/collections/default_collection/engines/synthetic-engine",
+    "revision": {
+      "kind": "revision",
+      "state": "attested",
+      "value": "rev-indexed-1"
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "global",
+    "perimeter": "unavailable",
+    "project": "synthetic-project",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}

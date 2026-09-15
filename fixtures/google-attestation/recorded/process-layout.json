@@ -1,0 +1,98 @@
+{
+  "document": {
+    "documentLayout": {
+      "blocks": [
+        {
+          "blockId": "1",
+          "boundingBox": {
+            "normalizedVertices": [
+              {"x": 0.1, "y": 0.08},
+              {"x": 0.9, "y": 0.08},
+              {"x": 0.9, "y": 0.16},
+              {"x": 0.1, "y": 0.16}
+            ]
+          },
+          "pageSpan": {"pageEnd": 1, "pageStart": 1},
+          "textBlock": {
+            "blocks": [],
+            "text": "Synthetic layout heading",
+            "type": "heading-1"
+          }
+        },
+        {
+          "blockId": "2",
+          "pageSpan": {"pageEnd": 1, "pageStart": 1},
+          "textBlock": {
+            "blocks": [
+              {
+                "blockId": "2a",
+                "boundingBox": {
+                  "normalizedVertices": [
+                    {"x": 0.1, "y": 0.2},
+                    {"x": 0.9, "y": 0.2},
+                    {"x": 0.9, "y": 0.3},
+                    {"x": 0.1, "y": 0.3}
+                  ]
+                },
+                "pageSpan": {"pageEnd": 1, "pageStart": 1},
+                "textBlock": {
+                  "text": "Nested paragraph from the current layout parser.",
+                  "type": "paragraph"
+                }
+              }
+            ],
+            "text": "",
+            "type": "paragraph"
+          }
+        },
+        {
+          "blockId": "3",
+          "pageSpan": {"pageEnd": 1, "pageStart": 1},
+          "tableBlock": {
+            "bodyRows": [
+              {
+                "cells": [
+                  {
+                    "blocks": [
+                      {"textBlock": {"text": "Rows", "type": "paragraph"}}
+                    ],
+                    "colSpan": 1,
+                    "rowSpan": 1
+                  },
+                  {
+                    "blocks": [
+                      {"textBlock": {"text": "One", "type": "paragraph"}}
+                    ],
+                    "colSpan": 1,
+                    "rowSpan": 1
+                  }
+                ]
+              }
+            ],
+            "caption": "Synthetic layout table",
+            "headerRows": [
+              {
+                "cells": [
+                  {
+                    "blocks": [
+                      {"textBlock": {"text": "Column", "type": "paragraph"}}
+                    ],
+                    "colSpan": 1,
+                    "rowSpan": 1
+                  },
+                  {
+                    "blocks": [
+                      {"textBlock": {"text": "Value", "type": "paragraph"}}
+                    ],
+                    "colSpan": 1,
+                    "rowSpan": 1
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

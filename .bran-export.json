@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "alphazede/bran-dev",
-  "source_commit": "3feeba3ab30f0504a601ffbb732f98801e25c5e8",
+  "source_commit": "5a537b986c4a5e7f273e668bb0da1113bd4f368d",
   "version": "0.1.0",
   "public_repository": "alphazede/bran",
   "files": [
@@ -26,8 +26,8 @@
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
       "mode": "100644",
-      "bytes": 236,
-      "sha256": "639faef63a4c4deb8b3cb2ac86fdb888f12b51b06c767425c84db56bd8233558"
+      "bytes": 224,
+      "sha256": "652afb31886ef5715564b9629181179a168b058999d8e78af58fbe11f7c539aa"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -36,10 +36,16 @@
       "sha256": "6fe630e14a84502ba6c59a961fb84894388369615de101aa70cf2ea3ebd3c6a0"
     },
     {
+      "path": ".github/dependabot.yml",
+      "mode": "100644",
+      "bytes": 337,
+      "sha256": "84522e85dcac509080f0a3917bf5ca8910b4951f00ae4f58b6c6a418d79882a8"
+    },
+    {
       "path": ".github/workflows/bran-fast.yml",
       "mode": "100644",
-      "bytes": 696,
-      "sha256": "75002eee19da62eeb11dbc9c86eb67d6fde08635d3277e41298e887305f92128"
+      "bytes": 939,
+      "sha256": "f146075aa3cef6074a73ca259ef8c34c83a4511a8d85be2b2f3bdd9f0ddd7f55"
     },
     {
       "path": ".github/workflows/release.yml",
@@ -56,14 +62,14 @@
     {
       "path": "CODE_OF_CONDUCT.md",
       "mode": "100644",
-      "bytes": 1346,
-      "sha256": "ea1c3b2cc119c76a7ce48d0ae84410eb6de22c6fbbe8a24b3aee08e86cf46ae4"
+      "bytes": 1437,
+      "sha256": "8fbdc341d5b199a120f091f94316332ff814cc20fcac29a78b4d1174eacebdb4"
     },
     {
       "path": "CONTRIBUTING.md",
       "mode": "100644",
-      "bytes": 2796,
-      "sha256": "3b268fa87dcfe4341f725bdb89c9d55e94139687d6e74e20f84ec71f201a7b4b"
+      "bytes": 2654,
+      "sha256": "717727ab826fed64fc713b60cdbd242a85e5e08ac0ce239d0ce4e3e59c58add3"
     },
     {
       "path": "Cargo.lock",
@@ -98,8 +104,14 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "bytes": 10037,
-      "sha256": "2e0abb9ad0a78c411b75c72d798688c24110b0c57d426af199b8e376b9e37865"
+      "bytes": 10328,
+      "sha256": "c2bd0e526ea050b2a82394f0f333acdf0c7e8eea34c21e179bb7586a0ee0bfe1"
+    },
+    {
+      "path": "SECURITY.md",
+      "mode": "100644",
+      "bytes": 465,
+      "sha256": "d1ba3d328a2068c99bb51ecbc6d2fd832bf6cbb83007e2bc87978b9c6cfeb924"
     },
     {
       "path": "assets/brand/bran-repository-raven.png",
@@ -128,8 +140,8 @@
     {
       "path": "assets/tui/raven-provenance.json",
       "mode": "100644",
-      "bytes": 429,
-      "sha256": "19da415de0b05bcb19b93296e37aa3963cc4b37b3b2d1cdd8e790320834b9cdd"
+      "bytes": 367,
+      "sha256": "d105be9ec0dcec5dd7253b00f0d901b54cf67945f9353133bdd8703f9951728e"
     },
     {
       "path": "assets/tui/raven-wide.txt",
@@ -534,6 +546,192 @@
       "sha256": "04b59dde1d2de6e4e6c285cfb83572577e809364694d9470cf8584ef62dacfb5"
     },
     {
+      "path": "fixtures/enterprise-documents/negative/active-content.json",
+      "mode": "100644",
+      "bytes": 3541,
+      "sha256": "fd07f8e5086866c615afa95202e661ece73c49f47c06b973d8430a524d2b40c0"
+    },
+    {
+      "path": "fixtures/enterprise-documents/negative/digest-mismatch.json",
+      "mode": "100644",
+      "bytes": 3487,
+      "sha256": "67ef067560d961d617945219076b2647a73a844a3a4728ecbe3b98951129f1c5"
+    },
+    {
+      "path": "fixtures/enterprise-documents/negative/external-reference.json",
+      "mode": "100644",
+      "bytes": 3522,
+      "sha256": "0461ec2847fec0327357e663bfcccc75e0f6913e517f213ceacd80ef48a9d934"
+    },
+    {
+      "path": "fixtures/enterprise-documents/negative/malformed-structure.json",
+      "mode": "100644",
+      "bytes": 32,
+      "sha256": "d685b4dea04da7ca0446e79dbf8056f5497194b73cefa7e2a53416f5693320f1"
+    },
+    {
+      "path": "fixtures/enterprise-documents/negative/oversized.json",
+      "mode": "100644",
+      "bytes": 3491,
+      "sha256": "3fddd59ece9b8f7cb0f47baebe82e8e0e02e86739b57276c67c916da4115ef2a"
+    },
+    {
+      "path": "fixtures/enterprise-documents/negative/unsafe-asset-path.json",
+      "mode": "100644",
+      "bytes": 3484,
+      "sha256": "f0ccd1927c476bc5469b8187a7ee32c4b03a888d3c7fc9ac7bd02457c34a02e1"
+    },
+    {
+      "path": "fixtures/enterprise-documents/negative/unsupported-evidence.json",
+      "mode": "100644",
+      "bytes": 3459,
+      "sha256": "ae3763f48c4706fe6960e2c3ea738851b79c264c54861a36604d3d9b1d630482"
+    },
+    {
+      "path": "fixtures/enterprise-documents/positive/docx-flow.json",
+      "mode": "100644",
+      "bytes": 2998,
+      "sha256": "e1c53e1a1b24ad7745b316c885b0c50053737b99231b2fa2836e00db78cb6fb1"
+    },
+    {
+      "path": "fixtures/enterprise-documents/positive/pdf-fixed-layout.json",
+      "mode": "100644",
+      "bytes": 3487,
+      "sha256": "ac11999aa73e886aaf9e56c1a7f9f9604a2e0e788c37b5bf12fc5b5db5533507"
+    },
+    {
+      "path": "fixtures/enterprise-documents/positive/pptx-presentation.json",
+      "mode": "100644",
+      "bytes": 3320,
+      "sha256": "15d0246ee6ae0a478e51d74e5cf936f8633992f43068dbe0f291d6b9bdb31c63"
+    },
+    {
+      "path": "fixtures/enterprise-documents/positive/xlsx-grid.json",
+      "mode": "100644",
+      "bytes": 2883,
+      "sha256": "5b3d130c9f094da725ce5750dcea83e860631dc64e2c8a34c207d2a4744bebcb"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/completeness-overclaim.json",
+      "mode": "100644",
+      "bytes": 2589,
+      "sha256": "0ae366c9089898b55384ff3adfc13499c628f6e23af18b37cd91afb91cf9cfbc"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/conflict-mixed-revision.json",
+      "mode": "100644",
+      "bytes": 2607,
+      "sha256": "2a29428492ffd65bc118d63ef0a6588a2dd25b288271d745871dd5c0f1ed6708"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/dlp-rejected.json",
+      "mode": "100644",
+      "bytes": 2604,
+      "sha256": "2f6dffaedff01e530b7ff21f815145f50424a02dfa8829d59da6ba39b48c9da5"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/incomplete-permission-revision.json",
+      "mode": "100644",
+      "bytes": 2665,
+      "sha256": "597afba533a3aa97d74988fdfa897c153574d42036a29b80139f174856715805"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/network-disabled.json",
+      "mode": "100644",
+      "bytes": 2365,
+      "sha256": "cb16a8483afad4351076eafe8b16efeaeacb85a7215138d528b3ca33d29058c5"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/opaque-locator-missing-scope.json",
+      "mode": "100644",
+      "bytes": 2592,
+      "sha256": "4762ae01878691e2f43c51a19d6515c0997c29810df254de9c3545b60d02d317"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/quota-location-perimeter.json",
+      "mode": "100644",
+      "bytes": 2692,
+      "sha256": "db46e339ae36d9c74b39f7c1ffa545bf12e1d7abb9005c5b4d1f62149bcb87e1"
+    },
+    {
+      "path": "fixtures/google-attestation/negative/tenant-escape-secret-action.json",
+      "mode": "100644",
+      "bytes": 2648,
+      "sha256": "1ed360ceb86fc51f259fbc3482e64f8d4b7a44ad3e9611a1d82ef1e7c40caed1"
+    },
+    {
+      "path": "fixtures/google-attestation/positive/agent-search.json",
+      "mode": "100644",
+      "bytes": 2509,
+      "sha256": "4ff64a1bde3280095ecc0409ea95a25eaabe06d4e5f2fb319f4c11b2c1ff0713"
+    },
+    {
+      "path": "fixtures/google-attestation/positive/bran-git.json",
+      "mode": "100644",
+      "bytes": 2492,
+      "sha256": "2898bd03ee1630fa66bc5a0639e0e8e10c4c9377f4662b91577fcc01351c1fbb"
+    },
+    {
+      "path": "fixtures/google-attestation/positive/bran-okf.json",
+      "mode": "100644",
+      "bytes": 2491,
+      "sha256": "f551ce05cc1cd58bb1ff7d70ec9d6bb6f1d4a5d2f055423b8c824c40cc0edd73"
+    },
+    {
+      "path": "fixtures/google-attestation/positive/document-ai.json",
+      "mode": "100644",
+      "bytes": 2425,
+      "sha256": "99844b9916cd5365a1d2cf0df04d50166a3f1ed333e864d0109525909529dfc6"
+    },
+    {
+      "path": "fixtures/google-attestation/positive/gemini-enterprise.json",
+      "mode": "100644",
+      "bytes": 2561,
+      "sha256": "3643b62c2defc6818e64e8d126921df33f2e81816a7139e0b8e3a949f23fc414"
+    },
+    {
+      "path": "fixtures/google-attestation/positive/knowledge-catalog.json",
+      "mode": "100644",
+      "bytes": 2527,
+      "sha256": "f250a611321120508d3c4662095c8ac01855dbeefb23b21179da7bd9fab92d28"
+    },
+    {
+      "path": "fixtures/google-attestation/recorded/input.pdf",
+      "mode": "100644",
+      "bytes": 193,
+      "sha256": "8f7c610a4005afe1fb92e3ba9225cba779a051792515944693d81d5b89bbdbbc"
+    },
+    {
+      "path": "fixtures/google-attestation/recorded/process-empty-layout.json",
+      "mode": "100644",
+      "bytes": 178,
+      "sha256": "8bf96595744dc9e81b1997d517e88245b177f76ea7b4ec1260f9ccaa761ba690"
+    },
+    {
+      "path": "fixtures/google-attestation/recorded/process-layout.json",
+      "mode": "100644",
+      "bytes": 2741,
+      "sha256": "8192d03f314d8fe18eb9b0c53c277d2469beaa0c9040943a30bc01086bab155c"
+    },
+    {
+      "path": "fixtures/google-attestation/recorded/process-legacy-only.json",
+      "mode": "100644",
+      "bytes": 381,
+      "sha256": "aa1d4e48f54f55857f9b9881c9b7a3defe4b6da0a6054ec4f6377594ad168d2d"
+    },
+    {
+      "path": "fixtures/google-attestation/recorded/processor-create.json",
+      "mode": "100644",
+      "bytes": 352,
+      "sha256": "63c5cd357ad4915eff8a87b9d9937243b5cf69d85b8a91a69095e500d414f1da"
+    },
+    {
+      "path": "fixtures/google-attestation/recorded/processor-missing-identity.json",
+      "mode": "100644",
+      "bytes": 106,
+      "sha256": "38172978da7b7e13cad35db1acf08a7c9732a7d3ea509913ff34bbbe55d17b3d"
+    },
+    {
       "path": "fixtures/graph/knowledge-graph-v1.json",
       "mode": "100644",
       "bytes": 2197,
@@ -648,6 +846,18 @@
       "sha256": "5b0bb6bbf97ec8e84eebc8a249ff98c71098db096b7bff60536f99261dd8a1f2"
     },
     {
+      "path": "schemas/enterprise-document-evidence-envelope.schema.json",
+      "mode": "100644",
+      "bytes": 14047,
+      "sha256": "2e7a0d46cadee0af6d997fb866c57c08e9cf0cdc03661cc7ac0149df496ffba1"
+    },
+    {
+      "path": "schemas/google-source-attestation.schema.json",
+      "mode": "100644",
+      "bytes": 11604,
+      "sha256": "9fea76902c5046e7ce136e4f26260842db872cf78c8dfb5216add5787e45e24f"
+    },
+    {
       "path": "schemas/graph-query-result.schema.json",
       "mode": "100644",
       "bytes": 4680,
@@ -716,8 +926,26 @@
     {
       "path": "tools/ci/check.sh",
       "mode": "100755",
-      "bytes": 4872,
-      "sha256": "3dbbcf9e9feeac7e84f9344620fff59810d4cd37f3de7d61456537bbdaf37163"
+      "bytes": 5140,
+      "sha256": "a2b2977a0f80511513283ae630a9d36fa53ae75453d7d513d3eb386676b52b05"
+    },
+    {
+      "path": "tools/ci/document_ai_smoke_adapter.py",
+      "mode": "100644",
+      "bytes": 23314,
+      "sha256": "4b7d0850b85bb370a4cbc31617ec7d1568a784eac3f63ce867f49130f38d24dd"
+    },
+    {
+      "path": "tools/ci/enterprise_contract_check.py",
+      "mode": "100644",
+      "bytes": 29714,
+      "sha256": "3aa6fa597c6cff22b4c61cfba98bde5ef330b59f75a8d78e7b1c2c0dcc59d288"
+    },
+    {
+      "path": "tools/ci/google_attestation_contract_check.py",
+      "mode": "100644",
+      "bytes": 55110,
+      "sha256": "17b987112199be07f977663110842adade57a898001afb293e961a7a65d9db1e"
     },
     {
       "path": "tools/ci/public-policy.yaml",
@@ -758,8 +986,8 @@
     {
       "path": "tools/ci/test-budget.json",
       "mode": "100644",
-      "bytes": 9552,
-      "sha256": "866404a337764c0b351e7d7ae54c511691fa4a9638f7b8c6c7cf91d7782e9115"
+      "bytes": 12444,
+      "sha256": "a6f6e1f5198b1b8bead4fc74bfb1d6c3618ad19e50536fe062f03a5df9b4c228"
     },
     {
       "path": "tools/ci/test_budget_check.py",

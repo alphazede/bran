@@ -1,0 +1,96 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "attestation_digest": "88c1c46cc4f5cd1dcf1a3edd8955e3a8196c87d640f9c129a92a7c1a4e8bc5fa",
+  "attestation_id": "att:bran-git:synthetic-repo",
+  "capability": {
+    "attested": "git-okf",
+    "effective": "git-okf",
+    "requested": "git-okf"
+  },
+  "checkpoint": {
+    "digest": "19e1c44162bab0353fdcc8a12bc09891021d2e1c30c07a0348e79cc0bd423be7",
+    "id": "ckpt:synthetic:bran-git-1",
+    "revision_value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "state": "current"
+  },
+  "cost": {
+    "quota": "unavailable",
+    "status": "unavailable"
+  },
+  "failures": [],
+  "output": {
+    "digest": "82f26c3258648689471c7f39ae5a9b01376ac6c9ede74eb260f6e06f5e9be80c",
+    "envelope_path": null,
+    "kind": "git-okf",
+    "normalized": {
+      "item_count": 1,
+      "result_ids": [
+        "res:synthetic:git-1"
+      ]
+    }
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "attested"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "commit",
+    "identity": "bran-git",
+    "name": "bran-git",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "3638f78887b86e33481c4688d155709ac692e87ca0bbe318f8d42ccdb644e6cc",
+    "filter_digest": "8d5fee9b510232728fcf91753d5d09a049a0f9017b6312192a98e17282d792db",
+    "filters": {
+      "repository": "synthetic-repo",
+      "snapshot_kind": "commit"
+    },
+    "locator": "git:repository/synthetic-repo/commit/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "revision": {
+      "kind": "revision",
+      "state": "attested",
+      "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "commit",
+    "perimeter": "unavailable",
+    "project": "synthetic-repo",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}

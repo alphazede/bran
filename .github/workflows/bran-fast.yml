@@ -4,12 +4,14 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   fast:
+    if: ${{ !(github.event_name == 'push' && github.repository == 'alphazede/bran-dev' && github.event.repository.private == true && github.event.repository.custom_properties.delivery_profile == 'private-owner-direct') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

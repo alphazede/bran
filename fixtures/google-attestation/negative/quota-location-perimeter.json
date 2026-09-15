@@ -1,0 +1,105 @@
+{
+  "admission": {
+    "packet": "ineligible",
+    "query": "ineligible",
+    "reasons": [
+      "location-mismatch",
+      "perimeter-denied",
+      "quota-exhausted"
+    ],
+    "status": "rejected"
+  },
+  "attestation_digest": "341f4d1264279f2780c35b3ad1b4d31b31a0948527eef663504cf47df258b0d0",
+  "attestation_id": "att:google:knowledge-catalog:quota-location-perimeter",
+  "capability": {
+    "attested": "metadata-only",
+    "effective": "metadata-only",
+    "requested": "metadata-only"
+  },
+  "checkpoint": {
+    "digest": "0836d643a7fd5d5467a7e2b600decfa68445328a8f1daad2bdd1523dd7d3c242",
+    "id": "ckpt:synthetic:knowledge-catalog-quota-1",
+    "revision_value": "entry-rev-1",
+    "state": "current"
+  },
+  "cost": {
+    "quota": "exhausted",
+    "status": "recorded"
+  },
+  "failures": [
+    "location-mismatch",
+    "perimeter-denied",
+    "quota-exhausted"
+  ],
+  "output": {
+    "digest": "031813d8ed8536d8e4ed50f755fc14fc269ded8a55ff80ffc1779dbec2bee7a5",
+    "envelope_path": null,
+    "kind": "catalog-entry",
+    "normalized": {
+      "item_count": 1,
+      "result_ids": [
+        "entry:synthetic-dataset.synthetic-table"
+      ]
+    }
+  },
+  "permission": {
+    "authorization_proof": false,
+    "status": "attested"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "product": {
+    "component": "@bigquery",
+    "identity": "google-knowledge-catalog",
+    "name": "knowledge-catalog",
+    "version": "1.0"
+  },
+  "profile": {
+    "identity": "bran-google-enterprise-v1",
+    "version": "1.0.0"
+  },
+  "runtime": {
+    "network": "not-invoked"
+  },
+  "schema_version": "1.0.0",
+  "source": {
+    "configured_digest": "134928ebedc058ee9fe22c156896200674f33a62696b417d7860a2df4ffa8874",
+    "filter_digest": "efc87ac927e47471ec0870f14a144f724af37afd1ad6199a7f54da960039a61a",
+    "filters": {
+      "asset_type": "bigquery-table",
+      "entry_group": "@bigquery",
+      "include_lineage": "references-only"
+    },
+    "locator": "projects/synthetic-project/locations/eu/entryGroups/@bigquery/entries/synthetic-dataset.synthetic-table",
+    "revision": {
+      "kind": "entry",
+      "state": "attested",
+      "value": "entry-rev-1"
+    }
+  },
+  "tenancy": {
+    "account_ref": "acct:opaque:synthetic-001",
+    "location": "us",
+    "perimeter": "denied",
+    "project": "synthetic-project",
+    "tenant": "synthetic-tenant"
+  },
+  "truncation": {
+    "omitted_bytes": 0,
+    "omitted_item_count": 0,
+    "reason": null,
+    "truncated": false
+  }
+}

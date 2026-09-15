@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Security issue
-    url: https://github.com/alphazede/bran/blob/main/CONTRIBUTING.md#security
-    about: Don't file security problems publicly. See CONTRIBUTING for how to report them.
+    url: https://github.com/alphazede/bran/security/advisories/new
+    about: Don't file security problems publicly. Use a private GitHub security advisory.

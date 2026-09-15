@@ -1,0 +1,145 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "anchors": [
+    {
+      "family": "fixed-layout",
+      "id": "anc:pdf:page-1:heading-1",
+      "locator": {
+        "bbox": {
+          "x0": 72,
+          "x1": 540,
+          "y0": 720,
+          "y1": 748
+        },
+        "block": 1,
+        "family": "fixed-layout",
+        "page": 1
+      },
+      "role": "heading",
+      "text": "Synthetic PDF layout brief",
+      "text_digest": "0eccf5ccb2f7dc05bbef6656ae3a0a34f04c449f3b0c4b15a70de42d3cc7aa44"
+    },
+    {
+      "family": "fixed-layout",
+      "id": "anc:pdf:page-1:paragraph-1",
+      "locator": {
+        "bbox": {
+          "x0": 72,
+          "x1": 540,
+          "y0": 680,
+          "y1": 710
+        },
+        "block": 2,
+        "family": "fixed-layout",
+        "page": 1
+      },
+      "role": "paragraph",
+      "text": "This fixture is a synthetic normalized layout excerpt.",
+      "text_digest": "0a97350151e16b94d4ad25704a4b0005c2a09dff16ab46678e0d2d208da8aa6b"
+    }
+  ],
+  "assets": [
+    {
+      "byte_length": 128,
+      "id": "asset:pdf:cover",
+      "media_type": "image/png",
+      "path": "assets/cover.png",
+      "role": "figure",
+      "sha256": "6ad05dd80aa7f0c315369d5a01db350e129439131bea7ee090aba2c034be8fe4"
+    }
+  ],
+  "envelope_digest": "e1af7e7bdb664737340f2ea4ebbbca162e83b88113dec33569b23a517abfedbf",
+  "evidence_id": "evd:pdf:synthetic-layout-brief",
+  "fidelity": {
+    "bounding_boxes": "approximated",
+    "figures": "normalized",
+    "javascript": "unsupported",
+    "ocr": "approximated",
+    "reading_order": "approximated",
+    "tables": "unsupported",
+    "text": "normalized"
+  },
+  "hazards": {
+    "active_content": {
+      "kinds": [],
+      "present": false
+    },
+    "external_references": {
+      "count": 0,
+      "present": false
+    }
+  },
+  "normalized": {
+    "content": {
+      "family": "fixed-layout",
+      "language": "en",
+      "text": "Synthetic PDF layout brief This fixture is a synthetic normalized layout excerpt."
+    },
+    "digest": "036844ad7c5f538411f3d65d407e408cdfb58ced4592149d767c358fc31a98ca"
+  },
+  "original": {
+    "byte_length": 20971521,
+    "media_type": "application/pdf",
+    "sha256": "863392864fb6f736d8492844d61ce61678c38f63bc06db1b45e4283b769912ab"
+  },
+  "parser": {
+    "attestation": "unavailable",
+    "identity": "google-document-ai",
+    "processor": "pretrained-layout-parser-v1.0-2024-06-03",
+    "version": "1.0"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "receipts": {
+    "malformed_input": {
+      "present": false,
+      "reason": null
+    },
+    "truncation": {
+      "omitted_anchor_count": 0,
+      "omitted_bytes": 0,
+      "reason": null,
+      "truncated": false
+    },
+    "unavailable": {
+      "features": [
+        "javascript",
+        "tables"
+      ],
+      "parser_attestation": true,
+      "revision": true
+    }
+  },
+  "relations": [
+    {
+      "from": "anc:pdf:page-1:paragraph-1",
+      "kind": "derived-from",
+      "to": "anc:pdf:page-1:heading-1"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "source": {
+    "locator": "synthetic:enterprise-documents/pdf-fixed-layout",
+    "revision": {
+      "state": "unavailable",
+      "value": null
+    }
+  }
+}

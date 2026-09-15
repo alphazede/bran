@@ -225,6 +225,13 @@ bran -p --agent <profile> --offline --no-session "offline return proof"
 If a capability is unavailable, BRAN says `unavailable` rather than pretending
 it worked. Requested and effective capability are always reported separately.
 
+## Development
+
+This repository is the BRAN source. See [CONTRIBUTING.md](CONTRIBUTING.md) to
+build, test, and open a pull request. Report vulnerabilities privately through
+[GitHub Security Advisories](https://github.com/alphazede/bran/security/advisories/new);
+do not open a public issue.
+
 ## Use it with an agent
 
 Giving an agent access is not enough. Without a reminder it reaches for

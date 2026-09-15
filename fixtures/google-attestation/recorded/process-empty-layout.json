@@ -1,0 +1,9 @@
+{
+  "document": {
+    "documentLayout": {
+      "blocks": []
+    },
+    "mimeType": "application/pdf",
+    "text": "Legacy document text must not satisfy an empty layout."
+  }
+}

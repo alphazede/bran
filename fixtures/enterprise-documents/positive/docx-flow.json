@@ -1,0 +1,123 @@
+{
+  "admission": {
+    "packet": "eligible",
+    "query": "eligible",
+    "reasons": [],
+    "status": "admitted"
+  },
+  "anchors": [
+    {
+      "family": "flow",
+      "id": "anc:docx:intro:heading-1",
+      "locator": {
+        "family": "flow",
+        "ordinal": 1,
+        "section": "intro"
+      },
+      "role": "heading",
+      "text": "Synthetic DOCX flow brief",
+      "text_digest": "4605d414ae48b70c659c3a7b88c0cca75f2e279e9dded3d9a0c74700e2bd9576"
+    },
+    {
+      "family": "flow",
+      "id": "anc:docx:intro:paragraph-1",
+      "locator": {
+        "family": "flow",
+        "ordinal": 2,
+        "section": "intro"
+      },
+      "role": "paragraph",
+      "text": "This fixture is a synthetic normalized flow excerpt.",
+      "text_digest": "2b273001276ccac3330e113401ca749f7c59b318a1b36617363f9de49975cc85"
+    }
+  ],
+  "assets": [],
+  "envelope_digest": "e7b570091c3a1c8386591c3c07b3544952c42056ff5eaef1d6a2c78555d734a3",
+  "evidence_id": "evd:docx:synthetic-flow-brief",
+  "fidelity": {
+    "headers_footers": "approximated",
+    "headings": "exact",
+    "lists": "normalized",
+    "macros": "unsupported",
+    "paragraphs": "exact",
+    "tables": "normalized",
+    "text": "exact"
+  },
+  "hazards": {
+    "active_content": {
+      "kinds": [],
+      "present": false
+    },
+    "external_references": {
+      "count": 0,
+      "present": false
+    }
+  },
+  "normalized": {
+    "content": {
+      "family": "flow",
+      "language": "en",
+      "text": "Synthetic DOCX flow brief This fixture is a synthetic normalized flow excerpt."
+    },
+    "digest": "71faf1c0673408b416157c9fc5cc2d55a37fc5e535b465112ff5e911dc3c55ed"
+  },
+  "original": {
+    "byte_length": 3072,
+    "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "sha256": "ba1f6363143f52ecd9e2efa62d649f5dd770332574429c9012da2fae585e402d"
+  },
+  "parser": {
+    "attestation": "unavailable",
+    "identity": "google-document-ai",
+    "processor": "pretrained-layout-parser-v1.0-2024-06-03",
+    "version": "1.0"
+  },
+  "policy": {
+    "classification": {
+      "status": "evaluated",
+      "value": "internal"
+    },
+    "dlp": {
+      "findings": [],
+      "status": "passed"
+    },
+    "public_boundary": {
+      "outcome": "reject-export",
+      "value": "internal"
+    }
+  },
+  "receipts": {
+    "malformed_input": {
+      "present": false,
+      "reason": null
+    },
+    "truncation": {
+      "omitted_anchor_count": 0,
+      "omitted_bytes": 0,
+      "reason": null,
+      "truncated": false
+    },
+    "unavailable": {
+      "features": [
+        "macros"
+      ],
+      "parser_attestation": true,
+      "revision": true
+    }
+  },
+  "relations": [
+    {
+      "from": "anc:docx:intro:paragraph-1",
+      "kind": "derived-from",
+      "to": "anc:docx:intro:heading-1"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "source": {
+    "locator": "synthetic:enterprise-documents/docx-flow",
+    "revision": {
+      "state": "unavailable",
+      "value": null
+    }
+  }
+}

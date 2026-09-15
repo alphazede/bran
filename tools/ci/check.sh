@@ -75,6 +75,14 @@ run_release_contract() {
     python3 "$bran_root/tools/ci/release_contract_check.py"
 }
 
+run_enterprise_contract() {
+    python3 "$bran_root/tools/ci/enterprise_contract_check.py"
+}
+
+run_google_attestation_contract() {
+    python3 "$bran_root/tools/ci/google_attestation_contract_check.py"
+}
+
 run_export() {
     printf '%s\n' 'EXPORT: running Slice 3.3 Obsidian export gate.'
     run_budget
@@ -113,6 +121,8 @@ run_fast() {
     cargo deny --manifest-path "$bran_root/Cargo.toml" check licenses bans sources
 
     run_release_contract
+    run_enterprise_contract
+    run_google_attestation_contract
     run_public_boundary
     run_public_export
 
