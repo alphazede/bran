@@ -278,6 +278,7 @@
         "fixtures/enterprise-documents/negative/external-reference.json",
         "fixtures/enterprise-documents/negative/malformed-structure.json",
         "fixtures/enterprise-documents/negative/oversized.json",
+        "fixtures/enterprise-documents/negative/secret-reflection.json",
         "fixtures/enterprise-documents/negative/unsafe-asset-path.json",
         "fixtures/enterprise-documents/negative/unsupported-evidence.json",
         "fixtures/enterprise-documents/positive/docx-flow.json",

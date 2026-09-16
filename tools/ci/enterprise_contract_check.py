@@ -131,8 +131,19 @@ NEGATIVE_REASONS = {
     "external-reference.json": "external-reference",
     "malformed-structure.json": "malformed-structure",
     "oversized.json": "oversized",
+    "secret-reflection.json": "secret-reflection",
     "unsupported-evidence.json": "unsupported-evidence",
 }
+SECRET_MARKERS = (
+    "-----BEGIN ",
+    "AIza",
+    "X-Goog-Credential=",
+    "X-Goog-Signature=",
+    "access_token=",
+    "private_key",
+    "refresh_token=",
+    "ya29.",
+)
 
 
 def bran_root() -> Path:
@@ -151,6 +162,26 @@ def sha256_hex(data: bytes) -> str:
 
 def text_digest(text: str) -> str:
     return sha256_hex(text.encode("utf-8"))
+
+
+def walk_strings(value: object) -> list[str]:
+    found: list[str] = []
+    pending: list[object] = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            found.append(current)
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return found
+
+
+def contains_secret(value: object) -> bool:
+    return any(
+        marker in text for text in walk_strings(value) for marker in SECRET_MARKERS
+    )
 
 
 def envelope_digest(envelope: dict[str, Any]) -> str:
@@ -640,6 +671,8 @@ def classify(value: object) -> str | None:
     else:
         if admission["packet"] != "ineligible" or admission["query"] != "ineligible" or not reasons:
             return "malformed-structure"
+    if contains_secret(value):
+        return "secret-reflection"
 
     for anchor in anchors:
         if anchor["text_digest"] != text_digest(anchor["text"]):
