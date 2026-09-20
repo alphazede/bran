@@ -53,6 +53,7 @@ use bran_core::profile::BRAN_STRICT;
 use bran_core::profile::{Diagnostic, ProfileValidator, ValidationStatus};
 use bran_core::repair::{MaintainerAuthority, RepairCoordinator, RepairReceipt, RepairTerminal};
 use bran_core::scan::{is_knowledge_document_path, RepositoryScanner, ScanConfig, ScanSnapshot};
+use bran_core::sdoc::{SdocBridgeConfig, SdocError, SdocReceipt, SdocScanner};
 use bran_core::view::{
     Presentation, ViewCompiler, ViewField, ViewFilter, ViewGrouping, ViewSort, ViewSource, ViewSpec,
 };
@@ -68,6 +69,8 @@ const SMOKE_OUTPUT: &str = r#"{"schema_version":"1.0.0","command":"smoke","statu
 const MISSING_COMMAND_ERROR: &str = r#"{"schema_version":"1.0.0","command":"","status":"error","data":null,"warnings":[],"failures":["missing_command"],"provenance":{},"metrics":{}}"#;
 const UNKNOWN_COMMAND_ERROR: &str = r#"{"schema_version":"1.0.0","command":"","status":"error","data":null,"warnings":[],"failures":["unknown_command"],"provenance":{},"metrics":{}}"#;
 const VERSION_OUTPUT: &str = concat!("bran ", env!("CARGO_PKG_VERSION"));
+const SDOC_POLICY_CATALOG_SHA256: &str =
+    "3b21593cf0f11f4cebd3a72903768016e92805b7dccc1cbf54b8f7ab0abbeed7";
 const HELP_OUTPUT: &str = "BRAN repository evidence CLI
 
 Usage: bran <command> [arguments]
@@ -80,6 +83,7 @@ Commands:
   query <repo-root> --add-dir <repo-root> --record <request>
   packet <repo-root> <request>
   check [--policy-stdin] <repo-root> <profile>
+  sdoc <check|query> <repo-root> [request]
   maintain <propose|apply|revalidate> ...
   evidence <summarize|propose|replay|clear> <repo-root>
   tui
@@ -454,6 +458,7 @@ impl CliApp {
                     )),
                 }
             }
+            "sdoc" => do_sdoc_command(&mut it),
             "maintain" => {
                 // Smallest model-neutral headless maintainer adapter over bran_core::repair::RepairCoordinator.
                 // Positional args per MVP contract. All responses use ordered envelope.
@@ -2328,6 +2333,610 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         persist_query_evidence(&evidence)?;
     }
     Ok(("ok", data, warns, vec![], provenance, metrics))
+}
+
+#[derive(Clone, Copy)]
+enum SdocCommand {
+    Check,
+    Query,
+}
+
+struct SdocCommandArgs {
+    command: SdocCommand,
+    root: String,
+    query: String,
+}
+
+struct SdocFinding {
+    kind: &'static str,
+    code: String,
+    locators: Vec<String>,
+}
+
+fn do_sdoc_command<I>(arguments: &mut I) -> CliResult
+where
+    I: Iterator,
+    I::Item: AsRef<OsStr>,
+{
+    let subcommand = match arguments
+        .next()
+        .and_then(|value| value.as_ref().to_str().map(str::to_owned))
+    {
+        Some(value) if value == "check" => SdocCommand::Check,
+        Some(value) if value == "query" => SdocCommand::Query,
+        Some(_) => return CliResult::usage(make_sdoc_error("unknown_subcommand")),
+        None => return CliResult::usage(make_sdoc_error("missing_subcommand")),
+    };
+    let values = match arguments
+        .map(|value| value.as_ref().to_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+    {
+        Some(values) => values,
+        None => return CliResult::usage(make_sdoc_error("invalid_utf8")),
+    };
+    let args = match parse_sdoc_args(subcommand, values) {
+        Ok(args) => args,
+        Err(code) => return CliResult::usage(make_sdoc_error(code)),
+    };
+    let bridge = match SdocBridgeConfig::pinned_installation() {
+        Ok(config) => config,
+        Err(error) => return sdoc_operation_error(sdoc_error_code(&error)),
+    };
+    run_sdoc(&args, bridge)
+}
+
+/// Runs one parsed SDoc request against an already-resolved bridge. Production
+/// callers reach this only through [`do_sdoc_command`], which supplies
+/// `SdocBridgeConfig::pinned_installation`; tests inject a fixture bridge so
+/// the reporting behaviour is exercised without production pins.
+fn run_sdoc(args: &SdocCommandArgs, bridge: SdocBridgeConfig) -> CliResult {
+    let scanner = match SdocScanner::new(&args.root, bridge) {
+        Ok(scanner) => scanner,
+        Err(error) => return sdoc_operation_error(sdoc_error_code(&error)),
+    };
+    let mut receipts = match scanner.scan() {
+        Ok(receipts) => receipts,
+        Err(error) => return sdoc_operation_error(sdoc_error_code(&error)),
+    };
+    normalize_sdoc_receipts(&mut receipts);
+    match args.command {
+        SdocCommand::Check => sdoc_check_result(&args.root, &receipts),
+        SdocCommand::Query => sdoc_query_result(&args.root, &args.query, &receipts),
+    }
+}
+
+fn parse_sdoc_args(
+    command: SdocCommand,
+    values: Vec<String>,
+) -> Result<SdocCommandArgs, &'static str> {
+    let Some(root) = values.first().filter(|value| !value.starts_with('-')) else {
+        return Err("missing_root");
+    };
+    let query = values[1..].join(" ");
+    if matches!(command, SdocCommand::Check) && !query.is_empty() {
+        return Err("unexpected_argument");
+    }
+    if matches!(command, SdocCommand::Query) && query.trim().is_empty() {
+        return Err("missing_query");
+    }
+    Ok(SdocCommandArgs {
+        command,
+        root: root.clone(),
+        query,
+    })
+}
+
+fn sdoc_check_result(root: &str, receipts: &[SdocReceipt]) -> CliResult {
+    let mut findings = sdoc_document_findings(receipts);
+    match bran_core::graph::sdoc::graph_input(receipts) {
+        Ok(_) => {}
+        Err(error) => findings.push(sdoc_graph_finding(&error)),
+    }
+    let data = sdoc_check_json(root, receipts, &findings);
+    if findings.is_empty() {
+        CliResult::success(make_envelope(
+            "sdoc",
+            "ok",
+            &data,
+            &[],
+            &[],
+            "{\"sources\":[\"strictdoc-bridge\",\"bran-core\"]}",
+            &sdoc_metrics_json(receipts),
+        ))
+    } else {
+        CliResult {
+            output: make_envelope(
+                "sdoc",
+                "failed",
+                &data,
+                &[],
+                &findings
+                    .iter()
+                    .map(|finding| finding.code.clone())
+                    .collect::<Vec<_>>(),
+                "{\"sources\":[\"strictdoc-bridge\",\"bran-core\"]}",
+                &sdoc_metrics_json(receipts),
+            ),
+            exit_code: TypedExit::Validation.code(),
+            is_error: true,
+            is_interactive: false,
+        }
+    }
+}
+
+fn sdoc_query_result(root: &str, query: &str, receipts: &[SdocReceipt]) -> CliResult {
+    let input = match bran_core::graph::sdoc::graph_input(receipts) {
+        Ok(input) => input,
+        Err(error) => return sdoc_operation_error(&sdoc_graph_error_code(&error)),
+    };
+    let limits = match GraphLimits::new(input.nodes().len().max(1), input.edges().len().max(1)) {
+        Ok(limits) => limits,
+        Err(_) => return sdoc_operation_error("sdoc_graph_limits"),
+    };
+    let graph = match KnowledgeGraph::build(input, limits) {
+        Ok(graph) => graph,
+        Err(_) => return sdoc_operation_error("sdoc_graph_invalid"),
+    };
+    let ranked = bran_core::graph::sdoc::rank(&graph, query, QUERY_RESULT_LIMIT);
+    let evidence_state = if ranked.is_empty() { "miss" } else { "hit" };
+    let data = format!(
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"evidence_state\":\"{}\",\"coverage\":{},\"results\":[{}],\"findings\":[{}]}}",
+        json_escape(root),
+        json_escape(query),
+        evidence_state,
+        sdoc_coverage_json(receipts),
+        ranked.iter().map(sdoc_ranked_json).collect::<Vec<_>>().join(","),
+        sdoc_findings_json(&sdoc_document_findings(receipts)),
+    );
+    CliResult::success(make_envelope(
+        "sdoc",
+        "ok",
+        &data,
+        &[],
+        &[],
+        "{\"sources\":[\"strictdoc-bridge\",\"bran-core\"]}",
+        &sdoc_metrics_json(receipts),
+    ))
+}
+
+fn make_sdoc_error(detail: &str) -> String {
+    make_envelope(
+        "sdoc",
+        "error",
+        "null",
+        &[],
+        &[detail.to_owned()],
+        "{}",
+        "{}",
+    )
+}
+
+fn sdoc_operation_error(code: &str) -> CliResult {
+    CliResult::operation(make_sdoc_error(code))
+}
+
+fn sdoc_error_code(error: &SdocError) -> &'static str {
+    match error {
+        SdocError::InvalidRoot(_) => "sdoc_invalid_root",
+        SdocError::RelativeBridgeProgram => "relative_program",
+        SdocError::RelativeBridgeInput => "relative_bridge_input",
+        SdocError::PinnedRuntimeUnavailable => "sdoc_runtime_unavailable",
+        SdocError::QualifiedRuntimeMismatch => "sdoc_runtime_mismatch",
+        SdocError::UnpinnedRuntimeContent => "sdoc_runtime_unpinned_content",
+        SdocError::ScanLimit => "sdoc_scan_limit",
+        SdocError::Scan(_) => "sdoc_scan_failed",
+        SdocError::SourceMissing(_) => "sdoc_source_missing",
+        SdocError::SourceEscape(_) => "sdoc_source_escape",
+        SdocError::SourceChanged(_) => "sdoc_source_changed",
+        SdocError::BridgeTransport => "sdoc_bridge_transport",
+        SdocError::BridgeExit(_) => "sdoc_bridge_exit",
+        SdocError::MalformedJson => "sdoc_malformed_json",
+        SdocError::Protocol => "sdoc_protocol_mismatch",
+        SdocError::SchemaVersion => "sdoc_schema_mismatch",
+        SdocError::ModeMismatch => "sdoc_mode_mismatch",
+        SdocError::EngineMismatch => "sdoc_engine_mismatch",
+        SdocError::SourceReceiptMismatch => "sdoc_source_receipt_mismatch",
+        SdocError::UnsafeLocator => "sdoc_unsafe_locator",
+        SdocError::BridgeStatus { .. } => "sdoc_bridge_rejected",
+        SdocError::InvalidEnvelope(_) => "sdoc_invalid_envelope",
+    }
+}
+
+fn sdoc_graph_error_code(error: &bran_core::graph::sdoc::SdocGraphError) -> String {
+    match error {
+        bran_core::graph::sdoc::SdocGraphError::DuplicateMid { .. } => "sdoc_duplicate_mid",
+        bran_core::graph::sdoc::SdocGraphError::DuplicateUid { .. } => "sdoc_duplicate_uid",
+        bran_core::graph::sdoc::SdocGraphError::DuplicateRelationMid(_) => {
+            "sdoc_duplicate_relation_mid"
+        }
+        bran_core::graph::sdoc::SdocGraphError::UnresolvedRelation { .. } => {
+            "sdoc_unresolved_relation"
+        }
+        bran_core::graph::sdoc::SdocGraphError::Graph(_) => "sdoc_graph_invalid",
+    }
+    .to_owned()
+}
+
+fn sdoc_graph_finding(error: &bran_core::graph::sdoc::SdocGraphError) -> SdocFinding {
+    let code = sdoc_graph_error_code(error);
+    let locators = match error {
+        bran_core::graph::sdoc::SdocGraphError::DuplicateMid {
+            first_locator,
+            second_locator,
+            ..
+        } => vec![first_locator.clone(), second_locator.clone()],
+        _ => Vec::new(),
+    };
+    let kind = if code.contains("duplicate") {
+        "duplicate"
+    } else if code.contains("unresolved") {
+        "unresolved"
+    } else {
+        "parse"
+    };
+    SdocFinding {
+        kind,
+        code,
+        locators,
+    }
+}
+
+fn sdoc_document_findings(receipts: &[SdocReceipt]) -> Vec<SdocFinding> {
+    let mut findings = Vec::new();
+    for receipt in receipts {
+        let metadata = &receipt.document.metadata;
+        for field in [
+            "type",
+            "title",
+            "okf_status",
+            "tags",
+            "resource",
+            "freshness",
+            "public_boundary",
+            "grammar_version",
+            "published_revision",
+        ] {
+            if metadata
+                .get(field)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                findings.push(sdoc_finding(
+                    "policy",
+                    "sdoc_metadata_required",
+                    &receipt.source_locator,
+                    receipt.document.line_range.start,
+                ));
+            }
+        }
+        if !metadata.get("type").is_some_and(|value| {
+            matches!(
+                value.as_str(),
+                "architecture-specification" | "requirement-library"
+            )
+        }) {
+            findings.push(sdoc_finding(
+                "policy",
+                "sdoc_metadata_type",
+                &receipt.source_locator,
+                receipt.document.line_range.start,
+            ));
+        }
+        if !valid_sdoc_mid(&receipt.document.mid) {
+            findings.push(sdoc_finding(
+                "policy",
+                "sdoc_invalid_mid",
+                &receipt.source_locator,
+                receipt.document.line_range.start,
+            ));
+        }
+        for node in &receipt.nodes {
+            if node.node_type.eq_ignore_ascii_case("requirement") {
+                for field in [
+                    "MID",
+                    "UID",
+                    "TITLE",
+                    "STATUS",
+                    "SOURCE",
+                    "OWNER",
+                    "STATEMENT",
+                    "RATIONALE",
+                    "ASSUMPTIONS",
+                    "CONSTRAINTS",
+                    "VERIFICATION_METHOD",
+                    "VERIFICATION_LEVEL",
+                    "VERIFICATION_ENVIRONMENT",
+                    "SUCCESS_CRITERIA",
+                    "VALIDATION_METHOD",
+                    "VERIFICATION_CASE",
+                    "EXPECTED_RESULT",
+                    "ACTUAL_RESULT",
+                    "ANOMALY",
+                    "CORRECTIVE_ACTION",
+                    "WAIVER",
+                    "CLOSURE",
+                ] {
+                    if node
+                        .fields
+                        .get(field)
+                        .is_none_or(|value| value.trim().is_empty())
+                    {
+                        findings.push(sdoc_finding(
+                            "policy",
+                            "sdoc_requirement_required",
+                            &receipt.source_locator,
+                            node.line_range.start,
+                        ));
+                    }
+                }
+                if !matches!(
+                    node.fields.get("STATUS").map(String::as_str),
+                    Some("Draft" | "Published" | "Superseded" | "Retired")
+                ) {
+                    findings.push(sdoc_finding(
+                        "policy",
+                        "sdoc_requirement_status",
+                        &receipt.source_locator,
+                        node.line_range.start,
+                    ));
+                }
+                if !valid_sdoc_mid(&node.mid) {
+                    findings.push(sdoc_finding(
+                        "policy",
+                        "sdoc_invalid_mid",
+                        &receipt.source_locator,
+                        node.line_range.start,
+                    ));
+                }
+            }
+        }
+        for relation in &receipt.relations {
+            if !valid_sdoc_mid(&relation.mid)
+                || !valid_sdoc_mid(&relation.source_mid)
+                || !valid_sdoc_mid(&relation.target_mid)
+            {
+                findings.push(sdoc_finding(
+                    "policy",
+                    "sdoc_relation_mid",
+                    &receipt.source_locator,
+                    relation.line_range.start,
+                ));
+            }
+            if !matches!(
+                relation.relation_type.as_str(),
+                "derives-from"
+                    | "references-shared-library"
+                    | "maps-to-sysml"
+                    | "implemented-by"
+                    | "verified-by"
+                    | "validated-by"
+                    | "evidenced-by"
+                    | "tracked-by-issue"
+            ) {
+                findings.push(sdoc_finding(
+                    "policy",
+                    "sdoc_relation_type",
+                    &receipt.source_locator,
+                    relation.line_range.start,
+                ));
+            }
+            // StrictDoc native relation syntax carries no owner/revision.  The
+            // bridge reports them from the source node's OWNER and the
+            // document's published_revision when the document has them; a
+            // relation without both has no semantic record, and refusing it is
+            // safer than inventing one from grammar syntax.
+            if relation.owner.is_none() || relation.revision.is_none() {
+                findings.push(sdoc_finding(
+                    "policy",
+                    "sdoc_relation_semantic_record",
+                    &receipt.source_locator,
+                    relation.line_range.start,
+                ));
+            }
+        }
+        if metadata
+            .get("freshness")
+            .or_else(|| metadata.get("status"))
+            .is_some_and(|value| value.eq_ignore_ascii_case("stale"))
+        {
+            findings.push(SdocFinding {
+                kind: "stale",
+                code: "sdoc_stale".to_owned(),
+                locators: vec![receipt.source_locator.clone()],
+            });
+        }
+        let boundary = metadata
+            .get("public_boundary")
+            .or_else(|| metadata.get("boundary"));
+        if !boundary.is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "internal" | "private" | "public"
+            )
+        }) {
+            findings.push(SdocFinding {
+                kind: "boundary",
+                code: "sdoc_boundary".to_owned(),
+                locators: vec![receipt.source_locator.clone()],
+            });
+        }
+    }
+    findings.sort_by(|left, right| {
+        left.kind
+            .cmp(right.kind)
+            .then_with(|| left.code.cmp(&right.code))
+            .then_with(|| left.locators.cmp(&right.locators))
+    });
+    findings
+}
+
+fn sdoc_finding(kind: &'static str, code: &str, locator: &str, line: usize) -> SdocFinding {
+    SdocFinding {
+        kind,
+        code: code.to_owned(),
+        locators: vec![format!("{locator}:{line}")],
+    }
+}
+
+fn valid_sdoc_mid(value: &str) -> bool {
+    (value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || (value.starts_with("MID-")
+            && value.len() >= 12
+            && value[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-'))
+}
+
+fn normalize_sdoc_receipts(receipts: &mut [SdocReceipt]) {
+    for receipt in receipts.iter_mut() {
+        receipt
+            .nodes
+            .sort_by(|left, right| left.mid.cmp(&right.mid));
+        receipt
+            .relations
+            .sort_by(|left, right| left.mid.cmp(&right.mid));
+    }
+    receipts.sort_by(|left, right| left.source_locator.cmp(&right.source_locator));
+}
+
+fn sdoc_check_json(root: &str, receipts: &[SdocReceipt], findings: &[SdocFinding]) -> String {
+    format!(
+        "{{\"root\":\"{}\",\"policy_catalog_sha256\":\"{}\",\"coverage\":{},\"receipts\":[{}],\"findings\":[{}]}}",
+        json_escape(root),
+        SDOC_POLICY_CATALOG_SHA256,
+        sdoc_coverage_json(receipts),
+        receipts
+            .iter()
+            .map(sdoc_receipt_json)
+            .collect::<Vec<_>>()
+            .join(","),
+        sdoc_findings_json(findings),
+    )
+}
+
+fn sdoc_coverage_json(receipts: &[SdocReceipt]) -> String {
+    format!(
+        "{{\"documents\":{},\"nodes\":{},\"relations\":{}}}",
+        receipts.len(),
+        receipts
+            .iter()
+            .map(|receipt| receipt.nodes.len())
+            .sum::<usize>(),
+        receipts
+            .iter()
+            .map(|receipt| receipt.relations.len())
+            .sum::<usize>(),
+    )
+}
+
+fn sdoc_metrics_json(receipts: &[SdocReceipt]) -> String {
+    format!("{{\"coverage\":{}}}", sdoc_coverage_json(receipts))
+}
+
+fn sdoc_receipt_json(receipt: &SdocReceipt) -> String {
+    format!(
+        "{{\"source\":{{\"locator\":\"{}\",\"sha256\":\"{}\"}},\"validation\":\"valid\",\"engine\":{{\"api\":\"{}\",\"version\":\"{}\",\"artifact_sha256\":\"{}\",\"requirements_sha256\":\"{}\"}},\"document\":{},\"nodes\":[{}],\"relations\":[{}]}}",
+        json_escape(&receipt.source_locator),
+        json_escape(&receipt.source_sha256),
+        json_escape(&receipt.engine.api),
+        json_escape(&receipt.engine.version),
+        json_escape(&receipt.engine.artifact_sha256),
+        json_escape(&receipt.engine.requirements_sha256),
+        sdoc_document_json(receipt),
+        receipt.nodes.iter().map(sdoc_node_json).collect::<Vec<_>>().join(","),
+        receipt.relations.iter().map(sdoc_relation_json).collect::<Vec<_>>().join(","),
+    )
+}
+
+fn sdoc_document_json(receipt: &SdocReceipt) -> String {
+    let document = &receipt.document;
+    format!(
+        "{{\"mid\":\"{}\",\"uid\":\"{}\",\"title\":\"{}\",\"metadata\":{},\"line_range\":{{\"start\":{},\"end\":{}}}}}",
+        json_escape(&document.mid),
+        json_escape(&document.uid),
+        json_escape(&document.title),
+        sdoc_string_map_json(&document.metadata),
+        document.line_range.start,
+        document.line_range.end,
+    )
+}
+
+fn sdoc_node_json(node: &bran_core::sdoc::SdocNode) -> String {
+    format!(
+        "{{\"mid\":\"{}\",\"uid\":\"{}\",\"node_type\":\"{}\",\"fields\":{},\"line_range\":{{\"start\":{},\"end\":{}}}}}",
+        json_escape(&node.mid),
+        json_escape(&node.uid),
+        json_escape(&node.node_type),
+        sdoc_string_map_json(&node.fields),
+        node.line_range.start,
+        node.line_range.end,
+    )
+}
+
+fn sdoc_relation_json(relation: &bran_core::sdoc::SdocRelation) -> String {
+    format!(
+        "{{\"mid\":\"{}\",\"type\":\"{}\",\"relation_type\":\"{}\",\"source_mid\":\"{}\",\"target_mid\":\"{}\",\"line_range\":{{\"start\":{},\"end\":{}}}}}",
+        json_escape(&relation.mid),
+        json_escape(&relation.relation_type),
+        json_escape(&relation.reference_type),
+        json_escape(&relation.source_mid),
+        json_escape(&relation.target_mid),
+        relation.line_range.start,
+        relation.line_range.end,
+    )
+}
+
+fn sdoc_string_map_json(values: &BTreeMap<String, String>) -> String {
+    format!(
+        "{{{}}}",
+        values
+            .iter()
+            .map(|(key, value)| format!("\"{}\":\"{}\"", json_escape(key), json_escape(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn sdoc_findings_json(findings: &[SdocFinding]) -> String {
+    findings
+        .iter()
+        .map(|finding| {
+            format!(
+                "{{\"kind\":\"{}\",\"code\":\"{}\",\"locators\":[{}]}}",
+                finding.kind,
+                json_escape(&finding.code),
+                finding
+                    .locators
+                    .iter()
+                    .map(|locator| format!("\"{}\"", json_escape(locator)))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn sdoc_ranked_json(ranked: &bran_core::graph::sdoc::SdocRankedNode) -> String {
+    let node = &ranked.node;
+    let fact = |key| {
+        node.facts()
+            .values(key)
+            .and_then(|values| values.first())
+            .map(String::as_str)
+            .unwrap_or("")
+    };
+    format!(
+        "{{\"mid\":\"{}\",\"uid\":\"{}\",\"title\":\"{}\",\"source_locator\":\"{}\",\"source_sha256\":\"{}\",\"line_locator\":\"{}\",\"exact_mid\":{},\"exact_uid_or_alias\":{},\"content_match\":{}}}",
+        json_escape(node.id().as_str()),
+        json_escape(fact("sdoc.uid")),
+        json_escape(fact("sdoc.title")),
+        json_escape(fact("sdoc.source_locator")),
+        json_escape(fact("sdoc.source_sha256")),
+        json_escape(node.provenance().locator()),
+        ranked.rank_key.exact_mid,
+        ranked.rank_key.exact_uid_or_alias,
+        ranked.rank_key.content_match,
+    )
 }
 
 struct ScannedQueryRoot {
@@ -6649,15 +7258,19 @@ impl CliResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_bundle_from_snapshot, AgentFailure, AgentRuntime, AgentRuntimeAuthority,
-        AgentRuntimeConfig, AgentSqzAdapter, CliApp, ExitCode, InvocationOutcome,
-        MemoryResultStore, RuntimePorts, SqzPolicy, TypedExit, MISSING_COMMAND_ERROR, SMOKE_OUTPUT,
+        derive_bundle_from_snapshot, parse_sdoc_args, run_sdoc, sdoc_document_findings,
+        AgentFailure, AgentRuntime, AgentRuntimeAuthority, AgentRuntimeConfig, AgentSqzAdapter,
+        CliApp, CliResult, ExitCode, InvocationOutcome, MemoryResultStore, RuntimePorts,
+        SdocBridgeConfig, SdocCommand, SqzPolicy, TypedExit, MISSING_COMMAND_ERROR, SMOKE_OUTPUT,
         UNKNOWN_COMMAND_ERROR,
     };
     use bran_core::bundle::ParseStatus;
     use bran_core::metadata::MetadataReport;
     use bran_core::policy::MAX_POLICY_BYTES;
     use bran_core::scan::{ContentIdentity, ScanEntry, ScanSnapshot};
+    use bran_core::sdoc::SdocReceipt;
+    use std::collections::BTreeMap;
+    #[cfg(unix)]
     use std::sync::Arc;
 
     struct RequestRecorder {
@@ -11002,5 +11615,386 @@ mod tests {
         assert!(propose.output.contains("\"authority\":null"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    struct SdocFixture {
+        root: std::path::PathBuf,
+        bridge: String,
+    }
+
+    /// Policy-clean identities for the CLI bridge fixture. The check path
+    /// rejects anything that is not a 32-hex MID, so the fixture uses real
+    /// shapes and each test varies only what it is about.
+    #[cfg(unix)]
+    const SDOC_DOC_MID: &str = "a7e9c2d8f41b5a7390ce6d2b8f13a4c6";
+    #[cfg(unix)]
+    const SDOC_REQ_MID: &str = "f9cbb2050ef541ffae88e67dc9eea43e";
+    #[cfg(unix)]
+    const SDOC_UNKNOWN_MID: &str = "1111111111111111111111111111ffff";
+    #[cfg(unix)]
+    const SDOC_CLEAN_METADATA: &str = concat!(
+        "\"type\":\"architecture-specification\",\"title\":\"CLI fixture\",",
+        "\"okf_status\":\"active\",\"tags\":\"internal\",\"resource\":\"local\",",
+        "\"freshness\":\"2026-09-05\",\"public_boundary\":\"internal\",",
+        "\"grammar_version\":\"1.0.0\",\"published_revision\":\"REV-1\""
+    );
+
+    #[cfg(unix)]
+    fn sdoc_fixture(prefix: &str, metadata: &str, node_mid: &str, target_mid: &str) -> SdocFixture {
+        let root = std::env::temp_dir().join(format!(
+            "bran-cli-sdoc-{prefix}-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("main")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        let source = "[DOCUMENT]\nTITLE: CLI fixture\n";
+        std::fs::write(root.join("docs/spec.sdoc"), source).unwrap();
+        let digest = bran_core::agent::result_store::ResultId::sha256(source.as_bytes())
+            .value()
+            .to_owned();
+        let required = [
+            "MID",
+            "UID",
+            "TITLE",
+            "STATUS",
+            "SOURCE",
+            "OWNER",
+            "STATEMENT",
+            "RATIONALE",
+            "ASSUMPTIONS",
+            "CONSTRAINTS",
+            "VERIFICATION_METHOD",
+            "VERIFICATION_LEVEL",
+            "VERIFICATION_ENVIRONMENT",
+            "SUCCESS_CRITERIA",
+            "VALIDATION_METHOD",
+            "VERIFICATION_CASE",
+            "EXPECTED_RESULT",
+            "ACTUAL_RESULT",
+            "ANOMALY",
+            "CORRECTIVE_ACTION",
+            "WAIVER",
+            "CLOSURE",
+        ];
+        let fields = required
+            .iter()
+            .map(|field| match *field {
+                "MID" => format!("\"MID\":\"{node_mid}\""),
+                "UID" => "\"UID\":\"REQ-CLI\"".to_owned(),
+                "TITLE" => "\"TITLE\":\"Configure SDoc query\"".to_owned(),
+                "STATUS" => "\"STATUS\":\"Published\"".to_owned(),
+                "STATEMENT" => {
+                    "\"STATEMENT\":\"CLI query must preserve exact source evidence.\"".to_owned()
+                }
+                other => format!("\"{other}\":\"recorded\""),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let envelope = format!(
+            concat!(
+                "{{\"protocol\":\"alphazede.strictdoc.bridge\",\"schema_version\":\"2\",\"mode\":\"sdoc\",\"status\":\"ok\",",
+                "\"validation\":{{\"status\":\"valid\"}},\"engine\":{{\"api\":\"strictdoc.api\",\"version\":\"0.29.0\",",
+                "\"artifact_sha256\":\"fae511b228952ee5e1ff765650ac2701526ce39e32a6686f53ef384621486a90\",",
+                "\"requirements_sha256\":\"77b879886d9856ca748e181b592e78efa377d432953ec52d6e61803cf10ef9c8\"}},",
+                "\"source\":{{\"locator\":\"docs/spec.sdoc\",\"sha256\":\"{digest}\"}},",
+                "\"document\":{{\"mid\":\"{doc_mid}\",\"uid\":\"DOC-CLI\",\"title\":\"CLI fixture\",\"metadata\":{{{metadata}}},\"line_range\":{{\"start\":1,\"end\":2}}}},",
+                "\"nodes\":[{{\"mid\":\"{node_mid}\",\"uid\":\"REQ-CLI\",\"node_type\":\"REQUIREMENT\",\"fields\":{{{fields}}},\"line_range\":{{\"start\":4,\"end\":8}}}}],",
+                "\"relations\":[{{\"mid\":\"0a46bb7e28b7e206f84fee642f7b398e\",\"type\":\"derives-from\",\"relation_type\":\"Verification\",",
+                "\"owner\":\"CLI fixture\",\"revision\":\"REV-1\",",
+                "\"source_mid\":\"{doc_mid}\",\"target_mid\":\"{target_mid}\",\"line_range\":{{\"start\":9,\"end\":9}}}}]}}"
+            ),
+            digest = digest,
+            doc_mid = SDOC_DOC_MID,
+            metadata = metadata,
+            node_mid = node_mid,
+            target_mid = target_mid,
+            fields = fields,
+        );
+        // Written as a `/bin/sh` argument, never as the executed program: an
+        // executable a sibling test thread's fork still holds open makes `exec`
+        // fail with ETXTBSY, which surfaced here as a flaky
+        // `sdoc_bridge_transport`.
+        let bridge = root.join("bridge.sh");
+        std::fs::write(
+            &bridge,
+            format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", envelope),
+        )
+        .unwrap();
+        SdocFixture {
+            root,
+            bridge: bridge.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn sdoc_args(fixture: &SdocFixture, subcommand: &str, request: Option<&str>) -> Vec<String> {
+        let mut args = vec![
+            "sdoc".to_owned(),
+            subcommand.to_owned(),
+            fixture.root.to_string_lossy().into_owned(),
+        ];
+        if let Some(request) = request {
+            args.push(request.to_owned());
+        }
+        args
+    }
+
+    /// Runs the internal SDoc path against the fixture bridge. `CliApp::run`
+    /// stays pinned to the packaged installation, so these behaviour tests
+    /// inject the fixture here instead of depending on production pins.
+    #[cfg(unix)]
+    fn sdoc_run(fixture: &SdocFixture, subcommand: &str, request: Option<&str>) -> CliResult {
+        let command = match subcommand {
+            "check" => SdocCommand::Check,
+            _ => SdocCommand::Query,
+        };
+        let values = sdoc_args(fixture, subcommand, request)[2..].to_vec();
+        let args = parse_sdoc_args(command, values).unwrap();
+        let bridge = SdocBridgeConfig::new(
+            "/bin/sh",
+            &fixture.bridge,
+            fixture.root.join("strictdoc.whl"),
+        )
+        .unwrap();
+        run_sdoc(&args, bridge)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sdoc_check_and_query_preserve_receipts_and_keep_miss_successful() {
+        let fixture = sdoc_fixture(
+            "check-query",
+            SDOC_CLEAN_METADATA,
+            SDOC_REQ_MID,
+            SDOC_REQ_MID,
+        );
+        let check = sdoc_run(&fixture, "check", None);
+        assert_eq!(check.exit_code, ExitCode::SUCCESS, "{}", check.output);
+        assert!(
+            check.output.contains("\"status\":\"ok\""),
+            "{}",
+            check.output
+        );
+        // The receipt is preserved verbatim, not re-derived from the source.
+        assert!(
+            check.output.contains("\"locator\":\"docs/spec.sdoc\""),
+            "{}",
+            check.output
+        );
+        assert!(
+            check.output.contains("\"uid\":\"REQ-CLI\""),
+            "{}",
+            check.output
+        );
+        assert!(check.output.contains("\"findings\":[]"), "{}", check.output);
+
+        let exact = sdoc_run(&fixture, "query", Some("REQ-CLI"));
+        assert_eq!(exact.exit_code, ExitCode::SUCCESS, "{}", exact.output);
+        assert!(
+            exact.output.contains("\"evidence_state\":\"hit\""),
+            "{}",
+            exact.output
+        );
+
+        // A miss is a successful answer, not an error.
+        let miss = sdoc_run(&fixture, "query", Some("REQ-NOT-PRESENT-ANYWHERE"));
+        assert_eq!(miss.exit_code, ExitCode::SUCCESS, "{}", miss.output);
+        assert!(
+            miss.output.contains("\"evidence_state\":\"miss\""),
+            "{}",
+            miss.output
+        );
+        assert!(miss.output.contains("\"results\":[]"), "{}", miss.output);
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sdoc_check_reports_stale_boundary_and_unresolved_findings() {
+        let fixture = sdoc_fixture(
+            "findings",
+            concat!(
+                "\"type\":\"architecture-specification\",\"title\":\"CLI fixture\",",
+                "\"okf_status\":\"deprecated\",\"tags\":\"internal\",\"resource\":\"local\",",
+                "\"freshness\":\"stale\",\"public_boundary\":\"unknown\",",
+                "\"grammar_version\":\"1.0.0\",\"published_revision\":\"REV-1\""
+            ),
+            SDOC_REQ_MID,
+            SDOC_UNKNOWN_MID,
+        );
+        let result = sdoc_run(&fixture, "check", None);
+        assert_eq!(
+            result.exit_code,
+            TypedExit::Validation.code(),
+            "{}",
+            result.output
+        );
+        assert!(result.output.contains("sdoc_stale"), "{}", result.output);
+        assert!(result.output.contains("sdoc_boundary"), "{}", result.output);
+        assert!(
+            result.output.contains("sdoc_unresolved_relation"),
+            "{}",
+            result.output
+        );
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sdoc_check_reports_duplicate_mid_and_rejects_relative_inputs() {
+        // The requirement reuses the document's MID, so identity is ambiguous.
+        let fixture = sdoc_fixture("duplicate", SDOC_CLEAN_METADATA, SDOC_DOC_MID, SDOC_DOC_MID);
+        let duplicate = sdoc_run(&fixture, "check", None);
+        assert_eq!(
+            duplicate.exit_code,
+            TypedExit::Validation.code(),
+            "{}",
+            duplicate.output
+        );
+        assert!(
+            duplicate.output.contains("sdoc_duplicate_mid"),
+            "{}",
+            duplicate.output
+        );
+
+        let relative = CliApp::run(vec![
+            "sdoc",
+            "check",
+            fixture.root.to_str().unwrap(),
+            "--program",
+            "sh",
+        ]);
+        assert_eq!(relative.exit_code, TypedExit::Usage.code());
+        assert!(relative.output.contains("unexpected_argument"));
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sdoc_malformed_bridge_is_an_operation_error_not_an_empty_success() {
+        let fixture = sdoc_fixture("malformed", SDOC_CLEAN_METADATA, SDOC_REQ_MID, SDOC_REQ_MID);
+        std::fs::write(&fixture.bridge, "#!/bin/sh\nprintf '%s\\n' not-json\n").unwrap();
+        let result = sdoc_run(&fixture, "check", None);
+        assert_eq!(result.exit_code, TypedExit::Operation.code());
+        assert!(
+            result.output.contains("\"status\":\"error\""),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("sdoc_malformed_json"),
+            "{}",
+            result.output
+        );
+        assert!(!result.output.contains("\"coverage\":{\"documents\":0"));
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    /// The shipped CLI resolves only the packaged installation, so without
+    /// production pins every `sdoc` invocation fails closed.
+    #[test]
+    #[cfg(unix)]
+    fn sdoc_cli_without_pins_fails_closed_as_runtime_unavailable() {
+        let fixture = sdoc_fixture("unpinned", SDOC_CLEAN_METADATA, SDOC_REQ_MID, SDOC_REQ_MID);
+        let result = CliApp::run(sdoc_args(&fixture, "check", None));
+        assert_eq!(
+            result.exit_code,
+            TypedExit::Operation.code(),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("sdoc_runtime_unavailable")
+                || result.output.contains("sdoc_runtime_mismatch"),
+            "{}",
+            result.output
+        );
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    #[test]
+    fn sdoc_policy_requires_full_core_without_parsing_source_text() {
+        let metadata = BTreeMap::from([
+            ("type".to_owned(), "architecture-specification".to_owned()),
+            ("title".to_owned(), "Spec".to_owned()),
+            ("okf_status".to_owned(), "active".to_owned()),
+            ("tags".to_owned(), "internal".to_owned()),
+            ("resource".to_owned(), "local".to_owned()),
+            ("freshness".to_owned(), "current".to_owned()),
+            ("public_boundary".to_owned(), "internal".to_owned()),
+            ("grammar_version".to_owned(), "0.29".to_owned()),
+            ("published_revision".to_owned(), "draft".to_owned()),
+        ]);
+        let fields = [
+            "MID",
+            "UID",
+            "TITLE",
+            "STATUS",
+            "SOURCE",
+            "OWNER",
+            "STATEMENT",
+            "RATIONALE",
+            "ASSUMPTIONS",
+            "CONSTRAINTS",
+            "VERIFICATION_METHOD",
+            "VERIFICATION_LEVEL",
+            "VERIFICATION_ENVIRONMENT",
+            "SUCCESS_CRITERIA",
+            "VALIDATION_METHOD",
+            "VERIFICATION_CASE",
+            "EXPECTED_RESULT",
+            "ACTUAL_RESULT",
+            "ANOMALY",
+            "CORRECTIVE_ACTION",
+            "WAIVER",
+            "CLOSURE",
+        ]
+        .into_iter()
+        .map(|field| {
+            (
+                field.to_owned(),
+                if field == "STATUS" { "Draft" } else { "x" }.to_owned(),
+            )
+        })
+        .collect();
+        let receipt = SdocReceipt {
+            source_locator: "docs/spec.sdoc".to_owned(),
+            source_sha256: "0".repeat(64),
+            validation: bran_core::sdoc::SdocValidation::Valid,
+            engine: bran_core::sdoc::SdocEngine {
+                api: "strictdoc.api".to_owned(),
+                version: "0.29.0".to_owned(),
+                artifact_sha256: "0".repeat(64),
+                requirements_sha256: "0".repeat(64),
+            },
+            document: bran_core::sdoc::SdocDocument {
+                mid: "MID-DOC-0001".to_owned(),
+                uid: "DOC-1".to_owned(),
+                title: "Spec".to_owned(),
+                metadata,
+                line_range: bran_core::sdoc::SdocLineRange { start: 1, end: 2 },
+            },
+            nodes: vec![bran_core::sdoc::SdocNode {
+                mid: "MID-REQ-0001".to_owned(),
+                uid: "REQ-1".to_owned(),
+                node_type: "REQUIREMENT".to_owned(),
+                fields,
+                line_range: bran_core::sdoc::SdocLineRange { start: 3, end: 4 },
+            }],
+            relations: vec![],
+        };
+        assert!(sdoc_document_findings(std::slice::from_ref(&receipt)).is_empty());
+        let mut invalid = receipt;
+        invalid.document.mid = "bad".to_owned();
+        invalid.document.metadata.remove("title");
+        let findings = sdoc_document_findings(&[invalid]);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.code == "sdoc_invalid_mid"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.code == "sdoc_metadata_required"));
     }
 }

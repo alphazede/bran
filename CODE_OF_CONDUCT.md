@@ -29,9 +29,8 @@ any public space where you're speaking for BRAN.
 
 ## Reporting
 
-Report privately through
-[GitHub Security Advisories](https://github.com/alphazede/bran/security/advisories/new)
-and state that it is a code of conduct report. Do not open a public issue.
+Email 1wgrumph@gmail.com. Reports stay private, and I'll respond as quickly as
+I reasonably can.
 
 I'll decide what action to take, up to and including blocking someone from the
 project. If your behaviour makes the project worse for other people, you'll be

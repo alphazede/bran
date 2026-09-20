@@ -7,6 +7,15 @@ license = "MIT OR Apache-2.0"
 [lib]
 path = "src/lib.rs"
 
+[features]
+# Exposes `SdocBridgeConfig::new`, the unpinned test-fixture constructor, to
+# dependants' test builds only. `bran-cli` enables it through a dev-dependency,
+# so no shipped binary can construct a bridge that skips the pinned identity.
+test-fixtures = []
+
+[dependencies]
+serde_json = "=1.0.151"
+
 [[bench]]
 name = "repository_scan"
 path = "../../benches/repository_scan.rs"

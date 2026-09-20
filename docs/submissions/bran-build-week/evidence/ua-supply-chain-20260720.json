@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "evidence_type": "private_supply_chain_verification",
+  "recorded_at": "2026-07-20",
+  "immutability": "record is append-only evidence; source release is not immutable",
+  "subject": "Understand Anything v2.9.0",
+  "measured": {
+    "acquisition": {
+      "url": "https://github.com/Egonex-AI/Understand-Anything",
+      "legacy_lum1104_url_redirects_to_repository_id": "1182081931",
+      "tag": "v2.9.0",
+      "tag_kind": "lightweight_mutable",
+      "commit": "f08763d11d0202a8a8f52b5dedda6d1b2e2ebac8",
+      "tree": "4cde61b3bece601c0ed09dca859023ee7f65fc38",
+      "tag_signed": false,
+      "commit_signed": false,
+      "github_release_immutable": false
+    },
+    "archive": {
+      "sha256": "c05c150f21d13e98cdbdf4e8e520b2101975751b031c0a2e8b013f41953f5e40",
+      "extracted_logical_tree_sha256": "e9f4696817a69a2b6e72db444f68e33809b4432ec4e5b81f80409dfe77d2dbf4",
+      "safe_entry_count": 545
+    },
+    "vulnerability_scan": {
+      "tool": "Trivy 0.71.0",
+      "database_date": "2026-07-20",
+      "critical_high_occurrences": 21,
+      "critical_occurrences": 4,
+      "high_occurrences": 17,
+      "unique_cves": 7,
+      "critical": [
+        {
+          "package": "Vitest 3.2.4",
+          "cve": "CVE-2026-47429",
+          "impact": "RCE/information-disclosure/path-traversal",
+          "fixed_versions": [
+            "3.2.6",
+            "4.1.0"
+          ]
+        }
+      ],
+      "production_only_high_findings": 5,
+      "production_only_packages": [
+        "Astro",
+        "devalue",
+        "picomatch",
+        "Vite"
+      ]
+    },
+    "supply_chain_observations": {
+      "official_installer": "curl-pipes from main and clones/pulls an unpinned default branch",
+      "unreproduced_wasm_binaries": {
+        "Dart": "3706261fc734e7eddd1a33cf1b031571eba4b017fe55d3b8910af31a1399f9a4",
+        "Swift": "0bbf7a0668f8f155addbcd8284880447dbe393b67b5eb09c7b042b02080d9498"
+      },
+      "native_packages": "build-allowlisted"
+    },
+    "additional_scans_and_boundaries": {
+      "gitleaks": "no leaks",
+      "detect_secrets_findings": 0,
+      "syft_artifacts": 1093,
+      "telemetry": "none observed",
+      "figma_access": "fixed to api.figma.com",
+      "dashboard_token_binding": "127.0.0.1"
+    }
+  },
+  "blocked": {
+    "decision": "BLOCK",
+    "scope": "category-reference execution/install/import",
+    "authorization": "not authorized",
+    "reason": "Critical/High findings must not be bypassed"
+  },
+  "unavailable": [
+    "grype",
+    "osv-scanner",
+    "clamscan",
+    "yara",
+    "local Semgrep rules"
+  ],
+  "evidence": {
+    "archive_path": "/tmp/understand-anything-v2.9.0.xgTpQr/f08763d11d0202a8a8f52b5dedda6d1b2e2ebac8.tar.gz",
+    "extracted_tree_path": "/tmp/understand-anything-v2.9.0.xgTpQr/tree/Understand-Anything-f08763d11d0202a8a8f52b5dedda6d1b2e2ebac8"
+  },
+  "limitations": [
+    "This record summarizes already verified supply-chain evidence; it does not execute, install, or import Understand Anything.",
+    "Unavailable scanners were not substituted with unverified claims."
+  ],
+  "claim_boundary": "No claim of Understand Anything execution, benchmark improvement, provider use, GUI validation, or automatic agent work."
+}

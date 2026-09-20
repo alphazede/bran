@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "evidence_type": "private_core_export_verification",
+  "recorded_at": "2026-07-20",
+  "immutability": "record is append-only evidence",
+  "subject": "BRAN core Obsidian export",
+  "measured": {
+    "revision": "33e86f9ef36bf71130013bcbdcb4e3ad37d150d7",
+    "provider_or_agent_or_llm_used": false,
+    "test": {
+      "name": "p3_obsidian_export",
+      "status": "passed",
+      "passed_count": 1,
+      "verified_behaviors": [
+        "actual YAML frontmatter parsed",
+        "deterministic order: bran-graph.md, concepts/alpha.md, concepts/beta.md",
+        "safe wikilink: [[concepts/beta]]",
+        "exact edge graph record and reparse",
+        "unknown properties preserved",
+        "unsafe relative, absolute, backslash, empty, URI, and pipe links rejected"
+      ]
+    },
+    "offline_example": {
+      "source": "bran/examples/obsidian/usage.rs",
+      "status": "compiled and ran",
+      "output": "[\"bran-graph.md\", \"concepts/demo.md\"]"
+    },
+    "binary_sha256": {
+      "test_binary": "3493ab42a9cccc9aab230113cc466b66b3212b916e2ce73f14d84d32300c0d0b",
+      "example_binary": "622c56245bb2aaa17fe61b52a449b4e81f8cfddfdb48068277120b4fc96a434e",
+      "negative_probe_binary": "07b7788a1ac824825009900d0e136113283d6a63ff6d26963ac28fce8c7e4a7a"
+    }
+  },
+  "blocked": {
+    "native_obsidian_plugin": "absent/deferred",
+    "obsidian_gui": "not exercised"
+  },
+  "unavailable": [
+    "native Obsidian plugin validation",
+    "Obsidian GUI validation",
+    "separately run connected-agent consumption"
+  ],
+  "evidence": {
+    "repository_path": "bran",
+    "test_source": "bran/crates/bran-core/src/export/mod.rs",
+    "test_binary": "ephemeral local test binary; SHA-256 recorded above",
+    "offline_example_binary": "ephemeral local example binary; SHA-256 recorded above",
+    "negative_probe_binary": "ephemeral local negative-probe binary; SHA-256 recorded above",
+    "offline_example_command": "compiled offline example binary"
+  },
+  "limitations": [
+    "Core export works without an agent.",
+    "Connected-agent consumption is mechanically supported but was not separately run.",
+    "No provider, agent, or LLM was used for this verification."
+  ],
+  "decision": "Core Obsidian export evidence is accepted within the measured provider-free boundary.",
+  "claim_boundary": "No claim of GUI validation, native plugin availability, provider use, benchmark improvement, or automatic agent work."
+}

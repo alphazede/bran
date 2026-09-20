@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "benchmark": "bran-enterprise-dma-417-seven-stage-screen",
+  "claim_scope": "one controlled live replication per arm",
+  "authoritative_campaign_root": "/home/spectre/alphazede/bran-enterprise-live-3b7d847-20260721",
+  "revisions": {
+    "bran": "917b6dc0565f1be54b83298d97f111877fb2f012",
+    "arena": "3b7d847919ead2251434b1f0cbad65fb434aaf07"
+  },
+  "policy": {
+    "task_success_inputs": [
+      "final hidden acceptance",
+      "terminal success",
+      "authorized mutations",
+      "isolation and boundary safety",
+      "unsupported citations",
+      "semantic material errors"
+    ],
+    "metrics_only": [
+      "retrieval recall and rank",
+      "search and file counts",
+      "token usage",
+      "timing",
+      "inner-agent usage",
+      "SQZ receipts"
+    ],
+    "incomplete_telemetry_invalidates_task": false
+  },
+  "aggregate": {
+    "arms": 5,
+    "stages_per_arm": 7,
+    "stage_receipts": 35,
+    "terminal_success": 25,
+    "terminal_failed": 10,
+    "mutation_authorized": 25,
+    "mutation_unauthorized": 10,
+    "boundary_safe": 35,
+    "task_successes": 0,
+    "hidden_cases_passed": 0,
+    "hidden_cases_total": 25,
+    "retrieval_diagnostic_passes": 2,
+    "unsupported_citations": 0,
+    "reported_semantic_material_errors": 25,
+    "outer_usage": {
+      "input_tokens": 55754350,
+      "cached_input_tokens_subset": 52358912,
+      "output_tokens": 757814,
+      "reasoning_output_tokens_subset": 237876,
+      "input_plus_output_tokens": 56512164
+    }
+  },
+  "arms": [
+    {
+      "arm": "llm-bran-connected",
+      "wall_clock_envelope_ms": 2969911,
+      "outer_input_tokens": 9181381,
+      "outer_cached_input_tokens_subset": 8552704,
+      "outer_output_tokens": 130858,
+      "outer_reasoning_output_tokens_subset": 39106,
+      "terminal_success": 5,
+      "terminal_failed": 2,
+      "retrieval_diagnostic_passes": 0,
+      "retrieval_metrics": "unavailable",
+      "task_success": false,
+      "harness_warnings": {"inner_usage_unavailable": 7}
+    },
+    {
+      "arm": "llm-okf",
+      "wall_clock_envelope_ms": 3424303,
+      "outer_input_tokens": 11053148,
+      "outer_cached_input_tokens_subset": 10402048,
+      "outer_output_tokens": 154197,
+      "outer_reasoning_output_tokens_subset": 51030,
+      "terminal_success": 5,
+      "terminal_failed": 2,
+      "retrieval_diagnostic_passes": 1,
+      "task_success": false,
+      "harness_warnings": {}
+    },
+    {
+      "arm": "llm-bran-core",
+      "wall_clock_envelope_ms": 3517800,
+      "outer_input_tokens": 11349682,
+      "outer_cached_input_tokens_subset": 10695168,
+      "outer_output_tokens": 162465,
+      "outer_reasoning_output_tokens_subset": 47664,
+      "terminal_success": 5,
+      "terminal_failed": 2,
+      "retrieval_diagnostic_passes": 0,
+      "retrieval_metrics": "unavailable",
+      "task_success": false,
+      "harness_warnings": {}
+    },
+    {
+      "arm": "llm-no-okf",
+      "wall_clock_envelope_ms": 3554713,
+      "outer_input_tokens": 11524423,
+      "outer_cached_input_tokens_subset": 10854144,
+      "outer_output_tokens": 160731,
+      "outer_reasoning_output_tokens_subset": 51138,
+      "terminal_success": 5,
+      "terminal_failed": 2,
+      "retrieval_diagnostic_passes": 1,
+      "task_success": false,
+      "harness_warnings": {}
+    },
+    {
+      "arm": "llm-bran-connected-sqz",
+      "wall_clock_envelope_ms": 3640924,
+      "outer_input_tokens": 12645716,
+      "outer_cached_input_tokens_subset": 11854848,
+      "outer_output_tokens": 149563,
+      "outer_reasoning_output_tokens_subset": 48938,
+      "terminal_success": 5,
+      "terminal_failed": 2,
+      "retrieval_diagnostic_passes": 0,
+      "retrieval_metrics": "unavailable",
+      "task_success": false,
+      "harness_warnings": {
+        "inner_usage_unavailable": 7,
+        "sqz_receipt_unavailable": 7
+      }
+    }
+  ],
+  "hard_criteria": {
+    "all_arms_boundary_safe": true,
+    "all_arms_zero_unsupported_citations": true,
+    "all_arms_terminal_success": false,
+    "all_arms_authorized_mutations_only": false,
+    "all_arms_final_hidden_acceptance": false,
+    "all_arms_zero_semantic_material_errors": false
+  },
+  "benchmark_contract_defect": {
+    "comparative_quality_result_valid": false,
+    "stage_05": "The public prompt requested owning RTL, register-definition, and generated-interface updates, but the hidden allowlist rejected reasonable generated register/interface paths used by every arm.",
+    "stage_06": "The public prompt requested driver, validation, compatibility, and operator-documentation consistency, but the hidden allowlist rejected reasonable validation, compatibility, and operations paths used by every arm.",
+    "hidden_layout": "Final acceptance required exact undisclosed modernization/registers, modernization/rtl, modernization/driver, and modernization/evidence-map paths. Work at other reasonable paths did not satisfy the oracle, and rejected stage mutations were rolled back before final acceptance.",
+    "effect": "Every arm received the same two mutation failures and then missed all five exact-path hidden cases. The reported five material errors per arm are the five failed hidden cases, not five independently adjudicated semantic defects."
+  },
+  "selection": {
+    "winner": "no valid winner",
+    "reason": "The shared benchmark-contract defect dominates final correctness, so elapsed time and token differences cannot select a quality winner.",
+    "fastest_wall_clock_arm": "llm-bran-connected",
+    "lowest_outer_input_arm": "llm-bran-connected",
+    "plain_vs_okf_outer_input_delta": -471275,
+    "plain_vs_okf_interpretation": "OKF used fewer outer input tokens than Plain in this single run, but neither succeeded and the defective oracle prevents a quality claim.",
+    "sqz_comparison": "not valid: SQZ receipts were unavailable in all seven SQZ stages"
+  },
+  "historical_failures_preserved": [
+    "/home/spectre/alphazede/bran-enterprise-live-20260721-DlUTAf",
+    "/home/spectre/alphazede/bran-enterprise-corrected-parallel-20260721-vtm7In",
+    "/home/spectre/alphazede/bran-enterprise-failopen-f07cb20-20260721",
+    "docs/submissions/bran-build-week/evidence/targeted-multistep-20260721.json",
+    "docs/submissions/bran-build-week/evidence/arena-matrix-20260720.json"
+  ]
+}

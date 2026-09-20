@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "evidence_id": "arena-matrix-20260720",
+  "visibility": "private_submission_evidence",
+  "source_generated_at_utc": "2026-07-20T14:24:42Z",
+  "aggregate_classification": "controlled_arena_n1_descriptive",
+  "claim_scope": "on this controlled 512-file Arena corpus at the exact revisions above",
+  "revisions": {
+    "arena": "ecc39c83275c0d5930a60a3841c9b9514379c415",
+    "bran": "33e86f9ef36bf71130013bcbdcb4e3ad37d150d7",
+    "corpus_sha256": "cb4fab25ecc7dfa132b65608608afb6fa2245e8f3248a1a7f2a1f3752aa7d6d5"
+  },
+  "source_artifacts": {
+    "aggregate": {
+      "filename": "final-matrix-aggregate-okf2.json",
+      "sha256": "de3059b27e516a6894ff7a11850fc2d79bb76c491ac78ac7ae1d6cb00cdc5508"
+    },
+    "comparison": {
+      "filename": "final-matrix-comparison-okf2.md",
+      "sha256": "cc90396c82b56ee5c944a22d60b33f39ab5bb4ff9e024b27132c93b87d78d2be"
+    },
+    "invalid_ledger": {
+      "filename": "invalidated-f11a-corpus-runs.json",
+      "sha256": "763b75c0240e796ef1ffea171452ed325284ff4f525479af605c98d205553ab6"
+    }
+  },
+  "preconditions": {
+    "full_okf_v0_1_repository_check": "passed",
+    "provider_free_self_test": "self-test-okf-cb4fab25-001:exit_0"
+  },
+  "population": {
+    "eligible_corrected_trials": 20,
+    "expected_trials": 20,
+    "sample_count_per_cell": 1,
+    "invalidated_prior_corpus_trials_included": 0,
+    "sample_size_label": "n=1 per heterogeneous condition"
+  },
+  "provenance_classes": {
+    "measured": {
+      "fields": [
+        "wall_duration_median_ms",
+        "tool_calls_median",
+        "failed_tool_calls_median",
+        "numeric_source_precision_median",
+        "numeric_source_recall_median",
+        "cell outcome counts"
+      ],
+      "scope": "descriptive summaries from corrected single-cell trials"
+    },
+    "actual": {
+      "field": "actual_comparison_tokens_median",
+      "basis": "Provider telemetry from outer JSONL and, for connected arms, inner adapter telemetry. Cached input and reasoning output are subsets and are never added twice."
+    },
+    "estimated": {
+      "field": "core_packet_tokens",
+      "basis": "BRAN Core packet token figures are bytes-divided-by-four estimates and are retained only in per-trial summaries; they are not used as model-token totals.",
+      "included_in_actual_token_totals": false
+    },
+    "unavailable": {
+      "field": "dollar_spend",
+      "value": "unavailable"
+    },
+    "invalid": {
+      "corpus_sha256": "f11a1ff6ebbd0e798766782d6f7d5689534030a1d12246559266c4a4a6517ffa",
+      "classification": "invalid_precondition_okf_repository_fail",
+      "included_in_metrics": false,
+      "excluded_from_final_comparison": true
+    }
+  },
+  "descriptive_by_arm": [
+    {
+      "arm": "connected",
+      "heterogeneous_single_cells": 12,
+      "n_per_cell": 1,
+      "wall_duration_median_ms": 108975,
+      "actual_comparison_tokens_median": 208050,
+      "tool_calls_median": 15.5,
+      "failed_tool_calls_median": 4,
+      "numeric_source_precision_median": 1,
+      "numeric_source_recall_median": 1,
+      "target_correct_cells": 12,
+      "final_answer_correct_cells": 12,
+      "material_error_cells": 4,
+      "failed_condition_cells": 5,
+      "connected_receipt_complete_cells": 9,
+      "clean_connected_result_cells": 7,
+      "grounding_failed_cells": 3
+    },
+    {
+      "arm": "core",
+      "heterogeneous_single_cells": 4,
+      "n_per_cell": 1,
+      "wall_duration_median_ms": 118060,
+      "actual_comparison_tokens_median": 195941,
+      "tool_calls_median": 12,
+      "failed_tool_calls_median": 4,
+      "numeric_source_precision_median": 0.06521739130434782,
+      "numeric_source_recall_median": 1,
+      "target_correct_cells": 4,
+      "final_answer_correct_cells": 4,
+      "material_error_cells": 0,
+      "failed_condition_cells": 0,
+      "connected_receipt_complete_cells": 0,
+      "clean_connected_result_cells": 0,
+      "grounding_failed_cells": 0
+    },
+    {
+      "arm": "plain",
+      "heterogeneous_single_cells": 4,
+      "n_per_cell": 1,
+      "wall_duration_median_ms": 47030,
+      "actual_comparison_tokens_median": 72589,
+      "tool_calls_median": 5.5,
+      "failed_tool_calls_median": 2,
+      "numeric_source_precision_median": 1,
+      "numeric_source_recall_median": 1,
+      "target_correct_cells": 4,
+      "final_answer_correct_cells": 4,
+      "material_error_cells": 0,
+      "failed_condition_cells": 0,
+      "connected_receipt_complete_cells": 0,
+      "clean_connected_result_cells": 0,
+      "grounding_failed_cells": 0
+    }
+  ],
+  "evidence_labels": {
+    "sample_size": "n=1 per heterogeneous condition",
+    "medians": "descriptive summaries across heterogeneous single cells, not statistical claims",
+    "source_precision": "Plain and connected precision is direct target evidence-path precision. Core precision is BRAN packet locator precision. Opaque connected citation IDs are not converted into path precision."
+  },
+  "invalidated_prior_evidence": {
+    "recorded_at_utc": "2026-07-20T14:03:44Z",
+    "corpus_sha256": "f11a1ff6ebbd0e798766782d6f7d5689534030a1d12246559266c4a4a6517ffa",
+    "classification": "invalid_precondition_okf_repository_fail",
+    "excluded_from_final_comparison": true,
+    "precondition": {
+      "check_profile": "okf-v0.1",
+      "status": "failed",
+      "failures": [
+        {
+          "path": "AGENTS.md",
+          "field": "type",
+          "problem": "missing"
+        },
+        {
+          "path": "CLAUDE.md",
+          "field": "type",
+          "problem": "missing"
+        }
+      ]
+    },
+    "handling": {
+      "raw_evidence_preserved": true,
+      "existing_trial_summary_seals_preserved": true,
+      "sealed_summaries_mutated": false,
+      "provider_results_eligible_as_final": false
+    },
+    "run_count": 21,
+    "notes": [
+      "This ledger supersedes final-use eligibility, not the historical raw evidence.",
+      "All listed runs used the invalid frozen corpus and must not contribute to final benchmark claims or aggregate metrics.",
+      "A corrected corpus requires a new digest, a passing full OKF repository check, and fresh trials."
+    ]
+  }
+}

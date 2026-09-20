@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "evidence_type": "failed_live_agent_pilot",
+  "created_date": "2026-07-20",
+  "status": "failed",
+  "claim_scope": "single_unpaired_plain_trial",
+  "comparison_result": "unavailable",
+  "trial": {
+    "trial_id": "sol-medium-plain-001",
+    "arm": "plain",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "medium",
+    "fresh_state": true,
+    "fresh_workspace": true,
+    "provider_call_count": 1
+  },
+  "revisions": {
+    "public_bran": "d10fb9d605f7b08061b2d40bb010b81d5d8ff99c",
+    "arena_harness": "ff6bfd7603a4f4d246619abbeb9762d0b6880f68",
+    "codex_version": "0.144.6"
+  },
+  "corpus": {
+    "file_count": 512,
+    "logical_sha256": "96cc1cb98a5e0e3730a1c7365468219aa2b4935c715a6b9e2971eeff197156bf"
+  },
+  "prompt": {
+    "sha256": "d04b43ab6ef7f4aa7868f6361646618e25c101b8af0aecc6cf4158eb70b52dd6",
+    "identical_pair_intent": true,
+    "paired_trial_dispatched": false
+  },
+  "telemetry": {
+    "source": "codex_exec_jsonl_turn_completed_usage",
+    "input_tokens": 40549,
+    "cached_input_tokens": 21760,
+    "uncached_input_tokens_derived": 18789,
+    "output_tokens": 1098,
+    "reasoning_output_tokens": 555,
+    "visible_output_tokens_derived": 543,
+    "total_tokens_derived": 41647,
+    "total_definition": "input_tokens_plus_output_tokens",
+    "subset_warning": "cached input is included in input; reasoning output is included in output",
+    "cost": "unavailable",
+    "wall_clock_seconds": 31.41,
+    "maximum_rss_kib": 23596,
+    "distinct_command_attempts": 4,
+    "successful_command_attempts": 0
+  },
+  "outcome": {
+    "implementation_path_correct": false,
+    "validation_path_correct": false,
+    "root_cause_correct": false,
+    "agent_refused_to_guess": true,
+    "failure": "nested command sandbox could not execute /opt/codex",
+    "failure_message": "bwrap: execvp /opt/codex: No such file or directory"
+  },
+  "budget": {
+    "frozen_aggregate_ceiling_tokens": 8500,
+    "observed_total_tokens": 41647,
+    "ceiling_exceeded_by_tokens": 33147,
+    "followup_provider_calls": 0,
+    "stop_reason": "paired dispatch would violate the frozen aggregate ceiling"
+  },
+  "private_artifacts": {
+    "raw_jsonl_sha256": "ebfe3db0a39bd8b59f21385a759f4450d150a2416677eb8026a43b9ece2750ae",
+    "stderr_sha256": "6baea93d2159577d26348a843b05a898ac9ec642eee5f66d56c82e23eb7e2549",
+    "time_record_sha256": "c312c946c968f7a21b8458d4f698f15cbdadf9ed082d89e74465b6abc21488c3",
+    "publication": "private_raw_traces_not_for_public_upload"
+  },
+  "provider_free_remediation_check": {
+    "status": "passed",
+    "changes": [
+      "grant inner sandbox read access to /opt",
+      "omit unsupported strict-config flag for codex sandbox"
+    ],
+    "candidate_corpus_readable": true,
+    "candidate_auth_readable": false,
+    "provider_calls": 0,
+    "evaluation_only_config_sha256": "57b0fb8be627943aadb00b889d2d29815897cb6e52bf519e655dd99b2a725d19",
+    "evaluation_only_launcher_sha256": "333744d7058ce1ac813974453fdd5dad8b103cda4dc07a5e7d1580f70a88e56a"
+  }
+}

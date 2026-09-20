@@ -63,8 +63,10 @@ pub struct NodeFacts {
 }
 
 impl NodeFacts {
-    /// Maximum number of distinct semantic keys carried by one node.
-    pub const MAX_FIELDS: usize = 32;
+    /// Maximum number of distinct semantic keys carried by one node. This
+    /// admits the 32-key SDoc core projection plus up to 32 project-extension
+    /// keys while retaining a finite graph-input bound.
+    pub const MAX_FIELDS: usize = 64;
     /// Maximum UTF-8 byte length of one semantic key.
     pub const MAX_FIELD_KEY_BYTES: usize = 64;
     /// Maximum Unicode scalar count of one semantic key.
@@ -204,6 +206,26 @@ impl NodeFacts {
             self.semantic_bytes -= key.len() + values.iter().map(String::len).sum::<usize>();
         }
         self.with_field_value(key, value)
+    }
+}
+
+#[cfg(test)]
+mod node_facts_tests {
+    use super::*;
+
+    #[test]
+    fn field_limit_is_finite_and_overflow_is_typed() {
+        let facts = (0..NodeFacts::MAX_FIELDS)
+            .try_fold(NodeFacts::default(), |facts, index| {
+                facts.with_field_value(format!("field-{index}"), "value")
+            })
+            .unwrap();
+        assert!(matches!(
+            facts.with_field_value("one-too-many", "value"),
+            Err(GraphError::FactFieldLimitExceeded {
+                limit: NodeFacts::MAX_FIELDS
+            })
+        ));
     }
 }
 

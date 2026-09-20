@@ -2,6 +2,7 @@
 
 pub mod model;
 pub mod query;
+pub mod sdoc;
 
 pub use model::{
     Confidence, EdgeCertainty, EdgeId, EdgeInput, EdgeRelationship, GraphError, GraphInput,
