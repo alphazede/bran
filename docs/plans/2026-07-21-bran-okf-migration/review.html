@@ -1,0 +1,1492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BRAN OKF Migration Design Review</title>
+<style>
+:root{--bg:#081019;--panel:#111f2c;--ink:#edf7fb;--muted:#a9bdc9;--cyan:#73d8e8;--mint:#8ce0b6;--gold:#efc96f;--line:#29475b}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(150deg,#081019,#0b1c29);color:var(--ink);font:15px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}main{max-width:1240px;margin:auto;padding:32px 20px 72px}h1{font-size:clamp(2.2rem,6vw,4.8rem);line-height:1.02;margin:.15em 0}h2{margin-top:2.3rem;border-bottom:1px solid var(--line);padding-bottom:.35rem}h3,a{color:var(--cyan)}.sub,.text,.meta{color:var(--muted)}.grid,.flow{display:grid;gap:13px}.grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.flow{grid-template-columns:repeat(auto-fit,minmax(135px,1fr));align-items:stretch}.card,.diagram,.source,.qa{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.card strong{display:block;color:var(--gold)}.node{border:1px solid #3d687f;border-radius:8px;padding:12px;text-align:center;background:#0a1721}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:9px;text-align:left;vertical-align:top}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#d9e9f1;border-top:1px solid var(--line);padding-top:12px}summary{cursor:pointer;color:var(--cyan);font-weight:700}.qa{border-style:dashed;color:var(--muted)}code{overflow-wrap:anywhere}.eyebrow{color:var(--mint);letter-spacing:.12em}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">DESIGN BASELINE · STAGED REPLACEMENT · PRIVATE</div>
+<h1>BRAN OWNS REPOSITORY KNOWLEDGE</h1>
+<p class="sub">A staged migration from internal use-okf and OKF tooling to BRAN-native policy, validation, retrieval, repair, and evidence—without allowing hooks or telemetry to block agent work.</p>
+
+<h2>Design outcome</h2>
+<div class="grid">
+<div class="card"><strong>One semantic owner</strong>BRAN core owns policy, validation, ranking, and repair.</div>
+<div class="card"><strong>Thin compatibility</strong>Legacy skill, tool, config, and hooks translate only.</div>
+<div class="card"><strong>Bounded self-heal</strong>Automatic repair is limited to BRAN-owned derived state.</div>
+<div class="card"><strong>Evidence retirement</strong>Six consumers migrate independently before global removal.</div>
+</div>
+
+<h2>Architecture and communication flow</h2>
+<section class="diagram"><div class="flow">
+<div class="node">native caller<br><small>.bran/policy.yaml</small></div>
+<div class="node">legacy caller<br><small>read-only translation</small></div>
+<div class="node">BRAN CLI<br><small>typed envelope + exits</small></div>
+<div class="node">BRAN core<br><small>policy · validation · query</small></div>
+<div class="node">repair coordinator<br><small>authority · digest · rollback</small></div>
+<div class="node">receipts<br><small>partial telemetry preserved</small></div>
+</div><p class="text"><strong>Text equivalent:</strong> Native policy and translated legacy input converge at BRAN's CLI/core boundary. BRAN alone decides validation, retrieval, and repair outcomes. Explicit maintenance authority reaches the repair coordinator; hooks remain advisory. Deterministic receipts retain available evidence without becoming permission or eligibility gates.</p></section>
+
+<h2>Representative use cases</h2>
+<div class="grid">
+<div class="card"><strong>Native validation</strong>Load a versioned policy, scan once, and emit deterministic diagnostics and typed exits.</div>
+<div class="card"><strong>Legacy parity</strong>Translate old config without rewriting it and compare semantic outcomes on identical evidence.</div>
+<div class="card"><strong>Advisory hook</strong>Preserve three triggers, bounded timeouts, compact output, exit zero, and no source mutation.</div>
+<div class="card"><strong>Authorized repair</strong>Propose read-only, apply with exact authority and digest, revalidate, then succeed or restore.</div>
+<div class="card"><strong>Consumer retirement</strong>Retain independent evidence until all active consumers pass and the owner approves removal.</div>
+</div>
+
+<h2>Authority and failure flow</h2>
+<section class="diagram"><div class="flow">
+<div class="node">read-only proposal</div><div class="node">exact digest + authority</div><div class="node">path/stale checks</div><div class="node">staged write</div><div class="node">native revalidation</div><div class="node">success receipt OR exact restore</div>
+</div><p class="text"><strong>Text equivalent:</strong> No mutation occurs during proposal. Apply refuses missing authority, mismatched digest, stale bytes, traversal, or symlink escape. A staged write becomes successful only after native validation; failure restores the original bytes and returns an attributable failure lifecycle.</p></section>
+
+<h2>V&amp;V flow</h2>
+<section class="diagram"><div class="flow">
+<div class="node">policy/schema fixtures</div><div class="node">validation/query contracts</div><div class="node">repair fault injection</div><div class="node">adapter + hook characterization</div><div class="node">six-consumer parity</div><div class="node">reference + public audit</div>
+</div><p class="text"><strong>Text equivalent:</strong> Deterministic core contracts precede fault-injected repair tests, compatibility characterization, consumer-specific parity, and final active-reference/public-boundary audits. Missing telemetry stays visible but does not change semantic success.</p></section>
+
+<h2>Interface decision</h2>
+<table><thead><tr><th>Selected</th><th>Rejected alternatives</th><th>Reason</th></tr></thead><tbody><tr><td><code>.bran/policy.yaml</code> with explicit schema version</td><td>making <code>tools/okf/config.yaml</code> permanent; implicit repository inference</td><td>Names BRAN as owner, reuses the existing offline YAML model, supports reviewable migration, and avoids heuristic authority.</td></tr></tbody></table>
+<h2>Owner-approved product parity amendment</h2>
+<section class="diagram"><div class="flow">
+<div class="node">native caller<br><small>.bran/policy.yaml</small></div>
+<div class="node">legacy or CI caller<br><small>bounded --policy-stdin</small></div>
+<div class="node">one native policy parser</div>
+<div class="node">BRAN semantic checks<br><small>coverage · sources · boundaries · packets</small></div>
+<div class="node">typed envelope + parity evidence</div>
+</div><p class="text"><strong>Text equivalent:</strong> Repository policy remains the recommended default. Explicit bounded stdin accepts the identical native schema for read-only CI and legacy translation. Both sources converge before scanning and use one BRAN-owned semantic implementation. Legacy build/self-heal machinery, benchmarks, SQZ evaluation, and issue automation remain outside the product contract.</p></section>
+<h2>Native quoted-scalar interoperability amendment</h2>
+<section class="diagram"><div class="flow">
+<div class="node">legacy YAML<br><small>untrusted values</small></div>
+<div class="node">lossless bounded serializer</div>
+<div class="node">one BRAN policy parser<br><small>file or stdin</small></div>
+<div class="node">immutable RepositoryPolicy</div>
+<div class="node">sanitized typed evidence</div>
+</div><p class="text"><strong>Text equivalent:</strong> Legacy values are serialized only when exactly representable by BRAN's bounded quoted-scalar subset. File and stdin inputs converge on the same parser and immutable policy. Malformed quoting, unsupported escapes, controls, and arbitrary child output fail without echoing raw values or paths.</p></section>
+<h2>Source revisions</h2>
+<table><thead><tr><th>Artifact</th><th>SHA-256</th></tr></thead><tbody><tr><th><a href="./plan-spec.md">plan-spec.md</a></th><td><code>3f387130702f06eb7b2b469b0a8ee8fc93520a0f28ce8745b9e55e710de84508</code></td></tr><tr><th><a href="./design.md">design.md</a></th><td><code>6a38b87f609b961f2a23934aafaf57faf71c3e534497c7101a7e368f479f00ed</code></td></tr><tr><th><a href="./seit.md">seit.md</a></th><td><code>bf87e62d9b55a3d0a391443ac5a5ff436966c616e2b388879917f265e41ef0f9</code></td></tr><tr><th><a href="./implementation.md">implementation.md</a></th><td><code>0496673bc7b9489e34c54cc40ba6bbf95ac5399013fd8a7f100d3cfdcb9c4547</code></td></tr></tbody></table>
+<p class="meta">Canonical four-document bundle SHA-256: <code>e653fa2e3b1db7a65163d380cceea90d754b49d2752baa42fe68ac49b1abe1ea</code>. Regenerated deterministically on 2026-07-23 after the authorization-gated upstream OKF rationale and sequencing amendment. The Markdown artifacts remain authoritative.</p>
+<h2>Final QA</h2>
+<section class="qa">Empty by design. Implementation actuals, planned-versus-actual deviations, validation, review, and activation status are populated only after execution.</section>
+<h2>Complete canonical detail</h2>
+<details class="source"><summary>plan-spec.md</summary><pre>---
+type: plan-spec
+name: bran-okf-migration
+status: draft
+date: 2026-07-21
+applies_to: bran
+parent_baseline: legacy use-okf skill and tools/okf/okf
+---
+
+## Problem
+
+Internal repository validation, retrieval, and repair currently flow through legacy
+`use-okf` and `tools/okf/okf` in mixed ownership and shared command posture, while
+BRAN has an independent parser/validator/repair stack already in-tree.
+Owner constraints are now explicit, and migration proceeds under evidence-grounded
+staging and coordinated inventory tracking.
+
+## Goal
+
+- Migrate to BRAN-core/CLI-owned validation and maintenance behavior while preserving
+  compatibility-only support for legacy `use-okf` and `tools/okf/okf` adapter
+  entrypoints until parity is proven.
+- Preserve evidence-only/read-only default semantics and stronger-source precedence
+  outcomes during migration.
+- Make self-healing repair authority explicit and bounded BRAN-owned derived
+  state.
+
+## Scope
+
+In scope:
+
+- Retrieval, validation, and maintenance command/receipt behavior in BRAN core and CLI
+  surfaces.
+- Compatibility posture for legacy command names and per-repository OKF configurations.
+- Evidence on proposal/apply/revalidate repair semantics, typed success/failure states,
+  rollback and receipt attribution, and boundary conditions.
+- Compatibility surface in neighboring BRAN consumers is treated as migration target
+  inventory only (not implementation authorization).
+- Retirement evidence for active consumers is in-scope, with repository-by-repository
+  migration status preserved until all active consumers are eligible for adapter retirement.
+
+Out of scope:
+
+- Schema/serialization details for new BRAN-native policy formats not yet finalized.
+- Hard-coded legacy-adapter retirement window or fixed cutover date.
+- New owner decisions for compatibility removal criteria beyond confirmed parity.
+
+## Current behavior
+
+- In `Alphazedehq`, `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.sh` and
+  `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.json` are the current
+  `use-okf` compatibility surfaces; both are evidence-only and read-only by policy
+  (`/home/spectre/alphazede/Alphazedehq/.grok/hooks/README.md:24-53`).
+- In `Alphazedehq`, `/home/spectre/alphazede/Alphazedehq/tools/okf/okf` exposes legacy
+  command forms (`check`, `doctor`, `bran-verify-pin`, `bran-shadow`) and uses legacy policy
+  inputs in its adapter layer.
+- BRAN CLI currently exposes `maintain &lt;propose|apply|revalidate&gt;` and typed exits
+  (`Validation`, `Operation`, `Usage`, `Success`) in command help (`crates/bran-cli/src/main.rs:74-77,109-117`).
+- BRAN repair core currently models explicit `RepairTerminal` states, proposal
+  digests, unsafe-path checks, and rollback-on-failed-validation behavior
+  (`crates/bran-core/src/repair/mod.rs:1-17,89-117,189-295`).
+- Canonical retrieval indexes in BRAN core include canonical/status/freshness/authority
+  keys and path/title/tag matching for deterministic source selection
+  (`crates/bran-core/src/graph/query.rs:1596-1620`).
+- Metadata frontmatter handling and parser fallback remain implemented in BRAN core
+  (`crates/bran-core/src/metadata/mod.rs:248,737`).
+
+## Target behavior
+
+- Staged replacement: BRAN becomes canonical internal repository-knowledge and
+  validation implementation; legacy `use-okf` and `tools/okf/okf` remain compatibility
+  adapters only until parity is proven.
+- Strict repository validation is BRAN-native behavior (including required/allowed
+  frontmatter validation, metadata/status coverage, source-link integrity, source tag
+  policy, public/private boundaries, deterministic reports, and typed unavailable/conflict
+  behavior), with adapters only translating invocation/result shape during migration.
+- Self-healing authority is split by ownership:
+  BRAN may auto-rebuild only BRAN-derived state such as indexes, snapshots, caches,
+  reports, and generated validator artifacts.
+- Repository source, metadata, classifications, configurations, and source links are never
+  rewritten silently.
+- BRAN can propose bounded repair operations, then require explicit authority with a digest,
+  then revalidate; validator failure restores original bytes and emits a restoration receipt path.
+
+## Use cases
+
+### UC-1 Validation parity use case
+BRAN-native strict validation handles repository checks and returns deterministic pass/fail
+exit plus structured output for repository boundary violations.
+
+### UC-2 Legacy-compatibility check
+Legacy `use-okf` and `tools/okf/okf` commands remain callable as adapters and map into
+BRAN-native behavior without changing core outcomes during migration.
+
+### UC-3 Retrieval use case
+Queries continue to rank and select canonical evidence deterministically using canonical,
+authority, status, and path/title/tag fields.
+
+### UC-4 Self-heal proposal use case
+`maintain propose` returns digest and target metadata without mutating repository source.
+
+### UC-5 Apply with explicit authority
+`maintain apply` requires a replacement plan and non-empty authority reason, verifies digest
+and staleness, performs mutation, and only reports success after revalidation.
+
+### UC-6 Failure and rollback use case
+Validation failure after apply restores the exact prior target state and returns failure receipts
+with explicit failure terminal state.
+
+### UC-7 Boundary safety use case
+Repository/classification/source-link checks enforce boundaries, with explicit diagnostics for
+unsafe paths, stale source, missing authority marker, and unavailable checks.
+
+## Components
+
+- `crates/bran-cli/src/main.rs`: CLI command surface (`maintain`) and envelope
+  exits.
+- `crates/bran-core/src/repair/mod.rs`: proposal/apply/state machine and restoration receipts.
+- `crates/bran-core/src/metadata/mod.rs`: metadata parsing and header extraction behavior.
+- `crates/bran-core/src/graph/query.rs`: deterministic retrieval path/title/tag/canonical
+  match behavior.
+- `Alphazedehq` compatibility tooling (`/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.sh`,
+  `/home/spectre/alphazede/Alphazedehq/tools/okf/okf`).
+
+## Acceptance criteria
+
+- **AC-1**: Staged replacement keeps BRAN as canonical behavior for repository validation
+  while legacy compatibility remains explicitly adapter-only until explicit parity sign-off.
+- **AC-2**: BRAN strict validation behavior remains behaviorally explicit in core/CLI and
+  continues to enforce frontmatter parsing, source-link handling, and boundary policy.
+- **AC-3**: Repository maintenance flow enforces read-only proposal, explicit authority on apply,
+  digest matching, and revalidation before success.
+- **AC-4**: Validation failures in apply path restore original target content and emit an
+  attributable failure lifecycle value indicating restoration.
+- **AC-5**: Retrieval and compatibility flows preserve stronger-source precedence outcomes and
+  do not require unverified source-policy claims.
+- **AC-6**: No repository rewrite happens without explicit, bounded BRAN-owned authority and
+  compatible revalidation result.
+- **AC-7**: Legacy `use-okf`, `tools/okf/okf`, legacy hooks, and legacy configurations are
+  retired only after every active consumer has migrated to BRAN-native policy and BRAN-backed hook/skill.
+  Required evidence remains BRAN-vs-legacy retrieval and validation parity, plus audit that no active code,
+  skill, hook, or CI reference uses legacy entrypoints/configuration outside explicitly historical documents.
+
+## Risks and open questions
+
+- **RISK-1**: [Non-blocking] Active consumers can progress on different schedules; one consumer delay can
+  delay global adapter removal but does not invalidate completed migration evidence from completed consumers.
+- **RISK-2**: [Non-blocking] Hook behavior migration requires careful implementation of fail-open
+  fallback and compatibility-only semantics, but owner-confirmed posture is now fixed.
+- **RISK-3**: [Non-blocking] Publication sequencing is owner-authorized and constrained by public-boundary
+  review, with no remaining migration-blocking ambiguity.
+- **RISK-4**: [Non-blocking] Native schema filename/serialization details remain design concerns and are
+  intentionally deferred until implementation design review.
+- **RISK-5**: [Non-blocking] Compatibility parity evidence cadence will remain a planning and QA scheduling
+  pressure rather than a hard migration blocker.
+
+## Owner decisions
+
+1. Staged replacement. BRAN becomes the canonical internal repository-knowledge and
+   validation implementation. The legacy `use-okf` skill and `tools/okf/okf` command remain
+   deprecated compatibility adapters only until consumer parity is proven and owner resolves retirement
+   criteria. There is no hard same-change cutover.
+2. Strict repository validation is native BRAN Core/CLI behavior, not a call through to the legacy
+   validator. It must preserve required/allowed frontmatter validation, canonical/legacy/excluded/unclassified
+   coverage, source-link integrity, repository tag/status policy, public/private boundary enforcement,
+   deterministic reports, and compatible typed exit behavior. The compatibility adapter may translate
+   old invocations/results during migration.
+3. Self-healing authority is split by ownership. BRAN may automatically rebuild only BRAN-owned derived
+  state such as indexes, snapshots, caches, reports, and generated validator artifacts. Repository source,
+  metadata, classifications, configuration, and source links are never silently rewritten. BRAN may propose a
+  bounded repair; apply requires explicit authority and the exact proposal digest, then revalidation.
+  Validation failure restores the exact original bytes and emits an attributable receipt.
+
+4. Configuration relationship. BRAN owns a new native repository-policy schema. Existing
+   `tools/okf/config.yaml` inputs are migration-only and accepted read-only through the
+   compatibility adapter. They are never automatically rewritten. Repository conversion is deliberate
+   and occurs only after parity evidence. Exact native filename and serialization remain a design
+   concern unless owner input is genuinely required.
+5. Hook behavior. Preserve the existing use-okf hook logic while replacing its implementation
+   with BRAN: SessionStart lightweight availability, relevant-keyword UserPromptSubmit, and
+   relevant-file PostToolUse; dynamic managed-repository discovery; trusted executable resolved from
+   the hook's physical checkout or owner-approved stable path; bounded timeouts; compact output;
+   graceful unavailable fallback; always exit success/fail-open; no hook-driven source mutation.
+   Strict failures remain exclusive to explicit BRAN validation or configured CI.
+6. Adoption/publication order. Adopt an exact locally built BRAN artifact first using a checksum pin
+  and stable local path. Run compatibility/shadow and consumer parity before public publication. A public
+  download/install is later release-install verification, not a prerequisite for internal adoption.
+  Publication remains owner-authorized and occurs only after migration parity and public-boundary review.
+
+7. Legacy retirement is evidence-based, not date-based. There is no arbitrary migration window or adapter
+   retirement date. Retirement of legacy `use-okf`, `tools/okf/okf`, legacy hooks, and legacy
+   configurations occurs only when every active consumer repository has deliberately migrated to BRAN-native
+   policy and BRAN-backed hook/skill. Required evidence includes:
+   (a) BRAN-vs-legacy validation and retrieval compatibility parity passes; and
+   (b) confirmed absence of active code, skill, hook, or CI references to legacy entrypoints/configuration
+       outside explicitly historical documents. A migration problem in one repository can delay only that repository
+   and final global adapter removal, without invalidating completed migration evidence from other repositories.
+   Active migration inventory confirmed by focused discovery: Alphazedehq, alphazede-sports, betbot,
+   developers, hgts, and alphazede-markets.
+
+## Sequencing
+
+- Run compatibility inventory and parity evidence collection for retrieval and validation.
+- Confirm repair lifecycle and rollback invariants with explicit failure/restore traces.
+- Run per-repository BRAN-native migration and retire legacy entrypoints only when owner decision 7
+  conditions and evidence are met; unresolved repositories remain on adapter pathways until complete.
+
+## Evidence consulted
+
+- `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.sh:7-20,26-57,81-99,125-187`
+- `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.json:1-38`
+- `/home/spectre/alphazede/Alphazedehq/.grok/hooks/README.md:24-53`
+- `/home/spectre/alphazede/Alphazedehq/tools/okf/okf:56-85,88-174`
+- `/home/spectre/alphazede/Alphazedehq/tools/okf/config.yaml:1`
+- `/home/spectre/alphazede/alphazede-sports/tools/okf/config.yaml:1`
+- `/home/spectre/alphazede/betbot/tools/okf/config.yaml:1`
+- `/home/spectre/alphazede/developers/tools/okf/config.yaml:1`
+- `/home/spectre/alphazede/hgts/tools/okf/config.yaml:1`
+- `/home/spectre/alphazede/alphazede-markets/tools/okf/config.yaml:1`
+- `/home/spectre/alphazede/Alphazedehq/AGENTS.md:106-123`
+- `/home/spectre/alphazede/bran/AGENTS.md:32-44`
+- `/home/spectre/alphazede/bran/docs/plans/AGENTS.md:1-24`
+- `/home/spectre/alphazede/bran/crates/bran-core/src/metadata/mod.rs:248,737`
+- `/home/spectre/alphazede/bran/crates/bran-core/src/graph/query.rs:1596,1600,1617-1620`
+- `/home/spectre/alphazede/bran/crates/bran-core/src/repair/mod.rs:4,19,123,180-188,189-297`
+- `/home/spectre/alphazede/bran/crates/bran-cli/src/main.rs:76,1994,2032,2124,2381`
+
+## Handoff to design-driven-build
+
+- **CDD pressure**: preserve staged replacement versus hard cutover, and boundary between proven parity
+  and completed owner decisions.
+- **SecDD pressure**: typed repair failures, authority validation, stale-digest/conflict handling, and
+  rollback-receipt requirements.
+- **RDD pressure**: retrieval precedence and compatibility adapter behavior (`legacy` vs `canonical`),
+  with parity invariants preserved under owner decision 7 and active-consumer sequencing.
+- **ODD pressure**: command surface/API posture and exit-state contracts (`Validation`, `Operation`,
+  `Usage`, `Success`) across maintenance and adapter boundaries.
+- **OOPDSA focus**: ownership boundaries for repair state, adapter layer split, and explicit authority
+  transitions from proposal to revalidation/receipt.
+- **SEIT obligations**: include positive and negative parity cases, legacy compatibility cases,
+  validation failures, stale-source and stale-digest cases, and rollback assertions with evidence
+  retention.
+
+## See also
+
+- `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.sh`
+- `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.json`
+- `/home/spectre/alphazede/Alphazedehq/tools/okf/okf`
+- `/home/spectre/alphazede/bran/crates/bran-cli/src/main.rs`
+- `/home/spectre/alphazede/bran/crates/bran-core/src/repair/mod.rs`
+</pre></details><details class="source"><summary>design.md</summary><pre>---
+type: design
+name: bran-okf-migration
+status: amended
+date: 2026-07-21
+applies_to: bran
+plan_spec: ./plan-spec.md
+lenses_applied: [CDD, SecDD, RDD, ODD]
+lenses_skipped: [BizDD, DDD, EDD, GDD, PDD]
+---
+
+## Synthesis
+
+BRAN becomes the sole owner of repository-knowledge policy, validation, retrieval,
+and bounded repair semantics. A thin compatibility boundary preserves the legacy
+`use-okf` skill, hook triggers, `tools/okf/okf` entrypoint, and
+`tools/okf/config.yaml` inputs while consumers migrate. Compatibility code may
+translate requests and results, but it may not implement validation rules, ranking,
+repair authority, or source mutation.
+
+The design has four layers:
+
+1. `bran-core` owns the native policy model, deterministic validation, retrieval
+   precedence, derived-state rebuilding, and repair state machine.
+2. `bran-cli` owns versioned command envelopes, typed exits, native policy loading,
+   and explicit maintenance authorization input.
+3. A legacy adapter owns only old command/configuration translation and parity
+   comparison. It never rewrites legacy configuration.
+4. Repository hooks discover the pinned BRAN executable and invoke bounded,
+   fail-open advisory operations. Explicit CLI validation and CI remain strict.
+
+The native repository policy is `.bran/policy.yaml`, with an explicit
+`schema_version`. It uses BRAN terms and is validated before repository scanning.
+The choice reuses BRAN's existing dependency-free YAML value/parser surface,
+keeps policy human-reviewable, and avoids claiming the legacy OKF file is the native
+contract. Generated JSON schemas and reports remain BRAN-owned derived artifacts.
+
+The pre-lens test stance remains contract-first and offline: frozen repositories
+must prove native validation, legacy parity, source precedence, hook degradation,
+and exact repair rollback without providers, network access, or live consumer
+mutation. Lens analysis adds threat-boundary, fault-injection, receipt, and
+observability assertions.
+
+## Use Cases and Communication Flows
+
+### Flow 1 - Native validation
+
+```text
+caller -&gt; bran CLI -&gt; .bran/policy.yaml loader -&gt; repository scanner
+       -&gt; normalized bundle -&gt; BRAN strict validator -&gt; deterministic envelope + exit
+```
+
+Text equivalent: an explicit CLI or CI call loads and validates the versioned native
+policy before scanning. BRAN normalizes repository evidence, runs strict rules, and
+returns ordered diagnostics. Policy, scan, or validation errors remain distinct and
+only the selected profile controls the terminal exit.
+
+### Flow 2 - Legacy adapter during staged migration
+
+```text
+legacy caller -&gt; use-okf/tools/okf adapter -&gt; legacy config reader
+              -&gt; normalized BRAN policy request -&gt; BRAN core/CLI
+              -&gt; legacy-shaped result + parity receipt
+```
+
+Text equivalent: the adapter accepts the old command and configuration without
+rewriting either. It translates them into BRAN-native requests, invokes the same
+core behavior as native callers, and translates the result shape. Shadow mode records
+both outcomes and differences; it never gives the legacy implementation authority
+over BRAN behavior.
+
+### Flow 3 - Advisory hook
+
+```text
+SessionStart | relevant prompt | relevant edit
+  -&gt; dynamic repository discovery -&gt; trusted pinned BRAN binary
+  -&gt; bounded advisory query/check -&gt; compact message
+  -&gt; unavailable/timeout/malformed result =&gt; warning or silence, exit 0
+```
+
+Text equivalent: the existing three hook triggers remain. The hook resolves the
+managed repository and trusted executable, applies its configured timeout, and emits
+compact advice. Missing BRAN, timeout, invalid telemetry, or validation findings do
+not block the agent and never mutate repository source.
+
+### Flow 4 - Authorized repair and recovery
+
+```text
+maintain propose (read only) -&gt; immutable proposal + digest
+owner-reviewed authority + exact digest -&gt; maintain apply
+  -&gt; stale/path checks -&gt; staged write -&gt; native revalidation
+  -&gt; pass: success receipt
+  -&gt; fail: exact rollback -&gt; restoration receipt + validation failure
+```
+
+Text equivalent: proposal captures target, replacement, and original bytes without a
+write. Apply requires explicit authority and the exact proposal digest. It refuses
+stale or unsafe targets, stages the write, revalidates, and reports success only after
+validation. Failed validation restores the exact original state and retains an
+attributable failure receipt.
+
+### Flow 5 - Consumer retirement
+
+```text
+consumer inventory -&gt; native policy + BRAN hook/skill migration
+  -&gt; validation parity + retrieval parity -&gt; active-reference audit
+  -&gt; per-consumer complete -&gt; all consumers complete -&gt; owner removal approval
+```
+
+Text equivalent: each consumer moves independently and retains its evidence. A delayed
+consumer stays on the adapter without invalidating completed consumers. Global removal
+requires all six consumers, parity evidence, absence of active legacy references, and
+owner approval.
+
+## Test Strategy
+
+### Pre-lens stance
+
+Use deterministic fixtures and contract tests. Native BRAN behavior must be testable
+without hooks or adapters; adapters must be testable against the same frozen corpus;
+and repair behavior must retain byte-level evidence across all terminal states.
+
+### Lens revisions
+
+- CDD adds schema-version, command-envelope, typed-exit, and adapter contract tests.
+- SecDD adds traversal, symlink, stale digest/source, authority, secret redaction, and
+  public-boundary negative cases.
+- RDD adds timeout, unavailable binary, malformed output, partial write, failed
+  validation, rollback failure, and retry/idempotency cases.
+- ODD adds deterministic receipt fields, parity deltas, missing-observability handling,
+  and first-command diagnostic procedures.
+
+### Per-slice approach
+
+| Design area | Primary test layer | Cross-cutting proof |
+| --- | --- | --- |
+| Native policy and validation | core unit, schema, conformance | deterministic diagnostics and exits |
+| CLI maintenance contracts | CLI contract and fault fixtures | authority, digest, rollback receipts |
+| Legacy adapter and configuration | characterization and parity | no rewrite; same semantic outcome |
+| Hooks and skill | shell fixtures and integration | trigger parity, bounded timeout, exit 0 |
+| Consumer migration | repository procedure and audit | preserved per-consumer evidence |
+
+### Cross-cutting checks
+
+All cases run offline against disposable fixtures. Tests compare semantic outcomes,
+not timestamps or path ordering accidents. Missing optional telemetry is retained as
+`unavailable` and cannot change validation success. Public-boundary scans cover plans,
+receipts, hook output, fixtures, and release artifacts.
+
+## CDD
+
+- **Surfaces touched.** `.bran/policy.yaml`; BRAN validation and maintenance CLI
+  envelopes; `RepairProposal`, `RepairReceipt`, and `RepairTerminal`; legacy
+  `tools/okf/okf` commands/config; `use-okf` skill and hook trigger/result behavior.
+- **Contracts.** `DES-1`: the native policy begins with `schema_version`, rejects an
+  unsupported version as a typed usage/configuration error, and models frontmatter,
+  coverage classes, source links, tags/status, and public boundaries. `DES-2`: CLI
+  commands return deterministic JSON envelopes and typed exits `0` success, `1`
+  validation, `2` usage/configuration, and `3` operation/unavailable. `DES-3`:
+  proposal is read-only; apply accepts the same target/replacement, exact digest, and
+  non-blank authority; revalidation alone performs no source mutation. `DES-4`: the
+  legacy adapter translates old inputs and outputs only and records parity differences.
+- **Idempotency and ordering.** Validation and retrieval are read-only and repeatable.
+  Derived-state rebuilds replace only BRAN-owned artifacts deterministically. Applying
+  an already-consumed proposal encounters stale source rather than repeating a write.
+  Diagnostics and parity rows sort by repository-relative path, code, then message.
+- **Compatibility commitments.** Legacy calls remain accepted per consumer until AC-7
+  evidence and owner approval. Unknown legacy fields are preserved or diagnosed, never
+  silently discarded when they affect behavior. Native policy has no promise to serialize
+  back to the legacy format.
+- **Versioning strategy.** Native policy and structured receipts carry explicit schema
+  versions. CLI command names and typed exits are stable within the initial native schema.
+  Adapter compatibility is versioned by its mapping tests and release pin.
+- **Interface option input.** Native policy location/serialization requires the global
+  Interface Option Check. Maintenance authority and hook triggers retain approved shapes.
+- **Validation and tests.** Parser/schema tests live in `bran-core`; CLI envelope and exit
+  tests in `bran-cli`; adapter and hook characterization tests remain beside their
+  compatibility surfaces until retirement.
+- **Generated code provenance.** JSON schemas/reports are generated or checked from the
+  BRAN-owned model by repository tooling. Generated artifacts never become policy input.
+- **Notable omissions.** No network API, service protocol, or provider contract is added.
+
+## SecDD
+
+- **Threat model.** A repository author may craft paths, symlinks, metadata, or links to
+  escape the root or cross public/private boundaries. A stale or malicious caller may
+  replay a proposal or forge authority text. A compromised compatibility script may try
+  to bypass native validation. Accidental output may expose private paths or corpus text.
+- **Trust boundaries and validation.** `DES-5`: all policy paths become normalized
+  repository-relative paths and are checked against the canonical root without following
+  symlink escapes. Legacy configuration is untrusted adapter input and must pass the
+  native policy validator. Only BRAN core decides validation and repair terminal state.
+- **Authn / authz.** Offline read-only commands require no identity. Source apply requires
+  an explicit invocation authority reason and exact digest; no hook or adapter infers it.
+  Publication, release, and adapter removal remain owner-authorized operations.
+- **Secrets.** No new secret is introduced. Hooks use a checksum-pinned local binary and a
+  sanitized environment. Policy, receipts, logs, and fixtures must reject or redact auth
+  state, credentials, host-private paths, and hidden evaluation material.
+- **Sensitive data.** Private repository content stays local. Diagnostics contain bounded
+  repository-relative locators and rule codes, not arbitrary source bodies.
+- **Audit trail.** Repair receipts record schema version, digest, target, authority tag,
+  and lifecycle. Parity records name consumer, BRAN pin, corpus/policy identity, outcome,
+  and semantic differences. Receipts are evidence, not permission tokens.
+- **Abuse cases.** Traversal, absolute paths, NULs, symlink ancestors, stale snapshots,
+  digest mismatch, blank authority, config ambiguity, secret-like values, and public-link
+  violations are refused before mutation.
+- **Notable omissions.** No remote authentication or cryptographic signer is required for
+  local migration. The digest is an identity/staleness check, not a security signature.
+
+## RDD
+
+- **Failure modes.** `DES-6`: missing/timed-out BRAN affects only the triggering hook and
+  yields advisory unavailable; malformed policy stops explicit validation before scanning;
+  stale source/digest stops apply before writing; I/O failure returns operation failure;
+  failed validation rolls back; rollback failure reports partial-write uncertainty and
+  preserves recovery artifacts. A consumer parity mismatch delays only that consumer.
+- **Timeouts and retry budget.** Hook timeouts remain 12 seconds for SessionStart, 15 for
+  prompt submit, and 20 for post-edit. Hooks do not retry. Explicit commands rely on their
+  caller/CI budget. Apply is never blindly retried; callers must propose again after stale
+  or uncertain outcomes.
+- **Degradation behavior.** Hooks fail open and exit success. Explicit validation and CI
+  fail on native validation errors. Missing metrics or receipts reduce observability but do
+  not rewrite semantic success. Adapter parity mismatch is recorded and blocks only that
+  consumer's retirement.
+- **Recovery and repair.** Derived state may be rebuilt automatically. Source recovery uses
+  exact backup bytes retained through revalidation. Partial-write uncertainty stops further
+  mutation and directs the operator to inspect the receipt/backup before a fresh proposal.
+- **Backup and restore.** No repository-wide backup is introduced. The repair coordinator's
+  same-directory staged backup is the transactional recovery boundary and is deleted only
+  after successful revalidation.
+- **Notable omissions.** No queue, daemon, distributed retry, or background reconciliation.
+
+## ODD
+
+- **Logs.** Structured command envelopes and parity/repair receipts are the operational
+  record. Fields are schema version, command, status, rule/error codes, bounded locators,
+  pin/policy identity, and lifecycle. Source bodies, secrets, auth state, and host-private
+  absolute paths are excluded.
+- **Metrics.** `DES-7`: per consumer retain validation parity, retrieval parity, legacy
+  active-reference count, hook unavailable/timeout count, and migration state. Metrics are
+  bounded by consumer and rule code; repository paths remain evidence fields, not labels.
+- **Traces.** No distributed tracing. A proposal digest correlates propose/apply/revalidate;
+  a parity run ID correlates legacy and BRAN outcomes.
+- **Health checks.** `bran --version` plus release-pin verification answers executable
+  readiness. Native policy parse/validate answers repository readiness. Hook success alone
+  never claims validation readiness.
+- **Dashboards and alerts.** No service dashboard or paging. Migration evidence is a
+  deterministic report; explicit CI failures surface normally. Hook failures are compact
+  warnings and aggregated evidence, not pages.
+- **Operator first-five-minutes runbook stub.** Verify pin, run native validation directly,
+  inspect its typed envelope, then run adapter parity for only the affected consumer.
+- **Questions answerable from telemetry alone.** Which BRAN build ran? Which policy and
+  consumer were checked? Did native and legacy semantics differ? Was source mutated? Was a
+  failed mutation restored? Which consumer still references legacy behavior? Which fields
+  are unavailable?
+- **Notable omissions.** No uptime SLO, telemetry backend, or remote collector.
+
+## Interface Option Check
+
+Three repository-policy interfaces were considered:
+
+| Option | Shape | Compatibility | Main tradeoff |
+| --- | --- | --- | --- |
+| A | `.bran/policy.yaml`, versioned BRAN schema | legacy adapter maps old YAML read-only | explicit ownership and human review; one migration step |
+| B | keep `tools/okf/config.yaml` as native | zero initial path migration | makes legacy names and schema permanent BRAN API |
+| C | infer policy from repository contents | fewer files | ambiguous authority, weak reproducibility, unsafe defaults |
+
+`interface_options: selected - Option A (.bran/policy.yaml)`
+
+`DES-8`: Option A is selected. `bran-core` owns parsing and normalized policy
+semantics; `bran-cli` discovers the file only from an explicit repository root; the
+legacy adapter maps `tools/okf/config.yaml` into the same in-memory policy without
+writing `.bran/policy.yaml`. Schema version, unknown-field diagnostics, deterministic
+serialization fixtures, and migration parity are mandatory. A future format change
+requires a new schema version rather than heuristic parsing.
+
+## OOPDSA Implementation Design
+
+### Requirements trace
+
+| Requirement ID | OOPDSA owner | Proof obligation |
+| --- | --- | --- |
+| AC-1, AC-7 | `LegacyOkfAdapter` and migration inventory | native ownership plus evidence-based retirement |
+| AC-2, AC-5 | `RepositoryPolicyLoader`, `ProfileValidator`, query engine | strict policy and deterministic precedence |
+| AC-3, AC-4, AC-6 | `RepairCoordinator` | explicit authority, exact digest, revalidate, rollback |
+| RISK-1, RISK-5 | `ParityRecorder` | independent consumer state and semantic deltas |
+| RISK-2 | hook adapter | trigger parity and fail-open behavior |
+| RISK-3 | release/public-boundary procedure | no implicit publication |
+| RISK-4 | `RepositoryPolicyLoader` | selected versioned native policy contract |
+
+### Ownership contract
+
+| Object / Service | Responsibility | Owns Data? | Key Methods / Entry Points | Collaborators | Boundary / Interface | Test Focus | Must Not Own |
+| --- | --- | ---: | --- | --- | --- | --- | --- |
+| `RepositoryPolicyLoader` | parse/version/normalize `.bran/policy.yaml` | yes, immutable policy value | `load(root)`, `normalize()` | scanner, validator | filesystem to policy | versions, paths, unknown fields | repository mutation |
+| `ProfileValidator` | evaluate compatibility and strict rules | no | `validate(bundle, profile)` | policy, bundle | normalized evidence to diagnostics | deterministic rules/exits | adapter shapes |
+| query engine | canonical retrieval and precedence | yes, derived index | existing query/packet entrypoints | scanner, graph | query to ranked evidence | rank stability, precedence | policy migration |
+| `RepairCoordinator` | proposal/apply/revalidate/rollback | yes, proposal snapshot and staged backup | `propose`, `apply` | validator | explicit mutation boundary | all terminal states, exact restore | inferred authority |
+| `LegacyOkfAdapter` | translate legacy commands/config/results | no | `check`, `doctor`, shadow/parity | BRAN CLI/core | legacy to native | characterization and parity | validation/ranking rules |
+| hook adapter | preserve triggers and bounded advisory calls | no | SessionStart, UserPromptSubmit, PostToolUse | pinned CLI | agent hook boundary | timeout, unavailable, exit 0 | source mutation or strict gate |
+| `ParityRecorder` | retain per-consumer semantic comparison | yes, derived receipts | `record`, `summarize` | adapter, inventory | evidence ledger | missing fields, deterministic deltas | task success or authority |
+
+### Pattern decisions
+
+| Decision ID | Pressure | Candidate Pattern | Chosen Pattern / Plain Code | Why | Simpler Alternative | Tradeoffs | Review Trigger |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| CONTRACT-1 | legacy/native shapes differ | Adapter | one thin `LegacyOkfAdapter` | isolates retirement and prevents rule duplication | conditionals in CLI | temporary extra surface | adapter implements semantics |
+| CONTRACT-2 | repair has explicit lifecycle | State machine | retain typed `RepairTerminal` transitions | impossible to claim success before revalidation | booleans/errors | more variants | terminal state loses evidence |
+| CONTRACT-3 | validators need a policy value | immutable value object | `RepositoryPolicy` parsed once | single owner and deterministic consumers | raw YAML maps | schema migration code | consumers read raw fields |
+| CONTRACT-4 | hooks need graceful calls | plain shell boundary | preserve small fail-open script | no daemon/framework needed | shared runtime service | repeated process startup | hook gains mutation/retry |
+| CONTRACT-5 | migration evidence is partial | append-only derived receipts | records available fields plus `unavailable` | observability cannot invalidate work | strict ledger schema | consumers handle missing values | receipt becomes eligibility gate |
+
+### DSA decisions
+
+| Decision ID | Owner | Operation | Expected Scale | Chosen Structure | Chosen Algorithm | Time | Space | Reason | Simpler Alternative | Edge Cases |
+| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- |
+| CONTRACT-6 | `RepositoryPolicy` | membership/classification | repository paths | ordered maps/sets | normalize then lexical traversal | O(n log n) | O(n) | deterministic diagnostics and overlap detection | vectors | duplicate/overlap/excluded roots |
+| CONTRACT-7 | query engine | precedence/ranking | repository evidence nodes | existing graph indexes + stable tuples | canonical/status/freshness/authority ordering | existing bounded query contract | existing index budget | preserve proven retrieval behavior | full scan/sort | ties, stale and legacy sources |
+| CONTRACT-8 | `ParityRecorder` | semantic diff | six consumers, bounded results | ordered map keyed by semantic identity | normalize, join, compare, lexical emit | O(n log n) | O(n) | ignores formatting/order noise | raw text diff | missing telemetry, duplicate codes |
+| CONTRACT-9 | `RepairCoordinator` | stale detection and rollback | one bounded target | byte snapshot plus staged backup | exact compare, staged replace, validate, restore | O(b) | O(b) | exact recovery is more important than cleverness | timestamps | absent file, same-length edits, rollback I/O failure |
+
+### Invariants and edge cases
+
+- Native and adapter requests with equivalent policy have the same semantic validation
+  and retrieval outcomes.
+- Only BRAN-owned derived paths may be automatically replaced.
+- No apply reaches a write with blank authority, mismatched digest, stale bytes, unsafe
+  path, or symlink escape.
+- Validation failure cannot produce success; successful rollback restores byte identity.
+- Hook timeout, missing executable, malformed output, or metric absence always exits zero.
+- One consumer mismatch cannot erase another consumer's completed evidence.
+- Active legacy references outside historical documents prevent only retirement.
+
+The implementation must satisfy `CONTRACT-1` through `CONTRACT-9`; the prospective
+proof map is owned by `seit.md`.
+
+## Owner-approved product parity amendment — 2026-07-22
+
+`DES-9`: Repository policy is an immutable validated value with two explicit input
+sources. The default native command loads `.bran/policy.yaml` from the explicit
+repository root. `--policy-stdin` reads the same schema without persistence. The
+sources are mutually exclusive, policy validation precedes scanning, stdin is
+bounded, and policy content is not echoed into diagnostics or logs.
+
+`DES-10`: BRAN owns the remaining semantic OKF customer contracts: document coverage
+classification and migration-state rules, preserved frontmatter keys, source/link/
+citation integrity, public-boundary allowlists, packet supersession validation, and
+body-preservation validation. Existing BRAN graph, metadata, packet, and policy types
+are extended rather than duplicating these rules in Python or shell adapters.
+
+`CONTRACT-10`: `LegacyOkfAdapter` converts legacy YAML into the versioned native
+policy schema, sends it through `--policy-stdin`, translates the native envelope back
+to the legacy command result, and records parity. Unknown behavior-affecting fields
+produce a typed configuration failure. The adapter never writes `.bran/policy.yaml`
+and never falls back to a second semantic validator.
+
+Customer-facing consequences are additive: repository policy remains the recommended
+interface, while read-only checkouts, centrally managed CI policy, editors, and
+migration tools can supply an equivalent transient policy. Legacy validator build and
+self-heal machinery, benchmarking, SQZ evaluation, and issue automation remain outside
+the BRAN semantic product boundary.
+
+This owner-approved amendment refines AC-1, AC-2, AC-5, AC-7, RISK-3, and RISK-4.
+The amended implementation must satisfy `CONTRACT-1` through `CONTRACT-10`.
+
+## Design Amendment — 2026-07-22 — Native quoted-scalar interoperability
+
+Implementation exposed an interoperability gap at the native-policy boundary: the
+legacy adapter can serialize quoted YAML, but BRAN's bounded parser currently strips
+delimiters without decoding the quote forms needed to preserve exact values.
+
+`DES-11`: BRAN's single native policy parser owns a bounded, explicitly documented
+quoted-scalar subset. Single-quoted scalars decode doubled apostrophes. Double-quoted
+scalars decode only the minimal escapes required for exact adapter transport (`\"` and
+`\\`); unsupported escapes, literal CR/LF, control characters, and unmatched delimiters
+fail with the existing non-echoing malformed-policy error. Unquoted behavior and policy
+semantics remain unchanged.
+
+`CONTRACT-11`: `LegacyOkfAdapter` selects a lossless representation from that native
+subset, never silently coerces a behavior-affecting value, and returns static field/index
+diagnostics that cannot expose raw policy values, repository paths, operating-system
+errors, or arbitrary child-process output. Equivalent file and stdin policies parse to
+the same immutable `RepositoryPolicy` value.
+
+This amendment changes serialization interoperability and error sanitization only. It
+does not change validation rules, authority, mutation scope, the default
+`.bran/policy.yaml` interface, compatibility-retirement criteria, or publication scope.
+The Interface Option Check remains unchanged because both policy sources still converge
+on the same parser. OOPDSA ownership remains `RepositoryPolicy` plus the thin
+`LegacyOkfAdapter`; the parser uses a bounded linear state machine with O(n) time and
+O(n) output for each quoted scalar.
+
+## Design Amendment — 2026-07-22 — Oversized binary scan isolation
+
+Full-config adapter proof exposed a pre-profile failure on an unrelated 1.9 MiB image.
+Legacy OKF treats non-text assets as outside repository-knowledge validation, while BRAN
+currently applies its text-source byte limit before it can classify an oversized binary
+as unsupported input.
+
+`DES-12`: When a regular file advertises a size above the configured per-file text limit,
+the scanner reads only a fixed bounded prefix before deciding. A prefix containing NUL or
+invalid UTF-8 is recorded as `UnsupportedInput` and the file is not buffered, parsed, or
+charged to accepted-source byte totals. A valid UTF-8 prefix remains subject to the
+existing hard size failure. The same rule applies to full and incremental scans, retains
+symlink/root-escape checks, and never guesses that oversized text is safe.
+
+`CONTRACT-12`: Oversized binary isolation is a scanner input-classification rule, not a
+policy exclusion or adapter exception. The probe is constant-space and bounded O(1) by a
+fixed byte ceiling; accepted text retains existing limits and identity semantics. This
+restores profile evaluation for repositories containing unrelated binary assets without
+weakening protection against oversized textual knowledge inputs.
+
+## Design Amendment — 2026-07-22 — Check-time knowledge-candidate alignment
+
+Full-config adapter proof next exposed an oversized generated `review.html`. BRAN's
+general-purpose repository scanner correctly supports source and other text inputs, but
+the `check` pipeline later discards every entry except the native Markdown knowledge
+formats. Applying accepted-source limits before that existing admissibility decision lets
+non-knowledge generated text block profile evaluation.
+
+`DES-13`: The native `check` pipeline supplies the scanner a deterministic knowledge-
+candidate predicate equal to the predicate used to derive its validation bundle. Paths
+that cannot enter that bundle are not opened, parsed, or charged to check-time accepted-
+source totals. The general-purpose scanner remains unchanged by default so other BRAN
+features can scan source and text files. Full and incremental filtered scans use the same
+predicate, and containment, symlink, file-count, and byte-limit checks remain mandatory
+for every admitted candidate.
+
+`CONTRACT-13`: Knowledge-candidate selection is a BRAN-native check contract, not an
+adapter rule or configurable extension allow/deny facility. One shared predicate owns the
+currently supported Markdown path forms and is reused by scanning and bundle derivation.
+An oversized admitted Markdown document still fails closed; a generated non-candidate
+file cannot prevent profile selection. This removes duplicate downstream filtering and
+generalizes to every customer without changing policy, repository content, or limits.
+
+## Authorization-gated upstream OKF contribution candidates
+
+Implementation produced two reusable format-level lessons that are suitable for a
+separately authorized issue or pull request against the upstream Open Knowledge Format
+specification. They remain proposals, not migration deliverables:
+
+- `UPSTREAM-1 — bundle scan scope`: clarify that non-OKF files may coexist beside a
+  bundle, do not participate in OKF conformance, and should not be opened merely to
+  validate the bundle unless explicitly referenced. This prevents unrelated binary or
+  generated text from blocking conformance while leaving implementation resource limits
+  outside the format contract.
+- `UPSTREAM-2 — layered profile separation`: permit implementations to expose stricter
+  organizational readiness profiles only when their results are reported separately from
+  OKF conformance. An implementation-specific failure must not be characterized as OKF
+  nonconformance when the portable v0.1 floor passes.
+
+BRAN keeps `okf-v0.1` as the portable interoperability outcome and `bran-strict` as the
+additive repository-policy outcome. Both are computed independently and only the selected
+profile controls the command exit. Before BRAN claims complete OKF v0.1 certification, a
+separate bounded follow-up must close the known reserved-file coverage gap: the current
+compatibility profile validates concept frontmatter and `type` but does not yet validate
+the upstream `index.md` and `log.md` structural requirements.
+
+No upstream issue, pull request, comment, push, or publication is authorized by this
+plan. The Conductor must first present the exact proposed upstream text, target, and
+scope, then obtain explicit owner authorization for that external write.
+
+## Design Amendment — 2026-07-23 — Upstream OKF rationale and sequencing
+
+This amendment expands `UPSTREAM-1` and `UPSTREAM-2` into reviewable contribution
+briefs. It does not authorize an external write, add BRAN-specific behavior to OKF, or
+change the completed migration acceptance boundary.
+
+### UPSTREAM-1 — Bundle scan scope
+
+**Problem.** OKF v0.1 defines a knowledge bundle as a directory tree of Markdown files
+and permits the bundle to be a subdirectory of a larger repository. Its conformance
+rules apply to non-reserved Markdown files "in the tree," but the specification does not
+explicitly say that validators can restrict conformance I/O to the designated bundle
+root. Implementations can therefore disagree: one validates only the bundle while
+another recursively opens unrelated repository assets, generated reports, databases, or
+binaries.
+
+**Representative layout.** In the following repository, only `docs/okf/` is the
+designated bundle:
+
+```text
+customer-repository/
+├── docs/okf/
+│   ├── index.md
+│   └── concepts/orders.md
+├── application/
+├── screenshots/
+├── build/
+├── database.sqlite
+└── generated-report.html
+```
+
+The application, screenshots, build outputs, database, and generated report do not
+participate in OKF conformance and need not be opened merely to validate `docs/okf/`.
+Within the designated bundle root, every non-reserved `.md` file still participates
+under the existing specification, reserved files retain their structural obligations,
+and referenced content remains subject to the relevant link or citation behavior.
+
+**Recommended normative direction.** Add a narrow clarification to the bundle-structure
+or conformance section:
+
+&gt; Conformance is evaluated within a designated bundle root. Files outside that root do
+&gt; not participate. Within the bundle root, reserved and non-reserved Markdown files
+&gt; participate as specified; other files may coexist and need not be opened for
+&gt; conformance unless explicitly referenced by a participating document.
+
+**Benefits.** The clarification makes OKF practical in monorepos, prevents unrelated
+binary or generated files from changing format outcomes, reduces unnecessary I/O, and
+gives independent validators the same corpus boundary.
+
+**Non-goals and safety boundary.** This proposal does not standardize BRAN's scanner,
+knowledge-candidate predicate, byte limits, file-count limits, or security policy. It
+does not declare neighboring files safe or exempt them from repository security scans.
+OKF conformance validation and whole-repository security analysis remain separate
+operations.
+
+**Recommended contribution vehicle.** Submit a small specification pull request because
+this clarifies the existing rule that a bundle may be a subdirectory rather than adding
+a new document shape.
+
+### UPSTREAM-2 — Layered profile separation
+
+**Problem.** OKF intentionally defines a permissive interoperability floor. Organizations
+still need stronger readiness, governance, freshness, source-integrity, and
+public-boundary policies. Without profile-reporting guidance, an implementation can
+collapse a stricter organizational failure into a generic failure and incorrectly imply
+that a portable OKF bundle is nonconformant.
+
+**Required outcome separation.** A bundle can legitimately produce two independent
+results:
+
+```text
+OKF v0.1:    PASS
+BRAN Strict: FAIL — missing public_boundary
+```
+
+This means the bundle satisfies the portable format floor but is not ready under one
+implementation's organizational policy. `bran-strict` remains a BRAN profile; it is not
+proposed as an upstream OKF profile.
+
+**Recommended normative direction.** After maintainer discussion, add a short rule to
+the conformance section:
+
+&gt; Implementations MAY provide additional validation profiles beyond OKF conformance.
+&gt; Such profiles MUST report their outcomes separately. Failure of an
+&gt; implementation-specific profile MUST NOT be described as OKF nonconformance when the
+&gt; bundle satisfies the selected OKF version.
+
+**Benefits.** Implementations can add security or operational readiness checks without
+fragmenting the portable format. Producers retain exchange compatibility, consumers can
+distinguish interoperability from organizational readiness, and vendor-specific policy
+cannot silently redefine OKF conformance.
+
+**Non-goals.** This proposal does not standardize `bran-strict`, require organizations to
+offer a strict profile, create a central profile registry, or add BRAN policy fields to
+OKF. Profile identifiers, policy contents, and enforcement mechanisms remain
+implementation-owned.
+
+**Recommended contribution vehicle.** Open a design issue first because profile
+separation adds normative reporting guidance. Draft a small conformance-section pull
+request only after upstream maintainers agree with the distinction.
+
+### Recommended timing
+
+Draft both contributions now, but approach upstream after BRAN is publicly inspectable.
+Before publication, close BRAN's reserved `index.md` and `log.md` validation gap and
+describe the current `okf-v0.1` result only as the OKF v0.1 concept-document
+interoperability floor. Then:
+
+1. publish a stable BRAN release with accurate conformance claims and reproducible tests;
+2. submit `UPSTREAM-1` as a narrow specification clarification;
+3. open `UPSTREAM-2` as a design issue;
+4. submit profile-separation wording only after maintainer agreement.
+
+A public implementation gives maintainers inspectable evidence, while separating the
+two contributions keeps discussion, review, and disposition independent. Every external
+issue, pull request, comment, branch push, or publication still requires the owner's
+explicit approval of the exact text, repository, and destination.
+</pre></details><details class="source"><summary>seit.md</summary><pre>---
+type: seit
+name: bran-okf-migration
+status: amended
+date: 2026-07-21
+applies_to: bran
+plan_spec: ./plan-spec.md
+design: ./design.md
+---
+
+## Scope
+
+Verification covers the BRAN-native repository policy, strict validation,
+deterministic retrieval precedence, maintenance proposal/apply/revalidate lifecycle,
+derived-state self-healing, legacy command/configuration translation, preserved hook
+behavior, per-consumer parity evidence, and evidence-based adapter retirement.
+
+The release-blocking baseline is offline and deterministic. Public publication,
+installation from a public release, live provider use, direct migration of consumer
+repositories, and final removal of adapters are separate owner-authorized actions.
+
+## Required References
+
+- `./plan-spec.md` - AC-1 through AC-7, RISK-1 through RISK-5, and owner decisions.
+- `./design.md` - DES-1 through DES-8 and CONTRACT-1 through CONTRACT-9.
+- `/home/spectre/alphazede/bran/AGENTS.md` - private BRAN boundary and integrated check.
+- `/home/spectre/alphazede/bran/docs/plans/AGENTS.md` - plan ownership and publication boundary.
+- `/home/spectre/alphazede/bran/crates/bran-core/src/profile.rs` - current dual-profile validation.
+- `/home/spectre/alphazede/bran/crates/bran-core/src/repair/mod.rs` - current repair state machine.
+- `/home/spectre/alphazede/bran/crates/bran-core/src/graph/query.rs` - current retrieval precedence.
+- `/home/spectre/alphazede/bran/crates/bran-cli/src/main.rs` - current command envelope and typed exits.
+- `/home/spectre/alphazede/Alphazedehq/tools/okf/okf` - compatibility command surface.
+- `/home/spectre/alphazede/Alphazedehq/tools/okf/config.yaml` - legacy configuration input.
+- `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.sh` and
+  `use-okf.json` - hook behavior to preserve.
+
+## Required Commands
+
+Commands marked planned are created by the implementation and must exist before their
+mapped proof row can pass.
+
+- **CMD-POLICY** - planned: `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core repository_policy`
+- **CMD-PROFILE** - `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core profile::tests`
+- **CMD-QUERY** - `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core graph::query::tests`
+- **CMD-PACKET** - `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core packet::tests`
+- **CMD-MIGRATION** - planned: `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core migration::tests`
+- **CMD-SCAN** - `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core scan::tests`
+- **CMD-REPAIR** - `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core repair::tests`
+- **CMD-CLI** - `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-cli maintain`
+- **CMD-DERIVED** - planned: `cargo test --manifest-path /home/spectre/alphazede/bran/Cargo.toml -p bran-core derived_state_rebuild`
+- **CMD-ADAPTER** - `python3 /home/spectre/alphazede/Alphazedehq/tools/okf/test_bran_runtime.py`
+- **CMD-HOOK** - `/home/spectre/alphazede/Alphazedehq/.grok/hooks/test-use-okf.sh`
+- **CMD-FAST** - `/home/spectre/alphazede/bran/tools/ci/check.sh --fast`
+- **CMD-PUBLIC** - `python3 /home/spectre/alphazede/bran/tools/ci/public_boundary_check.py`
+- **PROC-PARITY** - For each active consumer, run the pinned BRAN native validation and
+  retrieval corpus, run the legacy adapter against the identical frozen inputs, normalize
+  semantic results, retain the diff receipt, and do not mutate the consumer.
+- **PROC-REFERENCES** - Search active code, skill, hook, CI, and configuration surfaces for
+  `use-okf`, `tools/okf/okf`, and `tools/okf/config.yaml`; classify historical-only hits and
+  retain the repository-relative audit.
+- **PROC-PIN** - Build BRAN locally, compute and record its checksum, install only at the
+  owner-approved stable local path, and verify the invoked binary matches the pin before
+  shadow or hook use.
+- **PROC-ROLLBACK** - In a disposable fixture, preserve target bytes and file-existence state,
+  force validator failure after staged apply, and compare restored state byte-for-byte with
+  the pre-apply state and receipt lifecycle.
+- **PROC-PUBLICATION** - Inspect proposed public files and release assets for private plans,
+  corpora, credentials, auth state, internal paths, hidden grader truth, and unsupported
+  claims; publication remains blocked without explicit owner approval.
+
+## CI Stage Inventory
+
+| Stage | Backing command/procedure | State | Gate |
+| --- | --- | --- | --- |
+| Native policy contracts | CMD-POLICY, CMD-PROFILE | planned plus active baseline | required |
+| Retrieval precedence | CMD-QUERY | active, expanded fixtures planned | required |
+| Repair lifecycle | CMD-REPAIR, CMD-CLI, PROC-ROLLBACK | active, production authority expansion planned | required |
+| Derived-state self-heal | CMD-DERIVED | planned | required |
+| BRAN integrated fast gate | CMD-FAST | active | required |
+| Compatibility adapter | CMD-ADAPTER | active, parity expansion planned | required while adapter exists |
+| Hook characterization | CMD-HOOK | active, BRAN-backed cases planned | required while hooks exist |
+| Consumer parity | PROC-PARITY | planned per consumer | required for that consumer's retirement |
+| Active-reference audit | PROC-REFERENCES | planned per consumer and global | required for retirement |
+| Public boundary | CMD-PUBLIC, PROC-PUBLICATION | active plus manual release review | required before publication |
+
+Missing optional telemetry does not make a stage fail. A required stage fails only on
+its semantic contract, executable error, unauthorized mutation, containment breach,
+unsupported evidence, or genuine material error.
+
+## Integration Test Procedures
+
+### IT-1 - Native policy and deterministic validation
+
+1. Load valid `.bran/policy.yaml` fixtures and verify the normalized policy and stable
+   schema version.
+2. Exercise missing, malformed, unsupported-version, unknown-field, duplicate path,
+   overlapping classification, unsafe path, status/tag, source-link, and public-boundary
+   fixtures.
+3. Run the same fixture repeatedly and under permuted source discovery order.
+4. Require byte-identical ordered diagnostic identities and matching typed exits.
+
+### IT-2 - Legacy translation and semantic parity
+
+1. Freeze legacy `tools/okf/config.yaml` inputs for every supported field and edge case.
+2. Translate to the immutable native policy without creating or rewriting repository files.
+3. Run legacy and native validation/retrieval over identical corpus identities.
+4. Compare normalized rule, locator, classification, source-precedence, and terminal
+   outcomes; retain formatting-only differences separately from semantic differences.
+5. Verify absent telemetry is represented as unavailable and does not alter parity success.
+
+### IT-3 - Hook fail-open behavior
+
+1. Exercise SessionStart, relevant/irrelevant prompt, relevant/irrelevant edit, and dynamic
+   repository discovery.
+2. Exercise valid pin, missing binary, checksum mismatch, timeout, malformed output,
+   validation findings, and unwritable optional receipt directory.
+3. Require bounded compact output, no repository source writes, and exit zero for every hook
+   event.
+4. Run explicit validation separately and prove that genuine findings still exit non-zero.
+
+### IT-4 - Repair authority and recovery
+
+1. Prove proposal is read-only and captures exact absent/present original state.
+2. Reject blank authority, wrong digest, stale same-length edits, traversal, absolute/NUL
+   paths, symlink ancestors, and targets outside the repository root before mutation.
+3. Exercise a successful staged write and require validation-passed receipt only after native
+   revalidation.
+4. Force validation failure for existing and newly created files; require exact restoration
+   and validation-failed/restored receipt.
+5. Force staged-write and rollback I/O failures; require operation/partial-write uncertainty,
+   retained recovery evidence, and no false success.
+
+### IT-5 - Derived-state self-healing
+
+1. Corrupt or remove BRAN-owned index, cache, snapshot, report, and generated validator
+   artifact fixtures.
+2. Rebuild each from unchanged source/policy and compare deterministic output.
+3. Present source, metadata, classification, configuration, and source-link targets to the
+   auto-rebuilder and require refusal plus a proposal-only result.
+4. Verify rebuild failure preserves the prior usable derived artifact when one exists.
+
+### IT-6 - Consumer migration and retirement
+
+1. Inventory Alphazedehq, alphazede-sports, betbot, developers, hgts, and
+   alphazede-markets independently.
+2. Verify the checksum-pinned local BRAN build before any shadow run.
+3. Retain policy identity, corpus identity, BRAN pin, semantic parity result, missing fields,
+   and active-reference audit for each consumer.
+4. Mark only consumers with native policy, BRAN-backed skill/hook, passing parity, and no
+   active legacy reference eligible for retirement.
+5. Prove a failed consumer does not change completed consumer evidence, and global removal
+   remains blocked until all consumers pass and the owner approves.
+
+## Traceability Matrix
+
+| SEIT row ID | Acceptance/risk ID | Design/contract ID | Boundary/test layer | Positive case | Negative/failure case | Command/procedure ID | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| SEIT-1 | AC-1 | DES-4, CONTRACT-1 | adapter contract | old call reaches native behavior | adapter implements divergent rule | CMD-ADAPTER | normalized invocation/result fixture |
+| SEIT-2 | AC-2 | DES-1, DES-8, CONTRACT-3 | core policy/schema | valid native policy passes | malformed/version/path rule fails typed | CMD-POLICY | policy fixture and ordered diagnostics |
+| SEIT-3 | AC-2 | DES-2 | core validation | strict categories pass | frontmatter/source/public violation fails | CMD-PROFILE | dual-profile outcomes and exits |
+| SEIT-4 | AC-3 | DES-3, CONTRACT-2 | repair unit/CLI | exact authorized proposal applies | blank authority or wrong digest refused | CMD-REPAIR, CMD-CLI | terminal-state and mutation trace |
+| SEIT-5 | AC-4 | DES-6, CONTRACT-2, CONTRACT-9 | recovery integration | revalidation passes after stage | validator failure restores exact state | PROC-ROLLBACK | before/after digest and receipt |
+| SEIT-6 | AC-5 | DES-4, CONTRACT-7 | retrieval parity | stronger canonical source wins | permuted/tied input changes outcome | CMD-QUERY, PROC-PARITY | ordered canonical ranks and semantic diff |
+| SEIT-7 | AC-6 | DES-3, DES-5, CONTRACT-9 | mutation security | owned derived rebuild succeeds | source/config auto-rewrite refused | CMD-DERIVED, CMD-REPAIR | path class and write-set receipt |
+| SEIT-8 | AC-7 | DES-7, CONTRACT-5 | migration acceptance | all consumer evidence complete | active legacy reference blocks removal | PROC-PARITY, PROC-REFERENCES | six-consumer matrix and owner decision slot |
+| SEIT-9 | RISK-1 | DES-6, DES-7, CONTRACT-5 | migration isolation | completed consumer remains complete | one mismatch invalidates global evidence | PROC-PARITY | independent consumer states |
+| SEIT-10 | RISK-2 | DES-6, CONTRACT-4 | hook integration | three triggers invoke bounded BRAN | unavailable/timeout blocks agent | CMD-HOOK | exit codes, timings, write audit |
+| SEIT-11 | RISK-3 | DES-5 | release boundary | approved scrubbed artifact remains separate | private material enters proposed release | CMD-PUBLIC, PROC-PUBLICATION | boundary report and approval status |
+| SEIT-12 | RISK-4 | DES-1, DES-8, CONTRACT-3 | interface/schema | native version round-trips | implicit/legacy schema becomes authority | CMD-POLICY | schema fixture and adapter no-write audit |
+| SEIT-13 | RISK-5 | DES-7, CONTRACT-5, CONTRACT-8 | evidence/observability | partial metrics retained | missing metric declares no result | PROC-PARITY | receipt with explicit unavailable fields |
+| SEIT-14 | AC-3, AC-6 | DES-5, CONTRACT-2 | security negative | root-relative regular target accepted | traversal/symlink/stale input mutates | CMD-REPAIR | pre-write path and stale checks |
+| SEIT-15 | AC-1, AC-7 | DES-7 | supply/release identity | invoked BRAN matches checksum pin | unpinned/replaced binary is used | PROC-PIN | artifact checksum and invocation receipt |
+| SEIT-16 | AC-2, RISK-4 | DES-9, CONTRACT-3 | CLI policy input | file and stdin policies produce identical ordered results | missing, conflicting, oversized, malformed, or secret-bearing stdin is accepted or logged | CMD-POLICY, CMD-CLI | input-source identity, typed exit, ordered diagnostics, no-write audit |
+| SEIT-17 | AC-1, AC-5, AC-7 | DES-10, CONTRACT-10 | legacy semantic parity | coverage, metadata, sources, boundaries, packets, and body-preservation outcomes match | adapter drops an affecting field or owns a rule | CMD-POLICY, CMD-PROFILE, CMD-PACKET, CMD-MIGRATION, CMD-ADAPTER, PROC-PARITY | normalized per-contract diff and unsupported-field receipt |
+| SEIT-18 | AC-1, AC-2, AC-7, RISK-4 | DES-11, CONTRACT-11 | native parser and adapter serialization | apostrophes, quotes, backslashes, hashes, colons, and surrounding spaces round-trip identically through file and stdin policy sources | malformed delimiters, unsupported escapes, controls, secret-bearing duplicates, or arbitrary child output are accepted, changed, or echoed | CMD-POLICY, CMD-CLI, CMD-ADAPTER | native parser regression output, adapter sentinel output, real-binary envelope, and no-write audit |
+| SEIT-19 | AC-1, AC-2, AC-7, RISK-4 | DES-12, CONTRACT-12 | scanner input classification | oversized PNG and NUL-bearing binary are bounded-probed, reported unsupported, and do not prevent both profiles from evaluating | oversized valid UTF-8 text, symlink escape, changing file, or binary prefix ambiguity bypasses limits or is fully buffered | CMD-SCAN, CMD-CLI, CMD-ADAPTER | focused scan tests, read/byte accounting, both selected-profile envelopes, and no-write snapshot |
+| SEIT-20 | AC-1, AC-2, AC-7, RISK-4 | DES-13, CONTRACT-13 | native check scan scope | oversized generated non-candidate text is unopened and both profiles evaluate | oversized admitted Markdown, filtered/full mismatch, or a non-check scanner silently drops source text | CMD-SCAN, CMD-CLI, CMD-ADAPTER | shared-predicate unit tests, generic-scanner regression, both selected-profile envelopes, and no-write snapshot |
+
+## Cross-cutting Checks
+
+- Determinism: repeat and permute discovery order; compare semantic output identities.
+- Mutation containment: snapshot the fixture tree before and after every read-only, parity,
+  and hook case.
+- Public/private boundary: scan sources, fixtures, receipts, logs, and proposed artifacts.
+- Unsupported evidence: every cited locator must exist in the frozen corpus; unavailable
+  evidence is explicit.
+- Partial telemetry: preserve present values and mark absent values unavailable without
+  changing semantic validation or task status.
+- Compatibility: native BRAN is the only rule owner; adapters are characterized until
+  evidence-based retirement.
+- Recovery: successful rollback is byte-exact; uncertain rollback cannot report success.
+
+## Optional / Unavailable Tools
+
+- Live provider or network evaluation is unavailable by design and unnecessary.
+- Public release installation is deferred until owner-authorized publication.
+- A centralized telemetry backend is not required; deterministic local receipts suffice.
+- Consumer CI that is unavailable during a migration run is recorded as unavailable; native
+  fixture parity and later repository CI evidence remain separately visible.
+
+## Gate Evidence
+
+Retain command, exact BRAN commit and artifact checksum, policy/corpus identity, exit code,
+structured output, fixture mutation audit, and normalized semantic diff for every required
+row. Required evidence is prospective until implementation executes it. No future success is
+claimed in this design pass.
+
+Pre-implementation readiness requires all planned commands to exist, SEIT-1 through SEIT-17
+to have an implementation owner, `CMD-FAST` to pass on the integrated BRAN diff, compatibility
+tests to pass in their owning repository, and publication to remain unperformed unless the
+owner separately authorizes it.
+
+## SEIT Amendments
+
+### 2026-07-22 owner-approved amendment
+
+The owner approved an additive native `--policy-stdin` source and incorporation of
+semantic legacy OKF capabilities missing from BRAN. SEIT-16 and SEIT-17 cover the new
+input boundary and product-parity obligations. No provider, publication, deployment,
+consumer mutation, legacy removal, or dependency-install authority was added.
+
+### 2026-07-22 delegated native quoted-scalar amendment
+
+The owner delegated bounded product-quality decisions during execution. A real adapter
+invocation proved that standard YAML apostrophe escaping was not decoded by BRAN, and a
+sentinel proved that an adapter error echoed a raw excluded-document path. SEIT-18
+requires the smallest parser and adapter repair plus direct real-binary proof before
+Slice 3.1 can complete.
+
+### 2026-07-22 oversized binary scan-isolation amendment
+
+The unchanged AlphaZedeHQ corpus reached native policy parsing but aborted before profile
+selection on an unrelated oversized PNG. SEIT-19 requires bounded binary classification,
+preserves hard limits for oversized UTF-8 text, and proves that both canonical profiles
+evaluate the unchanged corpus without consumer mutation.
+
+### 2026-07-22 check-time knowledge-candidate amendment
+
+After binary isolation, the unchanged corpus reached an oversized generated
+`review.html` that the native check bundle cannot consume. SEIT-20 aligns only the check-
+time scanner with its existing knowledge-candidate predicate while preserving the
+general-purpose scanner, all accepted Markdown limits, and adapter translation-only
+ownership.
+</pre></details><details class="source"><summary>implementation.md</summary><pre>---
+type: implementation
+name: bran-okf-migration
+status: draft
+date: 2026-07-21
+plan_spec: ./plan-spec.md
+design: ./design.md
+seit: ./seit.md
+---
+
+# Implementation - BRAN OKF Migration
+
+This is a pipeline plan. Waves are sequential because later compatibility work
+consumes the native BRAN policy, validation, repair, and receipt contracts. All
+slices use the existing Pi route for `deepseek-v4-pro`. Publication, release,
+consumer-repository mutation, and legacy removal are outside this execution authority.
+
+The integrated closeout runs `CMD-FAST` once after all code-bearing slices and uses
+the repository's native read-only review on the integrated diff. `CMD-FAST` remains a
+cross-cutting repository gate rather than a slice-owned semantic proof.
+
+## Wave 1 - Native BRAN ownership
+
+Wave 1 establishes the native policy and deterministic core behavior. Its slices are
+sequential because they share the core module registry and normalized policy contract.
+
+### Slice 1.1 — Native repository policy
+
+**Goal.** Add the versioned BRAN repository-policy model, loader, schema, and frozen fixtures.
+
+**Requirement IDs.** AC-2, RISK-4
+
+**Design IDs.** DES-1, DES-8, CONTRACT-3
+
+**SEIT proof rows.** SEIT-2, SEIT-12
+
+**Type.** /tdd
+
+**Design lenses.** CDD, SecDD
+
+**Implementation role.** Rust policy and schema maintainer
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** full
+
+**Review path.** Focused tests followed by the BRAN native read-only review on the integrated diff.
+
+### 1.1 execution manifest
+
+**Write set.** Only `crates/bran-core/src/policy.rs`, `crates/bran-core/src/lib.rs`, `schemas/bran-repository-policy.schema.json`, `fixtures/policy/valid-v1.yaml`, `fixtures/policy/invalid-version.yaml`, and `fixtures/policy/unsafe-path.yaml`.
+
+**Command IDs.** CMD-POLICY
+
+**Stop condition.** Stop on a schema decision that contradicts DES-8 or requires consumer-source mutation.
+
+**Human decision.** None; ask before changing the selected policy path or serialization.
+
+### Slice 1.2 — Strict validation and retrieval parity
+
+**Goal.** Make native policy drive strict validation, preserve deterministic source precedence,
+reject active packet references to superseded prompts, and verify migration body preservation.
+
+**Requirement IDs.** AC-2, AC-5
+
+**Design IDs.** DES-2, DES-4, DES-10, CONTRACT-7
+
+**SEIT proof rows.** SEIT-3, SEIT-6, SEIT-17
+
+**Type.** /tdd
+
+**Design lenses.** CDD, SecDD, RDD
+
+**Implementation role.** Rust validation and retrieval maintainer
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** full
+
+**Review path.** Focused tests followed by the BRAN native read-only review on the integrated diff.
+
+### 1.2 execution manifest
+
+**Write set.** Only `crates/bran-core/src/profile.rs`, `crates/bran-core/src/graph/query.rs`,
+`crates/bran-core/src/packet/mod.rs`, `crates/bran-core/src/migration.rs`,
+`crates/bran-core/src/lib.rs`, and `fixtures/conformance/bran-policy-parity.fixture`.
+
+**Command IDs.** CMD-PROFILE, CMD-QUERY, CMD-PACKET, CMD-MIGRATION, PROC-PARITY
+
+**Stop condition.** Stop if compatibility requires duplicating native rules in an adapter or changing established retrieval precedence.
+
+**Human decision.** None; ask before weakening a public/private or source-precedence rule.
+
+### Slice 1.3 — Derived-state self-healing
+
+**Goal.** Rebuild only BRAN-owned derived artifacts while refusing automatic source or policy repair.
+
+**Requirement IDs.** AC-6
+
+**Design IDs.** DES-3, DES-5, CONTRACT-9
+
+**SEIT proof rows.** SEIT-7
+
+**Type.** /tdd
+
+**Design lenses.** SecDD, RDD
+
+**Implementation role.** Rust maintenance-state maintainer
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** full
+
+**Review path.** Focused tests followed by the BRAN native read-only review on the integrated diff.
+
+### 1.3 execution manifest
+
+**Write set.** Only `crates/bran-core/src/derived_state.rs`, `crates/bran-core/src/lib.rs`, and `fixtures/derived-state/rebuild-v1.json`.
+
+**Command IDs.** CMD-DERIVED, CMD-REPAIR
+
+**Stop condition.** Stop if a proposed automatic action targets source, metadata, classification, configuration, or source links.
+
+**Human decision.** None; explicit authority is required for any non-derived repair proposal.
+
+## Wave 2 - Authorized repair and CLI contracts
+
+Wave 2 consumes the native validator from Wave 1 and closes the source-mutation
+boundary before any compatibility surface can invoke maintenance behavior.
+
+### Slice 2.1 — Repair and maintenance lifecycle
+
+**Goal.** Complete production-safe proposal, authority, digest, staged apply, revalidation,
+rollback, receipt, typed-exit behavior, and bounded native policy input from stdin.
+
+**Requirement IDs.** AC-3, AC-4, AC-6
+
+**Design IDs.** DES-3, DES-5, DES-6, DES-9, CONTRACT-2, CONTRACT-3, CONTRACT-9
+
+**SEIT proof rows.** SEIT-4, SEIT-5, SEIT-7, SEIT-14, SEIT-16
+
+**Type.** /tdd
+
+**Design lenses.** CDD, SecDD, RDD, ODD
+
+**Implementation role.** Rust repair and CLI security maintainer
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** full
+
+**Review path.** Focused fault tests followed by the BRAN native read-only review on the integrated diff.
+
+### 2.1 execution manifest
+
+**Write set.** Only `crates/bran-core/src/repair/mod.rs`, `crates/bran-cli/src/main.rs`, and `fixtures/repair/rollback-v1.json`.
+
+**Command IDs.** CMD-REPAIR, CMD-CLI, CMD-DERIVED, CMD-POLICY, PROC-ROLLBACK
+
+**Stop condition.** Stop on any false-success state, uncertain rollback without explicit terminal evidence, or inferred mutation authority.
+
+**Human decision.** None; ask before introducing a new authority source or widening mutation targets.
+
+## Wave 3 - AlphaZedeHQ staged adoption
+
+Wave 3 updates the canonical internal skill, shared compatibility tool, and hooks.
+These slices are sequential because they share the adapter invocation and pinned binary.
+No consumer repository is migrated or rewritten in this wave.
+
+### Slice 3.1 — BRAN skill and shared compatibility adapter
+
+**Goal.** Make BRAN the canonical internal knowledge workflow while retaining deprecated OKF entrypoints as translation-only adapters.
+
+**Requirement IDs.** AC-1, AC-7
+
+**Design IDs.** DES-4, DES-7, DES-10, DES-11, DES-12, DES-13, CONTRACT-1, CONTRACT-5, CONTRACT-10, CONTRACT-11, CONTRACT-12, CONTRACT-13
+
+**SEIT proof rows.** SEIT-1, SEIT-8, SEIT-17, SEIT-18, SEIT-19, SEIT-20
+
+**Type.** /tdd
+
+**Design lenses.** CDD, RDD, ODD
+
+**Implementation role.** Rust/Python policy interoperability and agent-skill maintainer
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** full
+
+**Review path.** AlphaZedeHQ focused tests plus native read-only review of the cross-repository integrated diff.
+
+### 3.1 execution manifest
+
+**Write set.** Only `/home/spectre/alphazede/bran/crates/bran-core/src/policy.rs`, `/home/spectre/alphazede/bran/crates/bran-core/src/scan/mod.rs`, `/home/spectre/alphazede/bran/crates/bran-cli/src/main.rs`, `/home/spectre/alphazede/Alphazedehq/skills/use-bran/SKILL.md`, `/home/spectre/alphazede/Alphazedehq/skills/use-okf/SKILL.md`, `/home/spectre/alphazede/Alphazedehq/tools/okf/okf`, `/home/spectre/alphazede/Alphazedehq/tools/okf/bran_runtime.py`, and `/home/spectre/alphazede/Alphazedehq/tools/okf/test_bran_runtime.py`. Keep the bounded BRAN parser/scanner packets and dependent AlphaZedeHQ adapter packet sequential in their respective task worktrees.
+
+**Command IDs.** CMD-POLICY, CMD-SCAN, CMD-CLI, CMD-ADAPTER, PROC-PARITY, PROC-REFERENCES
+
+**Stop condition.** Stop if the adapter becomes a semantic rule owner, rewrites legacy configuration, or retires an entrypoint without AC-7 evidence.
+
+**Human decision.** None; publication and final legacy removal remain owner decisions.
+
+### Slice 3.2 — BRAN-backed fail-open hooks
+
+**Goal.** Preserve the existing trigger and timeout behavior through a native BRAN hook with deprecated OKF forwarding compatibility.
+
+**Requirement IDs.** AC-1, RISK-2
+
+**Design IDs.** DES-4, DES-6, CONTRACT-1, CONTRACT-4
+
+**SEIT proof rows.** SEIT-1, SEIT-10
+
+**Type.** /tdd
+
+**Design lenses.** CDD, SecDD, RDD, ODD
+
+**Implementation role.** Shell hook and compatibility maintainer
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** full
+
+**Review path.** AlphaZedeHQ shell fixtures plus native read-only review of the cross-repository integrated diff.
+
+### 3.2 execution manifest
+
+**Write set.** Only `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-bran.sh`, `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-bran.json`, `/home/spectre/alphazede/Alphazedehq/.grok/hooks/test-use-bran.sh`, `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.sh`, `/home/spectre/alphazede/Alphazedehq/.grok/hooks/use-okf.json`, `/home/spectre/alphazede/Alphazedehq/.grok/hooks/test-use-okf.sh`, and `/home/spectre/alphazede/Alphazedehq/.grok/hooks/README.md`.
+
+**Command IDs.** CMD-HOOK, CMD-ADAPTER
+
+**Stop condition.** Stop if any hook path blocks agent completion, performs source mutation, retries maintenance, or trusts a target-repository executable.
+
+**Human decision.** None; strict behavior remains limited to explicit validation and configured CI.
+
+### Slice 3.3 — Pinned local adoption and boundary check
+
+**Goal.** Verify the exact local BRAN artifact used by the adapter and hooks while preserving the publication boundary.
+
+**Requirement IDs.** AC-1, AC-7, RISK-3
+
+**Design IDs.** DES-5, DES-7
+
+**SEIT proof rows.** SEIT-11, SEIT-15
+
+**Type.** manual
+
+**Design lenses.** SecDD, ODD
+
+**Implementation role.** Local release provenance operator
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** off
+
+**Review path.** Checksum readback, public-boundary evidence, and native read-only review; no publication review is implied.
+
+### 3.3 execution manifest
+
+**Write set.** No committed repository writes. Owner-approved local runtime artifacts under `/home/spectre/alphazede/Alphazedehq/tools/okf/runtime/` may be created by the adoption procedure. On 2026-07-22 the owner explicitly authorized an uncommitted local `tools/okf/runtime/bran-release-pin.json` even though that path is trackable rather than ignored. The exception permits local pin verification only; the pin must remain uncommitted and does not authorize promotion, publication, push, or deployment.
+
+**Command IDs.** CMD-PUBLIC, PROC-PIN, PROC-PUBLICATION
+
+**Stop condition.** Stop on checksum mismatch, path aliasing, private-boundary leakage, or any action that would publish or promote an artifact.
+
+**Human decision.** Explicit owner approval is required before publication, release, promotion, or public install verification.
+
+## Wave 4 - Consumer evidence and closeout
+
+Wave 4 is read-only. It measures the six active consumers independently and preserves
+incomplete evidence without mutating their source, configuration, hooks, or CI.
+
+### Slice 4.1 — Six-consumer parity and retirement inventory
+
+**Goal.** Produce independent parity and active-reference evidence without prematurely removing compatibility.
+
+**Requirement IDs.** AC-7, RISK-1, RISK-5
+
+**Design IDs.** DES-7, CONTRACT-5, CONTRACT-8
+
+**SEIT proof rows.** SEIT-8, SEIT-9, SEIT-13
+
+**Type.** manual
+
+**Design lenses.** CDD, RDD, ODD
+
+**Implementation role.** Repository migration evidence auditor
+
+**Agent model route.** Pi (deepseek-v4-pro)
+
+**Agent reasoning level.** high
+
+**Ponytail mode.** off
+
+**Review path.** Read-only evidence review followed by the BRAN native integrated-diff review.
+
+### 4.1 execution manifest
+
+**Write set.** No writes required; evidence is retained in the execution transcript until a separately authorized evidence path is approved.
+
+**Command IDs.** PROC-PARITY, PROC-REFERENCES
+
+**Stop condition.** Stop on corpus mismatch, attempted consumer mutation, unsupported parity claim, or loss of completed per-consumer evidence.
+
+**Human decision.** Owner approval is required for every consumer migration and for final global adapter removal.
+
+## Execution closeout
+
+After Wave 4, run `CMD-FAST` once against the integrated BRAN diff and the focused
+AlphaZedeHQ commands referenced by Wave 3. Run one native read-only review across the
+integrated BRAN and AlphaZedeHQ diffs. Do not run a provider evaluation, publish BRAN,
+promote a release, modify the six consumer repositories, or remove legacy adapters.
+
+If implementation exposes only missing proof coverage, append a SEIT-only amendment
+through `design-driven-build`. If it changes policy, authority, compatibility,
+security, or acceptance, stop for the appropriate design amendment.
+
+### Authorization-gated upstream follow-up
+
+After local migration closeout, preserve draft candidates `UPSTREAM-1` (bundle scan
+scope) and `UPSTREAM-2` (strict-profile separation) from `design.md`. Before any GitHub
+issue, pull request, comment, branch push, or other external publication, present the
+exact proposed text and destination to the owner and obtain explicit authorization.
+Upstream contribution work is not part of this eight-slice execution and cannot delay,
+weaken, or reclassify local migration evidence.
+
+Separately plan and authorize complete reserved `index.md`/`log.md` structural validation
+before describing `okf-v0.1` as full upstream conformance certification. Until then,
+describe it as the OKF v0.1 concept-document interoperability floor.
+</pre></details>
+</main></body></html>

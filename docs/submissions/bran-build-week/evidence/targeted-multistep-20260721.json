@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "benchmark": "bran-harbor-five-step-targeted-screen",
+  "claim_scope": "on our controlled benchmark",
+  "revisions": {"bran": "ea96baf24875490fd8c743e4971412cacacfbef8", "arena": "7c825c7007aeeb4bdfde4fe21e80f8451ae9645e"},
+  "attempts": {"valid_cells": 7, "retained_pre_provider_or_harness_failures": 2, "successful_terminal_cells": 0, "step_records": 14},
+  "actual_outer_usage": {"input_tokens": 5833423, "cached_input_tokens_subset": 5175296, "output_tokens": 74411, "input_plus_output_tokens": 5907834},
+  "metrics_sidecar": {"path": "/home/spectre/alphazede/bran-harbor-metrics-20260721-targeted/summary.json", "sha256": "633ac106665e693178470583b843c9227640c6068f91fec49c40c10a8307289a"},
+  "retrieval": [
+    {"configuration": "Plain Sol Medium", "steps": 3, "hit_at_1": 0.0, "hit_at_3": 0.3333333333, "recall_at_5": 0.3333333333, "precision_at_5": 0.0666666667, "mrr": 0.2777777778, "canonical_rank": 4.6666666667},
+    {"configuration": "Core SQZ off Sol Medium", "steps": 2, "hit_at_1": 0.5, "hit_at_3": 0.5, "recall_at_5": 0.5, "precision_at_5": 0.2, "mrr": 0.5714285714, "canonical_rank": 5.0},
+    {"configuration": "Core SQZ on Sol Medium", "steps": 3, "ranking_samples": 2, "hit_at_1": 0.5, "hit_at_3": 0.5, "recall_at_5": 0.5, "precision_at_5": 0.2, "mrr": 0.5714285714, "canonical_rank": 5.0},
+    {"configuration": "Core SQZ off Sol High", "steps": 3, "hit_at_1": 0.3333333333, "hit_at_3": 0.6666666667, "recall_at_5": 0.8333333333, "precision_at_5": 0.2666666667, "mrr": 0.5833333333, "canonical_rank": 5.3333333333},
+    {"configuration": "Connected variants", "steps": 3, "ranking_metrics": "unavailable", "reason": "inner usage and/or SQZ/ranking receipts unavailable"}
+  ],
+  "time_to_first_correct_source_ms": "unavailable",
+  "exact_context_window_and_compaction": "unavailable",
+  "winner": "no winner",
+  "replications": 0,
+  "backend_confirmations": {"scrubbed_okf": "measured", "okf_rag": "unavailable: no executable adapter", "obsidian": "provider-free export only; no executable task adapter", "wiki_llm": "unavailable: no executable adapter"}
+}

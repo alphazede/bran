@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "bran_namespace_core_fixture",
+  "classification": "private_fixture_evidence",
+  "revisions": {
+    "arena_clean_room_harness": "ff6bfd7603a4f4d246619abbeb9762d0b6880f68",
+    "supersedes_arena_harness": "0e9a96a",
+    "public_bran": "d10fb9d605f7b08061b2d40bb010b81d5d8ff99c"
+  },
+  "artifacts": {
+    "release_build_command": "cargo build --locked --release --bin bran",
+    "release_build_revision": "d10fb9d605f7b08061b2d40bb010b81d5d8ff99c",
+    "release_binary_sha256": "d2ca38faaa070d796d27b81ea0b79bcbba8ab282e793b605822fc627c4927b5d",
+    "release_binary_bytes": 2203456,
+    "codex_cli_version": "codex-cli 0.144.6",
+    "codex_cli_sha256": "a31ae9450a26216eb1e7c53102fd42123dd675974310b0e2ca3aa4cb622a2c15",
+    "bwrap_version": "bwrap 0.9.0",
+    "bwrap_sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
+    "bran_config_sha256": "4114c55a94796e3ba2cdb9af6c8c71d9065894b7cb8c0124df1f9774b026eb29",
+    "plain_config_sha256": "ddb22d895e2de83c2fdd2051eb2109efe95fc7e6a4bf1ccac0c7c716a4e4525b",
+    "tree_digest_helper_sha256": "4a7f12152008ef4f0ac2d6948573e856fea41c4213b318867913e52b227e300a",
+    "use_bran_skill_sha256": "26c79a8956f28e95b6a00007add90371d88851ac8d13ae8b14595d6251d1da48"
+  },
+  "corpus": {
+    "mount": "/workspace/corpus",
+    "arms": {
+      "plain": {
+        "files": 512,
+        "digest": "96cc1cb98a5e0e3730a1c7365468219aa2b4935c715a6b9e2971eeff197156bf"
+      },
+      "bran": {
+        "files": 512,
+        "digest": "96cc1cb98a5e0e3730a1c7365468219aa2b4935c715a6b9e2971eeff197156bf"
+      },
+      "bran_sqz": {
+        "files": 512,
+        "digest": "96cc1cb98a5e0e3730a1c7365468219aa2b4935c715a6b9e2971eeff197156bf"
+      }
+    },
+    "generated_copies_are_publication_artifacts": false
+  },
+  "query": "Locate the misleading-symptom retry bug source and its visible validation evidence.",
+  "selection": [
+    {
+      "locator": "capsules/misleading_symptom_root_cause/TASK.md",
+      "why_selected": "metadata_seed"
+    },
+    {
+      "locator": "capsules/misleading_symptom_root_cause/src/retry_queue.py",
+      "why_selected": "declared_implementation"
+    },
+    {
+      "locator": "capsules/misleading_symptom_root_cause/tests/visible_tests.py",
+      "why_selected": "declared_validation"
+    }
+  ],
+  "metrics": {
+    "candidate_source_bytes": 157345,
+    "selected_source_bytes": 3629,
+    "avoided_source_bytes": 153716,
+    "encoded_packet_bytes": 5726,
+    "raw_receipt_bytes": 5726,
+    "estimated_tokens": 1432,
+    "token_estimate_method": "ceiling(encoded_packet_bytes / 4)",
+    "actual_provider_tokens": "unavailable",
+    "connected_task_token_ceiling": 8500,
+    "truncated": false,
+    "provider_calls": 0,
+    "model_calls": 0,
+    "initialization_and_indexing": "included_in_fixture_query_elapsed_not_separately_measured"
+  },
+  "runtime": {
+    "trial_seconds": [
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01
+    ],
+    "max_rss_kib": 5568,
+    "state": "fresh_per_attempt"
+  },
+  "prompt_audits": {
+    "plain": {
+      "detected_skills": [],
+      "owner_home_visible": false,
+      "memory_visible": false
+    },
+    "bran": {
+      "detected_skills": [
+        "use-bran"
+      ],
+      "owner_home_visible": false,
+      "memory_visible": false
+    },
+    "bran_sqz": {
+      "detected_skills": [
+        "use-bran"
+      ],
+      "owner_home_visible": false,
+      "memory_visible": false
+    },
+    "use_okf_visible": false,
+    "ponytail_visible": false
+  },
+  "tui": {
+    "workspace_reached": "/workspace/corpus",
+    "prompt_submitted": false,
+    "provider_calls": 0,
+    "opened_and_exited_cleanly": true,
+    "state": "fresh_per_attempt",
+    "one_time_trust_persistence": "unavailable",
+    "one_time_trust_persistence_reason": "configuration was read-only"
+  },
+  "review": {
+    "reviewed_revision": "0e9a96a",
+    "verdict": "patch incorrect",
+    "findings": 5,
+    "all_findings_fixed_in": "ff6bfd7603a4f4d246619abbeb9762d0b6880f68",
+    "second_review_run": false
+  },
+  "privacy_publication": {
+    "arena_tracked_publication_files": 51,
+    "arena_capsule_files": 46,
+    "arena_capsules": 15,
+    "arena_original_package_files": 4,
+    "arena_tree_digest_helper_files": 1,
+    "arena_scanner": "pass",
+    "arena_personal_paths_emails_credentials_found": 0,
+    "public_bran_tracked_files": 85,
+    "public_bran_intentional_synthetic_redaction_security_canaries": 6,
+    "public_bran_other_private_hits": 0,
+    "raven_c2pa_metadata": "generator_and_date_only_no_owner_identity",
+    "generated_512_file_copies_published": false,
+    "github_examples": "capsules_generator_and_clean_room_package"
+  },
+  "prior_evidence": {
+    "six_0_04_second_fixture_replays": "separate_evidence",
+    "preliminary_namespace_record": {
+      "status": "superseded_unpinned_or_old_binary",
+      "encoded_packet_bytes": 5725,
+      "median_seconds": 0.02,
+      "max_rss_kib": 7156
+    }
+  }
+}

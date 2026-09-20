@@ -1,0 +1,6 @@
+{
+  "commands": [
+    { "id": "fast", "run": "./tools/ci/check.sh --fast", "blocking": true },
+    { "id": "drift-guard", "run": "python3 tools/ci/public_export.py check --public-dir ../../bran", "blocking": true }
+  ]
+}

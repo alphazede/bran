@@ -1,0 +1,2095 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bearing planning review</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:auto;padding:2rem;color:#17202a;background:#f7f8fa}main{background:#ffffff;padding:2rem;border:1px solid #67788a;border-radius:12px}nav{display:flex;gap:1rem;flex-wrap:wrap}figure{margin:2rem 0;padding:1rem;border:1px solid #a8b2bd;border-radius:8px}.flow{display:flex;align-items:center;gap:.65rem;flex-wrap:wrap}.flow span{padding:.55rem .8rem;background:#eef1f4;border-radius:6px}figcaption,summary{font-weight:700}.text-equivalent{margin-bottom:0}details{margin:1rem 0}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eef1f4;padding:1rem;border-radius:8px}</style></head><body><main><h1>Bearing planning review</h1><p>This deterministic view is generated from the four current planning sources.</p><nav id="bearing-source-links" aria-label="Planning artifact sources"><a href="./plan-spec.md">plan-spec.md</a> <a href="./design.md">design.md</a> <a href="./seit.md">seit.md</a> <a href="./implementation.md">implementation.md</a></nav><section aria-labelledby="bearing-diagrams"><h2 id="bearing-diagrams">Plan maps</h2><figure><div class="flow" role="img" aria-label="Planning flow from plan specification through final QA"><span>Plan specification</span><b>→</b><span>Design</span><b>→</b><span>SEIT test map</span><b>→</b><span>Implementation</span><b>→</b><span>Final QA</span></div><figcaption>Planning flow</figcaption><p class="text-equivalent">Text equivalent: acceptance and risks drive design contracts; SEIT maps those contracts to proof; implementation slices reference the map; final QA records actual evidence.</p></figure><figure><div class="flow" role="img" aria-label="Traceability from requirements to execution evidence"><span>AC / RISK</span><b>↔</b><span>DES / CONTRACT</span><b>↔</b><span>SEIT / CMD</span><b>↔</b><span>Slice manifest</span></div><figcaption>Traceability map</figcaption><p class="text-equivalent">Text equivalent: stable IDs connect each requirement or risk to its design boundary, positive and negative test cases, command, evidence, and bounded execution slice.</p></figure></section><section id="bearing-source-artifacts"><h2>Complete planning artifacts</h2><p>These are the complete source documents used for this review.</p><details><summary>plan-spec.md</summary><pre>---
+type: plan-spec
+name: bran-okf-final-cutover
+status: gathered
+date: 2026-07-22
+applies_to: bran
+parent_plan: ../2026-07-21-bran-okf-migration/plan-spec.md
+planning_provider: codex
+planning_model: gpt-5.6-sol
+planning_reasoning: high
+---
+
+## Problem
+
+The staged BRAN/OKF migration established BRAN-native validation, retrieval,
+repair, compatibility, and evidence-based retirement contracts, but the final
+cutover is not yet eligible to execute.
+
+Shared BRAN gates still have known blockers:
+
+- portable OKF-v0.1 conformance does not yet prove the reserved `index.md` and
+  `log.md` structures;
+- `CMD-FAST` is blocked by test-budget-registry drift; and
+- `CMD-PUBLIC` is blocked by a stale repository path.
+
+Publication, installation, per-consumer parity, and global retirement also lack
+one complete reproducible route. Consumer evidence is incomplete in material
+ways: AlphaZede Sports needs granular public-boundary policy, BetBot has an
+oversized document, retrieval parity is unavailable, and HGTS is absent.
+
+The final plan must close those gaps without treating unavailable evidence as a
+pass, weakening either validation profile, overlapping consumer writers, or
+removing compatibility before every consumer is ready.
+
+## Goal
+
+Produce an executable, evidence-backed final-cutover route that:
+
+1. repairs and proves the shared BRAN gates;
+2. creates a reproducible, attributable BRAN release and exact-SHA consumer
+   installation procedure with rollback;
+3. migrates and validates each active consumer in one bounded, independently
+   gated slice;
+4. retains every compatibility surface until all consumer gates pass;
+5. makes global compatibility retirement a separately approved final slice;
+   and
+6. drafts two bounded upstream OKF proposals without conflating local
+   `bran-strict` results with portable `okf-v0.1` conformance.
+
+The planning journey is complete only when `plan-spec.md`, `design.md`,
+`seit.md`, `implementation.md`, and `review.html` exist in the canonical plan
+directory, validate together, and are returned for owner route selection.
+Planning completion does not authorize execution.
+
+## Current truth
+
+### Established
+
+- The completed staged-migration plan is
+  `docs/plans/2026-07-21-bran-okf-migration/`.
+- That plan fixes the active consumer inventory as:
+  `Alphazedehq`, `alphazede-sports`, `betbot`, `developers`, `hgts`, and
+  `alphazede-markets`.
+- BRAN already distinguishes reserved `index.md` and `log.md` document kinds in
+  `crates/bran-core/src/bundle.rs`.
+- `okf-v0.1` and `bran-strict` are separate profiles; strict-only failures must
+  not be reported as portable OKF failures.
+- The established shared command IDs include:
+  `CMD-FAST` = `./tools/ci/check.sh --fast` and
+  `CMD-PUBLIC` = `python3 tools/ci/public_boundary_check.py`, resolved from the
+  BRAN repository root.
+- Legacy retirement is evidence-based rather than date-based.
+
+### Known failing or blocked
+
+- **BLK-GATE-001:** portable OKF conformance lacks complete reserved
+  `index.md`/`log.md` proof.
+- **BLK-GATE-002:** `CMD-FAST` has a test-budget-registry blocker.
+- **BLK-GATE-003:** `CMD-PUBLIC` has a stale-path blocker.
+- **BLK-AZS-001:** AlphaZede Sports lacks accepted granular public-boundary
+  policy evidence.
+- **BLK-BETBOT-001:** BetBot contains an oversized document that prevents a
+  clean parity claim under the current bounded-input behavior.
+- **BLK-PARITY-001:** retrieval parity evidence is unavailable.
+- **BLK-HGTS-001:** the HGTS consumer checkout is absent, so its current state
+  and parity cannot be attested.
+- **BLK-PLAN-001:** the current Bearing run state still identifies
+  `docs/plans/2026-07-23-create-or-resume-the-complete-planning-journey-for-bran-s-final-okf-cuto`
+  as its validated `planDirectory`, while the owner selected this
+  `2026-07-22-bran-okf-final-cutover` directory as canonical. The runtime path
+  must be retargeted or treated only as a temporary receipt pointer before Map
+  the Route writes artifacts; it is not authority to continue the duplicate.
+
+These blockers are pending work, not evidence that the affected capability
+passed.
+
+### Not performed or authorized
+
+No final-cutover implementation, publication, push, deployment, merge,
+consumer-repository mutation, public proposal submission, compatibility
+removal, release promotion, or global retirement has been performed or
+authorized by this plan.
+
+## Scope
+
+### In scope for the complete plan
+
+- BRAN source, conformance fixtures, tests, and CI metadata needed to clear the
+  shared gates.
+- Reproducible build, seal, provenance, publication, installation,
+  exact-revision verification, and rollback procedures.
+- One migration and parity-validation slice for each of the six consumers.
+- Consumer-local policy/configuration, hooks, and installation changes only
+  inside that consumer's later owner-approved slice.
+- Retention and eventual separately approved retirement of compatibility
+  adapters, legacy hooks, `use-okf`, legacy entrypoints, and legacy
+  configuration.
+- Drafts for the upstream OKF bundle-scan-scope and layered-profile-separation
+  proposals.
+- Stable requirement IDs, design decisions, SEIT proof cases, command IDs,
+  exact write sets, dependency waves, stop conditions, owner approvals, and
+  rollback criteria across the final artifact set.
+
+### Out of scope for this planning journey
+
+- Implementing any planned change.
+- Mutating a consumer repository.
+- Building or publishing a live release.
+- Pushing, deploying, merging, promoting, or installing an artifact.
+- Submitting either upstream proposal.
+- Removing or disabling compatibility software.
+- Starting Explorer or Expedition.
+- Creating plan-local prompt artifacts.
+
+## Authority
+
+- Gather Supplies may update only this canonical `plan-spec.md`.
+- Map the Route may create or update only `design.md`, `seit.md`,
+  `implementation.md`, and `review.html` in this canonical directory, plus
+  traceability corrections to this specification if validation requires them.
+- The selected top-level planning and review route is
+  `codex gpt-5.6-sol` with `high` reasoning.
+- `implementation.md` must assign the owner-selected execution routes by work
+  type: `codex gpt-5.6-terra` with `medium` reasoning for coding and
+  consumer-mutation slices, and `agy agent default` with `medium`
+  reasoning for documentation, operational, and destructive slices. These are
+  execution assignments; the planning/review route remains
+  `codex gpt-5.6-sol` with `high` reasoning. Silent fallback is prohibited.
+- No planning artifact grants implementation or external-write authority.
+- Each consumer migration, public publication, upstream submission, and global
+  retirement requires its own explicit owner approval at the gate identified
+  below.
+
+## Owner decisions and assumptions
+
+### Fixed owner decisions
+
+1. **Canonical directory.** The only plan directory is
+   `docs/plans/2026-07-22-bran-okf-final-cutover`. Preserve its existing
+   `plan-spec.md` history, do not continue the auto-slugged duplicate, and leave
+   no duplicate plan directory when the planning journey completes.
+2. **Staged replacement remains binding.** BRAN is canonical, while legacy
+   surfaces remain compatibility-only until consumer parity and final approval.
+3. **No hard retirement date.** Evidence, not elapsed time, controls consumer
+   completion and global retirement.
+4. **Profile separation.** Report `okf-v0.1` and `bran-strict` independently.
+5. **Proposal sequencing.** Draft both upstream proposals before publication,
+   but recommend submission only after portable conformance evidence and a
+   stable public BRAN release exist.
+6. **Execution routing.** Use Terra Medium for coding and consumer-mutation
+   slices. Use Agy Medium for documentation, operational, and destructive
+   slices. Record requested and effective identity for every packet and stop
+   rather than silently substituting a model.
+
+### Safe assumptions
+
+- The six-consumer inventory from the staged-migration plan remains
+  authoritative.
+- An unavailable, absent, skipped, oversized, or policy-incomplete check is a
+  blocked gate, never a pass or implicit waiver.
+- HGTS remains in the inventory while absent. Its absence blocks its own gate
+  and global retirement without invalidating completed evidence for other
+  consumers.
+- AlphaZede Sports boundary granularity and BetBot's oversized document must be
+  resolved through explicit policy/content handling and proof. The route may
+  not add an undocumented exemption or silently raise a safety limit.
+- Consumer slices may proceed independently after shared gates and publication
+  prerequisites pass, but no two slices may write the same repository or shared
+  release surface concurrently.
+- The duplicate auto-slugged plan directory is cleanup work for the planning
+  workflow. It must not be used as a source of authority and must be removed
+  only after canonical artifacts are present and preservation checks pass.
+
+## Requirements
+
+### Shared BRAN gates
+
+- **REQ-GATE-001 — Reserved-document conformance.** Add portable
+  `okf-v0.1` valid and invalid proof cases for reserved `index.md` and `log.md`
+  structures. The proof must run without a provider account or owner-local
+  configuration and must report `okf-v0.1` independently from `bran-strict`.
+- **REQ-GATE-002 — Fast-gate registry.** Define `tools/ci/test-budget.json` as
+  a deterministic inventory of named CI journeys, direct CI commands, and owned
+  fixtures—not one registry row per Rust unit test. `CMD-BUDGET` remains the first
+  fast-gate check in `CMD-FAST`, failing deterministically on any missing or
+  duplicate journey, direct command, or fixture ownership. All Rust unit tests
+  remain mandatory through the existing `CMD-FAST` workspace test command, ensuring
+  that removing per-test registry accounting does not skip or weaken test execution.
+- **REQ-GATE-003 — Public-boundary path.** Resolve the `CMD-PUBLIC` stale path
+  using repository-root-relative, portable path handling. Acceptance requires
+  the command to pass from a clean checkout without an AlphaZede parent layout
+  assumption.
+- **REQ-GATE-004 — Gate isolation.** Shared gate repairs may write only BRAN
+  source, fixtures, tests, schemas, and CI metadata explicitly listed in their
+  implementation slices. They may not mutate consumers or remove compatibility.
+- **REQ-GATE-005 — Offline determinism.** All shared conformance, fast-gate,
+  and public-boundary proofs must remain deterministic and runnable without a
+  provider account.
+
+### Publication and provenance
+
+- **REQ-REL-001 — Reproducible artifact.** Define one source revision, clean
+  build procedure, toolchain inputs, artifact identity, checksum, and retained
+  build receipt sufficient for an independent rebuild comparison.
+- **REQ-REL-002 — Public-boundary seal.** Publication eligibility requires
+  clean conformance, `CMD-FAST`, `CMD-PUBLIC`, release-contract, credential,
+  private-corpus, hidden-truth, and raw-provider-trace checks.
+- **REQ-REL-003 — Exact revision.** Bind the release tag or release identifier,
+  source commit SHA, artifact SHA-256, manifest, and installed binary version
+  into one verification chain. A tag name alone is insufficient.
+- **REQ-REL-004 — Installation.** Define a repeatable per-consumer install or
+  pin procedure that uses the sealed artifact, verifies its digest before use,
+  records the prior installation, and produces an installation receipt.
+- **REQ-REL-005 — Rollback.** Define and prove restoration to the exact prior
+  consumer pin/binary/configuration without deleting the new artifact or legacy
+  fallback until post-rollback validation passes.
+- **REQ-REL-006 — Publication approval.** Stop before any public release,
+  upload, promotion, or public install test until the owner approves the exact
+  revision, artifact digest, destination, manifest, and public-boundary receipt.
+
+### Consumer migration and parity
+
+- **REQ-CONS-001 — One slice per consumer.** `implementation.md` must contain
+  exactly one bounded migration-and-parity slice for each of:
+  `Alphazedehq`, `alphazede-sports`, `betbot`, `developers`, `hgts`, and
+  `alphazede-markets`.
+- **REQ-CONS-002 — Non-overlapping writers.** Each consumer slice owns only
+  that consumer's checkout and consumer-local evidence directory. Shared BRAN
+  release/proposal surfaces must be completed in earlier exclusive slices.
+- **REQ-CONS-003 — Frozen comparison.** Each consumer gate must compare pinned
+  BRAN-native validation and retrieval with the legacy adapter over identical
+  frozen inputs, normalize only representation differences, and retain raw and
+  normalized receipts.
+- **REQ-CONS-004 — Required parity.** A consumer passes only when validation
+  outcomes, retrieval selection/precedence, typed unavailable/conflict states,
+  hook behavior, installation identity, and rollback proof meet the designed
+  parity contract.
+- **REQ-CONS-005 — Reference audit.** Each passing consumer must retain an
+  audit of active code, skill, hook, CI, and configuration references. Legacy
+  references may remain during migration only when identified as active
+  compatibility surfaces or historical documentation.
+- **REQ-CONS-006 — Independent progress.** A blocked consumer does not erase
+  another consumer's passing evidence, but it blocks global retirement.
+- **REQ-CONS-007 — Consumer approval.** Stop before mutating each consumer
+  until the owner approves that slice's exact repository, revision, write set,
+  artifact digest, verification commands, and rollback procedure.
+
+### Explicit evidence gaps
+
+- **REQ-AZS-001 — Granular boundary policy.** The AlphaZede Sports slice must
+  define and prove the minimum native BRAN policy granularity needed to express
+  its public/private path distinctions. It must include positive, negative,
+  inheritance/precedence, and ambiguous-policy cases and may not weaken the
+  shared public-boundary gate.
+- **REQ-BETBOT-001 — Oversized document.** The BetBot slice must preserve the
+  current bounded-input safety contract while resolving the oversized document
+  through an explicitly designed content, policy, or bounded streaming route.
+  It must prove deterministic failure before the change, bounded success after
+  it, unchanged content identity where required, and rollback.
+- **REQ-PARITY-001 — Retrieval availability.** Retrieval parity must have a
+  runnable deterministic corpus and retained BRAN/legacy comparison receipt.
+  If the legacy or native side is unavailable, the consumer remains blocked
+  with a typed unavailable result.
+- **REQ-HGTS-001 — Absent consumer.** The HGTS slice must begin with checkout
+  identity, revision, and ownership verification. If HGTS remains absent, the
+  slice returns `unavailable`, performs no substitution or inferred pass, and
+  keeps global retirement blocked.
+
+### Compatibility and retirement
+
+- **REQ-COMPAT-001 — Retention.** Compatibility adapters, legacy hooks,
+  `use-okf`, legacy entrypoints, and legacy configuration remain present and
+  recoverable until all six consumer gates pass.
+- **REQ-COMPAT-002 — No early disabling.** A migrated consumer may switch its
+  active pin only after its gate and rollback proof pass; it may not delete the
+  legacy fallback during its migration slice.
+- **REQ-RETIRE-001 — Separate final slice.** Global retirement must be its own
+  final implementation slice after all consumer receipts and reference audits
+  pass. It may not be folded into a consumer or release slice.
+- **REQ-RETIRE-002 — Explicit approval.** The retirement slice requires
+  separate owner approval of exact write sets, deletion targets, retained
+  historical references, rollback archive, verification commands, and the
+  integrated evidence manifest.
+- **REQ-RETIRE-003 — Rollback before removal.** Prove restoration from the
+  proposed retirement state before deleting or disabling any compatibility
+  surface. Failed restoration or any active reference stops retirement.
+
+### Upstream proposals
+
+- **REQ-UPSTREAM-001 — Bundle scan scope.** Draft a proposal that specifies
+  whether portable OKF scanning applies to one bundle root, nested bundle roots,
+  or a repository-wide discovery set, including deterministic inclusion,
+  exclusion, symlink, and reserved-document behavior.
+- **REQ-UPSTREAM-002 — Layered profiles.** Draft a proposal that separates the
+  portable `okf-v0.1` floor from additive implementation profiles such as
+  `bran-strict`, with independent results and no reclassification of strict-only
+  failures as portable failures.
+- **REQ-UPSTREAM-003 — Submission gate.** Proposal drafts are local planning
+  artifacts. Recommend submission only after REQ-GATE-001 through
+  REQ-GATE-005 pass and an owner-approved stable public release satisfies
+  REQ-REL-001 through REQ-REL-006. Submission still requires separate owner
+  approval.
+
+### Route and artifact quality
+
+- **REQ-PLAN-001 — Complete artifact set.** Map the Route must produce
+  `design.md`, `seit.md`, `implementation.md`, and `review.html` beside this
+  specification; no prompt artifacts are required.
+- **REQ-PLAN-002 — Traceability.** Every requirement must map to at least one
+  design decision, SEIT proof case, implementation slice, command/procedure ID,
+  retained evidence path, stop condition, and rollback or explicit
+  non-applicability.
+- **REQ-PLAN-003 — Command registry.** SEIT must bind exact repository-root
+  invocations to stable IDs, including at minimum:
+  `CMD-OKF-PORTABLE`, `CMD-FAST`, `CMD-PUBLIC`, `CMD-RELEASE-BUILD`,
+  `CMD-RELEASE-SEAL`, `CMD-INSTALL-VERIFY`, `CMD-EXACT-SHA`,
+  `CMD-ROLLBACK`, six consumer parity procedure IDs, `CMD-REFERENCE-AUDIT`,
+  and `CMD-RETIREMENT-PROOF`.
+- **REQ-PLAN-004 — Waves and write sets.** Implementation must give every
+  slice an exact write set, dependencies, route/model/reasoning assignment,
+  semantic verification, cross-cutting commands, retained evidence, stop
+  condition, owner gate, and rollback. Parallel slices must have disjoint
+  writers.
+- **REQ-PLAN-005 — Review.** Generate a baseline `review.html` after design and
+  SEIT, regenerate it after implementation, and validate the final artifact set
+  before returning for owner selection.
+- **REQ-PLAN-006 — Canonical cleanup.** Before planning completion, verify all
+  canonical artifacts are present in
+  `docs/plans/2026-07-22-bran-okf-final-cutover`, preserve unrelated owner
+  changes, and remove the duplicate auto-slugged plan directory without
+  force-removing any unrelated evidence.
+- **REQ-PLAN-007 — Planning stop.** Do not start Explorer or Expedition.
+  Return the validated plan and final review for explicit owner route selection.
+
+## Acceptance criteria
+
+- **AC-001:** All requirements have complete bidirectional traceability across
+  the final five artifacts.
+- **AC-002:** The shared gate route proves portable reserved-document
+  conformance and clears `CMD-FAST` and `CMD-PUBLIC` without parent-layout or
+  provider-account dependencies.
+- **AC-003:** The publication route binds source SHA, artifact digest, manifest,
+  installation identity, and rollback receipt and stops at an explicit owner
+  approval.
+- **AC-004:** Exactly six consumer slices exist, their write sets do not
+  overlap, and every slice has validation, retrieval, installation, reference
+  audit, and rollback proof or a typed blocking result.
+- **AC-005:** AlphaZede Sports, BetBot, retrieval parity, and HGTS gaps each map
+  to explicit proof cases and stop conditions; none is represented as passed
+  while evidence is unavailable.
+- **AC-006:** Compatibility remains until every consumer passes; global
+  retirement is a separate owner-approved slice with successful rollback proof.
+- **AC-007:** Both upstream proposal drafts exist before publication planning
+  completes, while submission remains gated on portable conformance, stable
+  public release, and separate owner approval.
+- **AC-008:** `okf-v0.1` and `bran-strict` results remain separately visible in
+  commands, receipts, reviews, and release claims.
+- **AC-009:** The final planning artifact set validates in the canonical
+  directory, the duplicate auto-slugged directory is absent, and no product or
+  consumer code was changed by planning.
+- **AC-010:** The journey stops after owner-facing review and does not begin an
+  execution route.
+
+## Required proof classes for SEIT
+
+Map the Route must include at least:
+
+- valid and invalid reserved `index.md` and `log.md` portable fixtures;
+- registry-complete and intentionally unregistered-test cases;
+- repository-root and relocated-checkout public-boundary cases;
+- reproducible-build, tampered-artifact, wrong-SHA, wrong-tag, interrupted
+  install, and exact rollback cases;
+- one positive and one negative validation/retrieval parity case per consumer;
+- typed unavailable cases for missing retrieval capability and absent HGTS;
+- granular boundary allow/deny/ambiguous cases for AlphaZede Sports;
+- oversized/rejected, bounded-success, identity, and rollback cases for BetBot;
+- legacy reference present/allowed, active/unexpected, and absent cases;
+- early-retirement rejection and retirement-rollback cases; and
+- independent `okf-v0.1` pass/fail and `bran-strict` pass/fail combinations.
+
+## Stop conditions
+
+Stop the affected route or slice when:
+
+- a required repository, revision, artifact, policy, or parity runner is
+  unavailable or cannot be identified;
+- a command depends on credentials, provider access, owner-local memory, or an
+  undeclared parent-directory layout;
+- the proposed write set overlaps another active writer or exceeds its
+  repository boundary;
+- checksum, exact-SHA, manifest, public-boundary, validation, retrieval,
+  installation, reference-audit, or rollback evidence fails;
+- a plan attempts to classify unavailable evidence as passing;
+- an action would publish, push, deploy, merge, mutate a consumer, submit an
+  upstream proposal, or remove compatibility without its explicit owner gate;
+- `bran-strict` evidence is used to claim `okf-v0.1` conformance; or
+- the active planning runtime requires new route artifacts to be written in the
+  rejected auto-slugged directory instead of this canonical directory; or
+- preserving unrelated owner changes cannot be proven.
+
+## Owner approval gates
+
+The route must stop for explicit owner approval before:
+
+1. publishing or promoting the exact sealed BRAN release;
+2. mutating each of the six consumers;
+3. submitting either upstream proposal; and
+4. executing the final global retirement slice.
+
+A recommendation or passing plan review is advice, not approval.
+
+## Rollback criteria
+
+- Shared BRAN repairs must be revertible within their exact write sets and leave
+  existing compatibility behavior callable.
+- Release rollback must restore the prior artifact pin and verify the restored
+  digest and behavior before declaring success.
+- Consumer rollback must restore exact prior bytes/configuration/pin and rerun
+  that consumer's legacy and BRAN gate; retained compatibility is the fallback.
+- Retirement rollback must be proven before removal and must restore all active
+  entrypoints, hooks, skills, configurations, pins, and reference integrity.
+- Any byte, digest, behavior, or reference mismatch is rollback failure and
+  blocks forward progress.
+
+## Evidence consulted
+
+- `docs/plans/AGENTS.md`
+- `docs/plans/2026-07-21-bran-okf-migration/plan-spec.md`
+- `docs/plans/2026-07-21-bran-okf-migration/design.md`
+- `docs/plans/2026-07-21-bran-okf-migration/seit.md`
+- `docs/plans/2026-07-21-bran-okf-migration/implementation.md`
+- `crates/bran-core/src/bundle.rs`
+- `crates/bran-core/src/profile.rs`
+- `fixtures/conformance/`
+- `tools/ci/check.sh`
+- `tools/ci/test-budget.json`
+- `tools/ci/test_budget_check.py`
+- `tools/ci/public_boundary_check.py`
+
+## Handoff to Map the Route
+
+### Role and outcome
+
+Act as the bounded Bearing Map-the-Route planning agent. Produce and validate
+the remaining four artifacts in this canonical directory, then stop with an
+owner-reviewable route and no execution.
+
+### Execute now
+
+1. Read this specification and the completed staged-migration artifacts.
+2. Write `design.md` with the minimum decisions needed to satisfy every
+   requirement and preserve the authority boundaries.
+3. Write `seit.md` with exact command/procedure IDs, proof cases, evidence
+   paths, and complete traceability.
+4. Generate the baseline `review.html`.
+5. Write `implementation.md` with bounded write sets, dependency waves,
+   disjoint consumer writers, supported route assignments, owner gates, stop
+   conditions, and rollback.
+6. Regenerate `review.html`, validate all five artifacts, consolidate only
+   canonical artifacts, and remove the duplicate plan directory.
+7. Return the validated artifacts for owner selection. Do not start Explorer or
+   Expedition.
+
+### Verification and evidence
+
+Retain the final traceability result, artifact validation result, review
+generation result, and canonical-directory inventory. Clearly separate planned,
+currently failing, unavailable, and proven states.
+
+### Return or stop conditions
+
+Return only when the five canonical artifacts validate and the duplicate plan
+directory is absent. Stop earlier on any authority expansion, unresolved
+material owner decision, unavailable required evidence that changes the route,
+inability to preserve unrelated owner changes, or a runtime plan-directory
+constraint that would force route artifacts into the rejected duplicate.
+
+## Owner review amendment — 2026-07-23
+
+This append-only amendment records the owner's requested planning-package
+correction. It supersedes earlier handoff instructions only where they imply
+that completed design, SEIT, or implementation work should be repeated.
+
+### Current truth
+
+- The canonical directory
+  `docs/plans/2026-07-22-bran-okf-final-cutover` contains the current
+  `plan-spec.md`, `design.md`, `seit.md`, and `implementation.md`, but does not
+  contain `review.html`.
+- The temporary Bearing runtime directory
+  `docs/plans/2026-07-23-create-or-resume-the-complete-planning-journey-for-bran-s-final-okf-cuto`
+  contains those four Markdown sources plus a generated `review.html`.
+- At inspection, each corresponding Markdown source in the two directories was
+  the same regular-file inode and therefore byte-identical. The observed
+  digests before this amendment were:
+  `plan-spec.md` =
+  `1f84e28b3b9be9b973fb2b2e969ac1722c220e81469bfb392e3f4082a79f37b0`,
+  `design.md` =
+  `db9f3ac640d6ccb6428ec30599edcb3385f664121f1d5a8dd892460d9af031a3`,
+  `seit.md` =
+  `59026ab4da817496dd97cddd5bf529e73803c8c2e414ff858f56e3545a71b0d4`,
+  and `implementation.md` =
+  `a4906dea4afd3c40e5cdc89038c13d81db5f9ee0cf14ddcde78e91e17eb04a7f`.
+- The runtime `review.html` digest observed before this amendment was
+  `87ea2cb4531640015cfcbe9cb6998d9e0ea36aaec23de3ae354f3f37014cb35f`.
+  This plan-spec amendment makes that review stale until Bearing regenerates
+  it from the four current canonical sources.
+- No implementation slice has been executed. No product code, consumer
+  repository, publication target, compatibility surface, or upstream
+  submission was changed by this planning correction.
+
+### Fixed owner decision
+
+The owner has not approved execution. Bearing must deterministically regenerate
+the complete `review.html` from the current canonical `plan-spec.md`,
+`design.md`, `seit.md`, and `implementation.md`, place the resulting regular
+file in the canonical directory, and keep any runtime receipt-mirror copy
+byte-identical. The four canonical Markdown sources must remain unchanged after
+this amendment unless the exact validator reproduces a defect that requires a
+minimal traceability correction.
+
+### Additional requirements
+
+- **REQ-PLAN-008 — Canonical deterministic review.** Bearing's deterministic
+  review generator must render `review.html` from the exact current bytes of
+  the four canonical Markdown sources. The canonical review must embed all four
+  complete sources, expose working relative artifact links, and remain
+  unedited by hand.
+- **REQ-PLAN-009 — Source preservation.** This append-only owner amendment is
+  the only authorized Markdown-source change during the review repair.
+  `design.md`, `seit.md`, and `implementation.md` must retain the digests
+  recorded above. Any further source change requires a reproduced validator
+  defect, the narrowest traceability correction, an explicit retained diff,
+  and another deterministic review generation.
+- **REQ-PLAN-010 — Canonical package validation.** Validate the five canonical
+  artifacts together after review generation and retain the exact validator
+  output, canonical inventory, source/review digests, embedded-source equality
+  result, relative-link result, and runtime-mirror equality result. A runtime
+  review alone is not canonical completion.
+
+### Additional acceptance criteria
+
+- **AC-011:** Canonical `review.html` exists as a regular file and is
+  byte-for-byte the deterministic render of the current canonical
+  `plan-spec.md`, `design.md`, `seit.md`, and `implementation.md`.
+- **AC-012:** The exact five-artifact validator passes in the canonical
+  directory; `design.md`, `seit.md`, and `implementation.md` retain their
+  recorded digests; any still-required runtime mirror is byte-identical; and no
+  implementation or external action begins.
+
+## Superseding handoff to Map the Route
+
+### Role and outcome
+
+Act as the bounded Bearing review-repair agent. Produce the missing canonical
+deterministic review, validate the five canonical artifacts together, reconcile
+the temporary runtime receipt mirror, and stop without execution.
+
+### Current truth
+
+Design, SEIT, and implementation drafting are complete and must not be
+repeated. The four Markdown sources are available at both paths as shared
+regular files. Canonical `review.html` is missing, and the runtime review is
+stale because this amendment changed `plan-spec.md`.
+
+### Scope and authority
+
+- Use the selected planning/review route `codex gpt-5.6-sol` with `high`
+  reasoning.
+- Bearing may generate `review.html` and place byte-identical regular-file
+  instances at the canonical and temporarily required runtime paths.
+- Do not hand-edit `review.html`.
+- Do not change `design.md`, `seit.md`, or `implementation.md` unless the exact
+  validator first reproduces a defect. If it does, stop and report the defect
+  before expanding beyond the narrowest traceability repair.
+- Do not execute Explorer, Expedition, any implementation slice, publication,
+  push, deploy, merge, consumer mutation, proposal submission, or compatibility
+  retirement.
+
+### Execute now
+
+1. Capture the current four canonical source digests and confirm the
+   corresponding runtime sources are byte-identical regular files.
+2. Run Bearing's deterministic review generator from those current source
+   bytes.
+3. Materialize the generated `review.html` as a regular file in the canonical
+   directory and keep the runtime receipt-mirror review byte-identical while
+   Bearing still requires that path.
+4. Run the exact five-artifact validator against the canonical directory and
+   retain its complete output.
+5. Verify embedded-source equality, working relative links, source-preservation
+   digests, review equality, and a planning-only scoped status.
+6. Remove the temporary runtime directory only when Bearing no longer requires
+   it and preservation can be proven; otherwise return it as the sole remaining
+   cleanup blocker rather than deleting required state.
+
+### Verification and evidence
+
+Return the canonical five-artifact inventory, exact validator output, all five
+digests, source-preservation comparison, canonical/runtime review equality,
+relative-link result, and scoped repository status. Label the generated review
+and validation as planning evidence, not implementation evidence.
+
+### Return or stop conditions
+
+Return for owner route selection only after AC-011 and AC-012 pass. Stop on a
+deterministic-render mismatch, missing or stale embedded source, broken
+artifact link, non-identical required mirror, unexpected Markdown-source
+change, validator failure requiring non-traceability work, authority expansion,
+or any attempt to begin execution. A recommendation or passing review is not
+owner approval.
+</pre></details><details><summary>design.md</summary><pre>---
+type: design
+name: bran-okf-final-cutover
+status: complete
+date: 2026-07-23
+applies_to: bran
+plan_spec: ./plan-spec.md
+lenses_applied: [CDD, SecDD, RDD, ODD]
+lenses_skipped: [BizDD, DDD, EDD, GDD, PDD]
+oopdsa: mandatory
+planning_route: codex gpt-5.6-sol
+planning_reasoning: high
+---
+
+## Synthesis
+
+The final cutover is a gated evidence pipeline, not a flag flip. BRAN first
+closes its portable conformance and repository gate gaps, then produces an exact
+sealed release, then migrates six consumers independently, and only then becomes
+eligible for separately approved global compatibility retirement.
+
+Four rules govern the route:
+
+1. `okf-v0.1` is the portable result and `bran-strict` is an additive result.
+   They are computed and reported independently.
+2. Release identity is the tuple of source commit, tag, lockfile digest,
+   platform artifact digests, signer fingerprint, and immutable manifest.
+3. A consumer is complete only after exact installation, validation and
+   retrieval parity, reference audit, and byte/configuration rollback proof.
+4. Missing or unavailable evidence is a typed blocked state. It is never
+   normalized into success.
+
+The route reuses the staged-migration ownership model: `bran-core` owns policy,
+profiles, deterministic scanning, retrieval, and semantic outcomes; `bran-cli`
+owns command envelopes; checked-in release tools own build/seal verification;
+consumer-local adapters and hooks translate or invoke but do not redefine BRAN
+semantics.
+
+## Approved lens record
+
+The owner approved CDD, SecDD, RDD, and ODD with mandatory OOPDSA hardening.
+
+- **CDD** governs profile, receipt, manifest, policy, adapter, and command
+  contracts.
+- **SecDD** governs root containment, public/private policy, signatures,
+  checksums, symlinks, credentials, publication authority, and rollback.
+- **RDD** governs unavailable evidence, interrupted installation, partial
+  consumer progress, idempotency, recovery, and retirement barriers.
+- **ODD** governs deterministic receipts, exact command evidence, claim state,
+  first-failure diagnostics, and retained provenance.
+- **OOPDSA** fixes ownership, state transitions, deterministic collections,
+  rule precedence, and wave scheduling without adding a framework.
+
+BizDD, DDD, EDD, GDD, and PDD are skipped because this route adds no business
+model, new domain language, event platform, game mechanics, or performance
+target. Consumer and policy boundaries are already explicit in the approved
+specification.
+
+## Current evidence and claim state
+
+Evidence was verified from `/home/spectre/alphazede/bran` on 2026-07-23:
+
+- `python3 tools/ci/test_budget_check.py tools/ci/test-budget.json` (`CMD-BUDGET`)
+  currently fails (exits 1) because the existing checker requires per-unit-test
+  registration against the obsolete fixed ceiling, contradicting the unbuilt target inventory.
+- `./tools/ci/check.sh --fast` (`CMD-FAST`) stops at `CMD-BUDGET` first due to this
+  test budget check failure.
+- `python3 tools/ci/public_boundary_check.py` (`CMD-PUBLIC`) failed when run directly
+  because it resolved `bran/fixtures/...` beneath the BRAN checkout, producing
+  `/home/spectre/alphazede/bran/bran/fixtures/...`.
+- `DocKind` already distinguishes `index.md` and `log.md`, while the portable
+  profile explicitly applies its current frontmatter/type requirement only to
+  concept documents.
+- Release build, release contract, release seal, schema, and exact-tag fixtures
+  already exist under `tools/ci/`, `schemas/`, and `fixtures/release/`.
+
+Therefore:
+
+- `CMD-BUDGET` and `CMD-FAST` are **currently failing** (test-budget no-ceiling inventory remains **planned and unproven**);
+- `CMD-PUBLIC` is **currently failing**;
+- reserved-document conformance, publication, consumer parity, and retirement
+  remain **planned and unproven**; and
+- retrieval parity and HGTS remain **unavailable**.
+
+## Design decisions
+
+### Shared gates and profile semantics
+
+- **DES-001 — Independent profile outcomes.** `ProfileValidator` returns a
+  separate ordered diagnostic set for `okf-v0.1` and `bran-strict`. Selecting
+  one profile controls the command exit; it does not erase or reclassify the
+  other result.
+- **DES-002 — Normative reserved-document rules.** Portable `index.md` and
+  `log.md` validation is implemented as an OKF-specific reserved-document
+  validator invoked only by the `okf-v0.1` path. Its rules and fixtures must
+  cite the frozen upstream v0.1 source used by the implementation. If the
+  normative source is unavailable or ambiguous, implementation stops rather
+  than guessing a portable rule.
+- **DES-003 — Deterministic reserved diagnostics.** Reserved-document
+  diagnostics use stable codes, repository-relative paths, and ordering by
+  path, code, then message. Strict-only readiness fields remain outside the
+  portable validator.
+- **DES-004 — Budget inventory as fast regression gate.** `tools/ci/test-budget.json`
+  defines a deterministic inventory of named CI journeys, direct CI commands, and
+  owned fixtures rather than one registry row per Rust unit test, eliminating fixed
+  plan, phase, and slice test-count ceilings. `CMD-BUDGET` runs as the first check
+  in `CMD-FAST`, enforcing deterministic negative evidence (failing on missing or
+  duplicate journeys, direct commands, or fixture ownership). All Rust unit tests
+  remain mandatory and fully executed through `CMD-FAST` workspace test commands;
+  removing per-test registry accounting does not skip or weaken Rust unit test execution.
+- **DES-005 — Physical BRAN root for public checks.** `CMD-PUBLIC` derives the
+  BRAN checkout root from the physical checker path, not the caller's current
+  directory or an assumed `bran/` parent layout. All enumerated paths and
+  fixture constants are BRAN-root-relative. Git enumeration is scoped from
+  that root and rejects absolute, parent-traversal, and symlink escapes.
+
+### Release, publication, installation, and rollback
+
+- **DES-006 — Existing exact-release contract is canonical.** Reuse
+  `build-release.sh`, `release-check.sh`, `release_seal.py`,
+  `release_contract_check.py`, and
+  `schemas/bran-release-manifest.schema.json`. Do not create a parallel
+  manifest or packaging format.
+- **DES-007 — Reproducible package inputs.** Each platform archive is built
+  from a clean exact tagged commit with `Cargo.lock`, `--locked`, a declared
+  target triple, normalized archive metadata, and the existing five-platform
+  asset naming contract.
+- **DES-008 — Sealed provenance chain.** Publication eligibility requires the
+  five archive digests, exact `SHA256SUMS`, verified OpenPGP signature and
+  fingerprint, source commit, lockfile digest, tag-to-commit equality, clean
+  worktree, immutable direct asset URLs, and SLSA-v1-shaped provenance already
+  represented by the release manifest.
+- **DES-009 — Publication is an owner-gated side effect.** Local build and
+  unsigned dry-run evidence may be produced inside an approved implementation
+  slice. Tag creation, signing with owner keys, upload, release publication,
+  promotion, or public install verification stops for approval of the exact
+  tag, commit, digest set, fingerprint, destination, and public-boundary
+  receipt.
+- **DES-010 — Verified two-slot installation.** A consumer stages the selected
+  archive in a new immutable version directory, verifies the manifest,
+  signature, archive digest, member shape, and `bran --version`, then changes
+  one consumer-local pin or stable link. The prior pin and bytes remain
+  untouched until consumer acceptance passes.
+- **DES-011 — Rollback is a tested transition.** Rollback restores the recorded
+  prior pin/configuration, verifies the restored digest and command behavior,
+  reruns the consumer's focused gate, and emits a receipt. Failed verification
+  leaves the consumer blocked and retains both versions for recovery.
+
+### Consumer migration and evidence gaps
+
+- **DES-012 — One immutable consumer identity.** Every consumer slice begins
+  with a canonical checkout path, repository identity, exact revision,
+  cleanliness record, active legacy surface inventory, and selected BRAN
+  artifact digest. A mismatch stops before mutation.
+- **DES-013 — Frozen semantic parity.** Native and legacy validation/retrieval
+  run read-only over the same frozen corpus. A small normalizer removes only
+  representation differences defined in `CONTRACT-007`; raw outputs are always
+  retained. Semantic differences remain failures.
+- **DES-014 — Typed consumer gate state.** Each consumer ends in exactly one of
+  `passed`, `failed`, `unavailable`, or `rolled_back`. Only `passed` contributes
+  to global retirement eligibility.
+- **DES-015 — Granular AlphaZede Sports boundary rules.** Native policy uses
+  repository-relative path rules with an explicit classification. Rules are
+  normalized and sorted by path specificity; the most-specific rule wins.
+  Equal-specificity disagreement, unmatched required paths, invalid paths, or
+  symlink escape is a configuration failure. A default classification must be
+  explicit rather than inferred.
+- **DES-016 — BetBot uses an owner-approved content split first.** The route
+  does not raise BRAN's global text ceiling. The BetBot slice proposes an exact
+  semantic split of the oversized knowledge document, preserves stable
+  locators/relationships through explicit redirects or index links, verifies
+  retrieval and content identity obligations, and can restore exact prior
+  bytes. If a safe split cannot be approved and proven, BetBot remains blocked;
+  bounded streaming is a future design, not an implicit fallback.
+- **DES-017 — Retrieval unavailable is not parity.** Missing runner,
+  unsupported legacy query, absent corpus, timeout, or malformed output yields
+  a typed `unavailable` parity row and blocks that consumer.
+- **DES-018 — HGTS absence is terminal for its slice only.** The HGTS slice may
+  do only identity/discovery checks until the checkout exists. It cannot use a
+  substitute repository, cached claim, or inferred pass.
+- **DES-019 — Disjoint consumer writers.** A consumer slice owns only its
+  checkout and consumer-local evidence. Shared BRAN release and proposal
+  surfaces complete earlier under exclusive ownership. Consumer slices may run
+  concurrently only when their resolved write sets are pairwise disjoint.
+
+### Compatibility, retirement, upstream proposals, and planning
+
+- **DES-020 — Compatibility lease.** Adapters, legacy hooks, `use-okf`,
+  legacy entrypoints, configurations, and prior binaries form a retained
+  compatibility set. A consumer migration may stop invoking a legacy surface
+  only after its gate passes, but may not delete the surface.
+- **DES-021 — Retirement barrier.** Global retirement evaluates six immutable
+  consumer receipts plus a fresh active-reference audit. Any non-passing
+  receipt, unexpected reference, rollback failure, or unavailable repository
+  keeps the barrier closed.
+- **DES-022 — Retirement is a separate destructive transaction.** The final
+  slice has an exact deletion/write manifest, recovery archive, restoration
+  rehearsal, owner approval, apply step, and post-removal integrated gate.
+  Removal is never embedded in a consumer slice.
+- **DES-023 — Two proposal drafts, two later owner gates.** Draft
+  `UPSTREAM-OKF-BUNDLE-SCOPE` as a narrow normative clarification and
+  `UPSTREAM-OKF-LAYERED-PROFILES` as a design issue. Keep them local before
+  release; recommend submission only after portable conformance and stable
+  public release evidence. Each external submission requires approval of exact
+  text and destination.
+- **DES-024 — Canonical plan source.** The authoritative artifacts live only
+  in `docs/plans/2026-07-22-bran-okf-final-cutover`. The stale auto-slugged path
+  may be used only as a temporary Bearing receipt alias if the runtime cannot
+  yet retarget it; it must not hold divergent content and must be removed
+  before planning completion.
+- **DES-025 — Evidence state is explicit.** Every receipt labels observations
+  as `planned`, `passed`, `failed`, `unavailable`, or `rolled_back`, with
+  command ID, revision, inputs, exit, and retained evidence locator. A plan or
+  prior receipt cannot be promoted into current passing evidence.
+
+## Stable contracts
+
+- **CONTRACT-001 — ProfileOutcome.** Fields:
+  `schema_version`, `profile`, `status`, `selected`, `diagnostics[]`,
+  `bundle_identity`, `command_id`. `profile` is exactly `okf-v0.1` or
+  `bran-strict`; status is computed independently.
+- **CONTRACT-002 — ReservedDocumentDiagnostic.** Fields:
+  `path`, `kind`, `code`, `message`, `normative_locator`. `kind` is `index` or
+  `log`; no strict-only field code is allowed in the portable result.
+- **CONTRACT-003 — GateReceipt.** Fields:
+  `command_id`, `repository`, `revision`, `started_at`, `exit_code`, `status`,
+  `input_digests`, `evidence_paths`, `first_failure`. Deterministic evidence
+  excludes credentials and raw private corpus bodies.
+- **CONTRACT-004 — ReleaseIdentity.** Exact tuple:
+  `tag`, `source_commit`, `lockfile_sha256`, five platform archive SHA-256
+  values, `SHA256SUMS` digest, signature digest, signer fingerprint, signed
+  time, manifest digest, and immutable asset URLs.
+- **CONTRACT-005 — InstallSnapshot.** Fields:
+  `consumer`, `consumer_revision`, `release_identity`, `prior_pin`,
+  `prior_digest`, `staged_path`, `selected_pin`, `selected_digest`,
+  `verification_status`.
+- **CONTRACT-006 — RollbackReceipt.** Fields:
+  `consumer`, `trigger`, `from_digest`, `to_digest`, `restored_paths`,
+  `byte_checks`, `commands`, `status`. Success requires all restored digests
+  and focused commands to pass.
+- **CONTRACT-007 — ParityReceipt.** Fields:
+  `consumer`, `corpus_digest`, `native_command`, `legacy_command`,
+  `native_raw`, `legacy_raw`, `normalizer_version`, `semantic_rows`,
+  `validation_status`, `retrieval_status`, `overall_status`. Normalization may
+  map field names, exit categories, and deterministic ordering only; it may not
+  discard selected locator, precedence, diagnostic code, conflict, or
+  unavailable state.
+- **CONTRACT-008 — BoundaryRuleSet.** Fields:
+  `schema_version`, `default`, and ordered entries of
+  `repository_relative_path`, `match_kind`, `classification`. Paths are
+  normalized, root-contained, and conflict-checked before scanning.
+- **CONTRACT-009 — OversizedDocumentPlan.** Fields:
+  `consumer`, `source_path`, `source_digest`, `size`, `split_paths`,
+  `relationship_map`, `semantic_checks`, `rollback_digest`, `owner_approval`.
+  It cannot authorize a global ceiling increase.
+- **CONTRACT-010 — ConsumerGateReceipt.** Fields:
+  `consumer`, `repository`, `revision`, `release_identity`, `install`,
+  `validation_parity`, `retrieval_parity`, `hook_check`, `reference_audit`,
+  `rollback`, `status`, `blockers`.
+- **CONTRACT-011 — RetirementManifest.** Fields:
+  six `ConsumerGateReceipt` identities, active-reference audit digest, exact
+  writes/deletions, recovery archive digest, restoration proof, owner approval
+  reference, apply and post-apply commands.
+- **CONTRACT-012 — UpstreamProposalDraft.** Fields:
+  `proposal_id`, `kind`, `problem`, `normative_text`, `examples`,
+  `non_goals`, `local_evidence`, `recommended_timing`, `submission_status`.
+  `submission_status` remains `not-authorized` in planning.
+- **CONTRACT-013 — RouteTrace.** Each requirement maps to design decision,
+  contract, SEIT case, command/procedure, prospective slice, evidence, stop
+  condition, and rollback or explicit non-applicability.
+
+## Use Cases and Communication Flows
+
+### UC-1 — Repair and prove shared gates
+
+```text
+frozen OKF source -&gt; reserved-rule fixtures -&gt; ProfileValidator
+                  -&gt; okf-v0.1 outcome
+                  -&gt; bran-strict outcome (separate)
+
+BRAN physical script path -&gt; BRAN root -&gt; scoped git enumeration
+                          -&gt; public-boundary scan -&gt; GateReceipt
+
+named journey/command/fixture inventory -&gt; test-budget inventory -&gt; inventory proof
+shared results -&gt; CMD-FAST -&gt; pass or first-failure receipt
+```
+
+The reserved validator refuses uncited rules. The public checker never derives
+its root from an AlphaZede parent layout. The budget check remains first in
+`CMD-FAST`, so registry drift fails before expensive tests.
+
+### UC-2 — Build, seal, approve, and publish
+
+```text
+clean exact commit + exact tag + Cargo.lock
+  -&gt; five deterministic platform archives
+  -&gt; SHA256SUMS -&gt; owner-controlled signature
+  -&gt; release manifest + provenance
+  -&gt; local seal verification
+  -&gt; owner publication approval
+  -&gt; immutable release upload
+  -&gt; exact public download and SHA/version verification
+```
+
+Unsigned dry-run evidence is not a stable release. A manifest mismatch, floating
+URL, dirty tree, wrong tag, missing target, signer mismatch, or public-boundary
+failure stops before publication.
+
+### UC-3 — Install and migrate one consumer
+
+```text
+consumer identity + approved release identity + prior install snapshot
+  -&gt; stage archive -&gt; verify signature/digest/member/version
+  -&gt; switch one local pin
+  -&gt; native and legacy checks on frozen corpus
+  -&gt; semantic parity + hook check + reference audit
+  -&gt; rollback rehearsal
+  -&gt; ConsumerGateReceipt
+```
+
+The consumer slice writes only its own repository. Failure after pin selection
+triggers rollback; failure before selection leaves the prior install untouched.
+
+### UC-4 — Handle blocked consumer evidence
+
+```text
+AlphaZede Sports -&gt; resolve explicit granular rules -&gt; prove allow/deny/conflict
+BetBot -&gt; approve exact content split -&gt; prove locators/retrieval/rollback
+retrieval runner missing -&gt; unavailable parity row
+HGTS missing -&gt; unavailable consumer receipt
+```
+
+Unavailable rows are retained with first-failure evidence. They block only the
+affected consumer and the retirement barrier.
+
+### UC-5 — Evaluate and execute retirement
+
+```text
+six passing immutable consumer receipts
+  + fresh zero-active-reference audit
+  + recovery archive and restoration rehearsal
+  -&gt; owner approval of exact retirement manifest
+  -&gt; apply deletion/write set
+  -&gt; integrated gates
+  -&gt; retirement success or exact restoration
+```
+
+No component of this flow runs during planning. The owner approval is specific
+to the final manifest, not inherited from consumer approvals.
+
+### UC-6 — Draft and later submit upstream proposals
+
+```text
+local conformance evidence -&gt; two local proposal drafts
+stable public release -&gt; submission recommendation
+exact text + destination -&gt; separate owner approval
+approval -&gt; external submission (later authority only)
+```
+
+The bundle-scope clarification precedes the layered-profile design issue in the
+recommended external sequence. Neither proposal changes local conformance
+evidence retroactively.
+
+## Interface Option Check
+
+| Surface | Options considered | Selected interface | Material reason |
+| --- | --- | --- | --- |
+| Reserved-document validation | legacy delegation; separate command; core profile subvalidator | core `okf-v0.1` subvalidator | One semantic owner, same envelope, offline conformance; avoids adapter-owned rules. |
+| Public checker root | caller CWD; Git parent discovery; physical checker path | physical BRAN checker path plus scoped Git enumeration | Works in standalone and nested checkouts and removes the live doubled-`bran` failure. |
+| Release contract | new package format; checksum-only; existing exact signed manifest | existing five-archive signed manifest and seal | Already tested, deterministic, exact-tagged, and provenance-aware. |
+| Installation | overwrite binary; package-manager latest; verified version slot plus pin | verified version slot plus atomic consumer-local pin | Preserves prior bytes and makes rollback exact. |
+| Parity | compare prose; central hard-coded consumer logic; shared semantic receipt with repo-local commands | shared receipt and normalizer, repo-local invocation | Common acceptance without hiding repository-specific commands. |
+| AlphaZede Sports boundary | global label; per-file duplication; ordered path rules | explicit default plus most-specific path rules | Expresses granular subtrees deterministically and fails on ambiguity. |
+| BetBot oversized document | global cap increase; new streaming parser; owner-approved semantic split | semantic split with exact rollback | Smallest bounded route; no global safety regression or speculative parser. |
+| Retirement | delete during each migration; fixed date; global evidence barrier | separate evidence-barrier transaction | Preserves compatibility until every consumer passes and gives one rollback boundary. |
+| Upstream contribution | submit immediately; one combined proposal; two staged drafts | two drafts, later separate submissions | Keeps clarification and design debate distinct and respects publication evidence. |
+
+## CDD
+
+- Contracts are versioned and exact: profiles, gate receipts, release identity,
+  installs, parity, consumer completion, retirement, and proposals.
+- Adapters translate into `CONTRACT-001` and `CONTRACT-007`; they do not own
+  validation or retrieval rules.
+- Unknown fields that affect behavior are diagnosed rather than silently
+  dropped.
+- Schema/semantic-oracle pairs remain synchronized; generated representations
+  do not become authority.
+- Stable IDs survive implementation slicing and review generation.
+
+## SecDD
+
+- Treat repositories, archives, manifests, policy paths, hooks, legacy output,
+  and proposal text as untrusted input.
+- Normalize paths lexically, bind them to a canonical root, reject absolute and
+  parent traversal, and reject symlink escape before reading or writing.
+- Never print credentials, raw auth state, private corpus bodies, hidden truth,
+  or unsanitized provider traces into receipts.
+- Exact digest and signature verification occurs before installation selection.
+- Publication and deletion are separate owner-authorized side effects.
+- Compatibility and prior install bytes remain recovery assets until final
+  proof succeeds.
+
+## RDD
+
+- Every multi-step operation is a state machine with a terminal typed state.
+- Build, seal, install, parity, and retirement commands are retry-safe when
+  inputs are identical; mismatched identities stop rather than overwrite.
+- Consumer progress is monotonic per immutable receipt but global readiness is
+  recomputed from all six receipts and a fresh reference audit.
+- Interrupted installation leaves either the prior selected pin or a blocked
+  staged version; it cannot report success without readback.
+- Rollback uncertainty is failure, never success with a warning.
+
+## ODD
+
+- Each command emits or is wrapped by `CONTRACT-003` with exact revision,
+  input digests, exit, first failure, and evidence locators.
+- Public claims derive from current receipts, not plan text.
+- The review distinguishes planned, passed, failed, unavailable, and
+  rolled-back states.
+- Deterministic ordering and content-free digests allow comparison without
+  leaking private bodies.
+- Missing optional telemetry does not alter semantic status.
+
+## OOPDSA Implementation Design
+
+### Ownership model
+
+- `ProfileValidator` owns `ProfileOutcome`; an `OkfReservedValidator` strategy
+  contributes only portable reserved-document diagnostics.
+- `PublicSurfaceRoot` is a value object constructed from the physical checker
+  path and used by the public checker; callers cannot inject a broader root.
+- Existing release scripts and `ReleaseIdentity` own release proof. No
+  `ReleaseManager` framework is introduced.
+- `ConsumerMigration` coordinates one `InstallSnapshot`, `ParityReceipt`,
+  reference audit, and `RollbackReceipt`.
+- `RetirementBarrier` is a pure evaluator over six consumer receipts and a
+  fresh audit. A separate retirement procedure performs authorized writes.
+
+### State machines
+
+```text
+Release: planned -&gt; built -&gt; sealed -&gt; approved -&gt; published -&gt; verified
+                       \-&gt; failed
+
+Consumer: discovered -&gt; approved -&gt; staged -&gt; selected -&gt; parity_checked
+         -&gt; rollback_proven -&gt; passed
+         \-&gt; unavailable | failed -&gt; rolled_back
+
+Retirement: ineligible -&gt; eligible -&gt; approved -&gt; applied -&gt; verified
+                                       \-&gt; restoring -&gt; restored | failed
+```
+
+Transitions require the exact preceding identity; there is no boolean
+`ready=true` shortcut.
+
+### Patterns used
+
+- **Strategy:** portable reserved validation and strict readiness validation
+  share bundle input while preserving separate rule sets and outcomes.
+- **Adapter:** legacy commands/configuration map into native requests and
+  semantic receipts only.
+- **State machine:** release, consumer, and retirement lifecycles expose
+  partial and recovery states.
+- **Value objects:** revisions, digests, normalized repository paths, consumer
+  IDs, and profile IDs reject malformed values at construction.
+
+No dependency-injection framework, event bus, database, service, or generic
+workflow engine is added.
+
+### Deterministic data structures and algorithms
+
+- Use `BTreeMap`/`BTreeSet` for diagnostics, profile rows, asset names,
+  reference audits, and consumer identities.
+- Sort diagnostics by `(path, code, message)` and parity rows by semantic key.
+- Normalize boundary rules once, reject duplicate/conflicting normalized paths,
+  then sort by descending path-component count and lexical path. The first
+  matching rule wins; equal-specific conflicts are invalid.
+- Compute SHA-256 in bounded chunks. Do not load release archives or oversized
+  inputs solely to hash them.
+- Represent implementation dependencies as a DAG. Use Kahn topological sorting
+  with lexical slice-ID tie-breaking; reject cycles and overlapping write sets
+  before execution.
+- Compare exact write sets with normalized path-prefix intersection, treating
+  a repository root as overlapping all descendants.
+
+Complexity remains bounded by repository paths, rules, assets, and slices:
+sorting is `O(n log n)`, matching is `O(r * p)` for small policy rule sets, and
+hashing is `O(bytes)` with bounded memory.
+
+## Prospective execution waves
+
+Implementation drafting must preserve this dependency shape:
+
+1. **Wave 1 — Shared gate truth:** reserved conformance, public-root repair,
+   budget regression, independent profile reporting.
+2. **Wave 2 — Local proposal drafts and release readiness:** two proposal
+   drafts, release build/seal proof, publication packet.
+3. **Wave 3 — Owner-gated publication and exact public verification:** no
+   consumer mutation before a stable release identity exists.
+4. **Wave 4 — Six disjoint consumer migrations:** parallel only after exact
+   write-set comparison and per-consumer approval.
+5. **Wave 5 — Global evidence audit:** six receipts, fresh references,
+   rollback archive, retirement manifest.
+6. **Wave 6 — Separately approved retirement:** destructive apply and
+   restoration path.
+
+## Design stop conditions
+
+Stop when:
+
+- normative reserved-file rules cannot be cited;
+- the public checker must broaden beyond the BRAN/public export surface;
+- an exact source/tag/artifact/signature identity cannot be proven;
+- a consumer identity, revision, write set, or prior install cannot be read;
+- parity requires discarding semantic differences;
+- a boundary conflict or oversized-document split lacks an explicit safe
+  resolution and rollback;
+- HGTS or retrieval evidence remains unavailable for a claimed passing gate;
+- any writer overlaps another active writer;
+- compatibility removal is proposed before six passing receipts;
+- publication, consumer mutation, proposal submission, or retirement lacks its
+  exact owner approval; or
+- the Bearing runtime would force divergent artifacts into the rejected
+  auto-slugged plan directory.
+
+## Handoff to implementation drafting
+
+### Role and outcome
+
+Act as the bounded Bearing implementation-drafting agent. Reuse this design and
+`seit.md`; create traceable implementation slices only after the design/SEIT
+checkpoint validates.
+
+### Scope and authority
+
+Write only `implementation.md` in the canonical plan directory. Do not execute,
+publish, mutate consumers, submit proposals, remove compatibility, or hand-edit
+`review.html`. Use only owner-supported route labels and reasoning levels.
+
+### Execute now
+
+Map each prospective SEIT row to one bounded slice with an exact write set,
+dependency wave, model route, verification commands, retained evidence, stop
+condition, owner gate, and rollback. Give each consumer exactly one migration
+slice and reject overlapping writers.
+
+### Verification and evidence
+
+Prove complete bidirectional traceability, valid wave order, six consumer
+slices, supported assignments, and a separate final retirement slice. Bearing,
+not the agent, generates the baseline and final `review.html`.
+
+### Return or stop conditions
+
+Return only `implementation.md` and the Bearing-generated review artifacts at
+the supplied checkpoint. Stop before execution and on any authority expansion,
+unsupported model route, missing traceability, overlapping write set, or
+runtime attempt to continue a divergent duplicate plan.
+
+## 2026-07-23 Slice 2.1 wire-contract clarification
+
+This section provides the exact append-only wire-contract clarification for Slice 2.1 to settle JSON wire shapes, evidence locator/digest bindings, reference classifications, and revision-bound freshness semantics without introducing new requirements, contracts, slices, design IDs, paths, commands, external authority, or consumer-specific semantics.
+
+### 1. Common encoding and evidence binding
+
+- **Encoding and key validation:** Every manifest and receipt is UTF-8 JSON. Duplicate keys within any JSON object are strictly rejected. Behavioral objects use exact documented keys; any unrecognized or unknown behavioral key causes verification failure.
+- **Digests and revisions:** Digests are exact lowercase 64-character hexadecimal SHA-256 strings. Revisions are exact lowercase Git object IDs of 40 or 64 hexadecimal characters.
+- **Evidence locators:** Evidence locators are normalized POSIX paths relative to the supplied evidence directory. Locators cannot be absolute, empty, single dot (`.`), parent traversal (`..`), or contain backslashes (`\`), and must resolve to non-symlink regular files physically contained within that evidence directory.
+- **Evidence digest pairing:** Every evidence locator is paired with its SHA-256 digest. The verifier recomputes all evidence digests in bounded chunks during execution. The verifier never emits raw evidence bodies in receipts or diagnostic output.
+- **Inert commands:** Commands embedded in receipts are inert strings or structured command records. Verifier modes treat commands strictly as read-only evidence and never execute them.
+- **Canonical ordering and JSON hashing:** Deterministic canonical ordering is lexical by consumer, path, and semantic key. Duplicate keys, duplicate locators, or duplicate consumers cause immediate verification failure. Wherever canonical compact JSON is hashed, it is defined uniformly as UTF-8 `json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` bytes, with arrays already in their required lexical order.
+
+### 2. ReleaseIdentity wire shape (CONTRACT-004)
+
+`ReleaseIdentity` is an exact JSON object containing these top-level keys:
+`tag`, `source_commit`, `lockfile_sha256`, `archives`, `checksums_sha256`, `signature_sha256`, `signer_fingerprint`, `signed_at`, `manifest_sha256`, `asset_urls`.
+
+- `archives` is an exact object keyed by the five approved target triples (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`), with each value being its lowercase 64-hex SHA-256 digest.
+- `asset_urls` is an exact lexically sorted array of immutable direct URL strings for the five target archives plus `SHA256SUMS`, `SHA256SUMS.sig`, and `bran-release-manifest.json` (8 URLs total). URLs using `latest`, query parameters, URL fragments, duplicate entries, or tag mismatches are strictly rejected.
+- Equality of `ReleaseIdentity` requires exact byte/field equality across this entire normalized object; tag-only identity matches are rejected.
+
+### 3. ConsumerGateReceipt wire shape (CONTRACT-010)
+
+`ConsumerGateReceipt` is an exact JSON object with the top-level keys:
+`consumer`, `repository`, `revision`, `release_identity`, `install`, `validation_parity`, `retrieval_parity`, `hook_check`, `reference_audit`, `rollback`, `status`, `blockers`.
+
+- `consumer` is any nonempty stable identifier string. `repository` is the canonical repository identity string. `revision` must equal the CLI revision argument and current clean checkout HEAD.
+- `status` is one of the four-state vocabulary: `passed`, `failed`, `unavailable`, `rolled_back`. Only `passed` permits a successful exit code (0).
+- `blockers` is a lexically sorted array of unique string blocker codes. `blockers` must be empty if and only if `status` is `passed`.
+
+### 4. Nested object wire shapes
+
+- **InstallSnapshot (CONTRACT-005):** Exact top-level keys: `consumer`, `consumer_revision`, `release_identity`, `prior_pin`, `prior_digest`, `staged_path`, `selected_pin`, `selected_digest`, `verification_status`. `staged_path` and `prior_pin` are evidence locators relative to the supplied evidence directory; their bytes must hash to `selected_digest` and `prior_digest` respectively. `selected_pin` is a nonempty inert string identifying the selected pin. `verification_status` is `passed` only when `staged_path` bytes hash to `selected_digest`, `prior_pin` bytes hash to `prior_digest`, the exact `ReleaseIdentity` matches, and prior pin/digest values are retained. This tool verifies a captured snapshot and does not switch the pin.
+- **ParityReceipt (CONTRACT-007):** Exact top-level keys: `consumer`, `corpus_digest`, `native_command`, `legacy_command`, `native_raw`, `legacy_raw`, `normalizer_version`, `semantic_rows`, `validation_status`, `retrieval_status`, `overall_status`. `native_raw` and `legacy_raw` are evidence locator/digest objects. Raw evidence files must be UTF-8 JSON arrays whose normalized entries correspond one-to-one with semantic rows, allowing only the documented field-name, exit-category, and ordering transformations. `semantic_rows` is a lexically sorted list of objects containing `semantic_key`, `native`, and `legacy`. Every `semantic_rows[].native` and `.legacy` is an exact object with always-present keys `locator`, `precedence`, `diagnostic_code`, `conflict`, `unavailable`, plus `outcome` (nullable values are allowed, but the keys cannot be dropped). `normalizer_version` is a nonempty pinned version string. States (`validation_status`, `retrieval_status`, `overall_status`) use the four-state vocabulary (`passed`, `failed`, `unavailable`, `rolled_back`); any non-passing status blocks. The two `ConsumerGateReceipt` parity fields (`validation_parity`, `retrieval_parity`) are independently validated receipts over the same `consumer` and `corpus_digest`, nested under the authoritative `ConsumerGateReceipt` `ReleaseIdentity`; neither raw output may be absent.
+- **Hook check:** Exact JSON object with keys `commands`, `evidence`, `status`. `commands` is an array of inert nonempty string commands, `evidence` is an array of locator/digest objects, and `status` must be `passed`.
+- **Reference audit:** Exact JSON object with keys `consumer`, `revision`, `expected_compatibility`, `matches`, `inventory_digest`, `evidence`, `status`. `expected_compatibility` is a sorted unique list of exact objects with `path` and `kind`; paths are normalized consumer-relative POSIX paths and `kind` uses the existing kind vocabulary (`code`, `skill`, `hook`, `ci`, `configuration`, `historical-documentation`). `matches` is a sorted list of objects containing `path`, `line`, `kind`, `classification`, `match_sha256`. `match_sha256` is the SHA-256 of the exact matched source line bytes read from the clean consumer checkout at `path` and `line`, recomputed by the verifier. `kind` must be one of `code`, `skill`, `hook`, `ci`, `configuration`, `historical-documentation`. `classification` must be one of `native-active`, `compatibility-active`, `historical`, `unexpected-active`, `unclassified`. Passing status permits only `native-active`, `compatibility-active`, and `historical`, requires a matching `compatibility-active` match for every expected object in `expected_compatibility` and no `compatibility-active` match absent from that list, and rejects any `unexpected-active` or `unclassified` entries. This is manifest-driven and has no built-in per-consumer list. `inventory_digest` is SHA-256 of compact UTF-8 JSON encoding (`json.dumps(matches, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` bytes) of the sorted `matches` array.
+- **RollbackReceipt (CONTRACT-006):** Exact top-level keys: `consumer`, `trigger`, `from_digest`, `to_digest`, `restored_paths`, `byte_checks`, `commands`, `status`. Every `restored_paths` item is an exact object with keys `path`, `sha256`, `source`; `source` must be `evidence` or `consumer`. Evidence paths resolve beneath the evidence root; consumer paths resolve beneath the clean consumer checkout; both reject symlinks and path traversal escapes, and their bytes are hashed to `sha256`. `byte_checks` is a sorted list of records with keys `path`, `expected`, `actual`, `status`. `commands` is a sorted list of records with keys `command`, `exit_code`, `status`, `evidence`. Passing requires exact `from_digest` and `to_digest` matching, all byte checks and commands passing with status `passed`, and no missing items.
+
+### 5. RetirementManifest wire shape (CONTRACT-011)
+
+`RetirementManifest` is an exact JSON object with keys:
+`consumers`, `active_reference_audit`, `writes`, `deletions`, `recovery_archive`, `restoration_proof`, `owner_approval_reference`, `apply_commands`, `post_apply_commands`.
+
+- `consumers` is an exact array of six sorted consumer summary objects containing `consumer`, `repository`, `revision`, `release_identity`, `receipt`, `receipt_sha256`, `status` for `Alphazedehq`, `alphazede-sports`, `betbot`, `developers`, `hgts`, and `alphazede-markets`. Each referenced `receipt` is bound to a regular evidence file and independently validates as a passing `ConsumerGateReceipt` with matching revision and release identity.
+- `active_reference_audit`, `recovery_archive`, and `restoration_proof` are evidence locator/digest objects.
+- The file referenced by `active_reference_audit` is strict JSON with exact keys `consumers`, `status`. Its `consumers` array contains the exact six sorted objects with `consumer`, `repository`, `revision`, `release_identity`, `inventory_digest`, `status`, each matching the corresponding independently validated `ConsumerGateReceipt`; top-level and per-consumer status must be `passed`.
+- The file referenced by `restoration_proof` is strict JSON with exact keys `byte_checks`, `commands`, `status`, using the same byte-check and command-record shapes as `RollbackReceipt`, and every item and status must pass.
+- `recovery_archive` references the actual non-symlink regular archive file beneath the evidence directory and its digest is recomputed.
+- `writes` and `deletions` are exact sorted unique lists of normalized repository-relative paths, validated as data structures only.
+- `owner_approval_reference` is a nonempty inert string reference proving the manifest carries an approval tracking string; its presence does not imply verifier grant or confirmation of owner approval.
+- `apply_commands` and `post_apply_commands` are arrays of nonempty inert strings and are never executed by `verify`.
+- Retirement eligibility requires exact identity equality among these six current consumer receipts and the global audit (`active_reference_audit`), matching revision and release identity, live digest recomputation for all referenced evidence files, and passing status across all receipts and audits (no wall-clock threshold). Eligibility does not authorize execution of retirement commands.
+
+### 6. Freshness and read-only verifier semantics
+
+- **Identity-bound freshness:** Freshness is identity-bound rather than wall-clock-based. An audit or receipt is fresh if and only if its recorded revision equals the CLI revision argument and current clean checkout HEAD, its `ReleaseIdentity` equals the selected release identity, and every evidence file digest is recomputed from the supplied evidence directory during the current verifier invocation. Freshness for retirement is proven by exact identity equality among the six current receipts and the global audit plus live digest recomputation, with no wall-clock threshold.
+- **Unavailable telemetry:** Missing or incomplete optional telemetry produces an `unavailable` state and is never normalized into a semantic pass.
+- **Read-only enforcement:** Verifier modes (`install-verify`, `parity`, `reference-audit`, `rollback`, and retirement `verify`) are strictly read-only. They never generate receipts, alter pins, restore files, execute commands, sign artifacts, publish assets, upload packages, or mutate any repository or evidence directory.
+</pre></details><details><summary>seit.md</summary><pre>---
+type: seit
+name: bran-okf-final-cutover
+status: complete
+date: 2026-07-23
+applies_to: bran
+plan_spec: ./plan-spec.md
+design: ./design.md
+planning_route: codex gpt-5.6-sol
+planning_reasoning: high
+---
+
+## Purpose
+
+This SEIT plan defines prospective proof for the BRAN final OKF cutover. It does
+not claim that planned commands, consumer repositories, a stable release, or
+retirement evidence exist. Current observations are labeled separately from
+future acceptance.
+
+## Evidence state
+
+### Verified current
+
+- `CMD-BUDGET` fails (exits 1) because the existing checker requires per-unit-test
+  registration against the obsolete fixed ceiling.
+- `CMD-FAST` stops at `CMD-BUDGET` first due to the test budget failure.
+- `CMD-PUBLIC` fails on the doubled path
+  `/home/spectre/alphazede/bran/bran/fixtures/...`.
+- BRAN distinguishes `index.md` and `log.md`, but current portable profile code
+  does not validate their upstream structures.
+
+### Planned
+
+- Test-budget no-ceiling inventory update and budget gate repair (`CMD-BUDGET`).
+- Reserved-document portable conformance.
+- Portable root behavior for `CMD-PUBLIC`.
+- Release build/seal/publication/install verification.
+- Six consumer migrations and parity receipts.
+- Compatibility retirement and both upstream proposal drafts.
+
+### Unavailable
+
+- Retrieval parity evidence.
+- HGTS checkout and current revision.
+- Owner-approved stable public release identity.
+- Owner approval for consumer writes, external proposal submission, or
+  retirement.
+
+## Test strategy
+
+### Pre-lens stance
+
+Use offline deterministic unit, contract, fixture, and procedure tests. Freeze
+all repository/corpus identities before comparison. Retain raw evidence before
+normalization. Use exact digests rather than timestamps as identity.
+
+### Lens additions
+
+- **CDD:** schema, version, profile, command, adapter, manifest, parity, and
+  receipt contract cases.
+- **SecDD:** path traversal, symlink, boundary conflict, signature, checksum,
+  wrong revision, private-data, and unauthorized-side-effect cases.
+- **RDD:** missing repository/runner, timeout, partial build/install, retry,
+  rollback, and restoration-failure cases.
+- **ODD:** exact command/revision/input evidence, first failure, unavailable
+  state, deterministic ordering, and claim-state cases.
+- **OOPDSA:** state transition, value-object validation, boundary precedence,
+  DAG cycle, and write-set overlap cases.
+
+### Evidence retention
+
+Each required row retains:
+
+- command/procedure ID and exact invocation;
+- repository identity and exact revision;
+- relevant config/corpus/artifact digests;
+- stdout/stderr or structured raw output;
+- exit code and first failure;
+- normalized semantic receipt when applicable;
+- before/after mutation inventory for write-capable procedures; and
+- rollback receipt or explicit non-applicability.
+
+Private corpus bodies, credentials, raw authentication state, hidden grader
+truth, and unsanitized provider traces are forbidden evidence.
+
+## Command context
+
+Commands run from the BRAN repository root unless a procedure explicitly
+changes into an owner-approved consumer checkout.
+
+Execution binds these variables to exact values before a release or consumer
+procedure:
+
+```sh
+BRAN_TAG=bran-vX.Y.Z
+BRAN_SOURCE_SHA=&lt;lowercase-40-hex&gt;
+BRAN_DIST=&lt;absolute-empty-dist-directory&gt;
+BRAN_FINGERPRINT=&lt;approved-lowercase-40-or-64-hex&gt;
+BRAN_MANIFEST=&lt;absolute-path-to-bran-release-manifest.json&gt;
+BRAN_ASSET=&lt;absolute-path-to-platform-archive&gt;
+CONSUMER_ROOT=&lt;absolute-owner-approved-checkout&gt;
+CONSUMER_REVISION=&lt;exact-consumer-commit&gt;
+CONSUMER_MANIFEST=&lt;absolute-path-to-consumer-cutover-manifest&gt;
+EVIDENCE_DIR=&lt;absolute-empty-consumer-evidence-directory&gt;
+```
+
+Placeholders are planning bindings, not permission to choose a tag, key,
+checkout, or destination. The implementation slice must record their resolved
+values before any side effect.
+
+## Required Commands
+
+### Existing BRAN commands
+
+- **CMD-OKF-PORTABLE** —
+  `cargo test --manifest-path Cargo.toml -p bran-core p1_conformance`
+- **CMD-PROFILES** —
+  `cargo test --manifest-path Cargo.toml -p bran-core profile::tests::p1_profiles`
+- **CMD-BUDGET** —
+  `python3 tools/ci/test_budget_check.py tools/ci/test-budget.json`
+- **CMD-FAST** — `./tools/ci/check.sh --fast`
+- **CMD-PUBLIC** — `python3 tools/ci/public_boundary_check.py`
+- **CMD-RELEASE-CONTRACT** —
+  `python3 tools/ci/release_contract_check.py`
+- **CMD-RELEASE-PLAN** —
+  `./tools/ci/build-release.sh --plan --tag "$BRAN_TAG" --dist "$BRAN_DIST"`
+- **CMD-RELEASE-BUILD-LINUX-X86** —
+  `./tools/ci/build-release.sh --target x86_64-unknown-linux-gnu --tag "$BRAN_TAG" --dist "$BRAN_DIST"`
+- **CMD-RELEASE-BUILD-LINUX-ARM** —
+  `./tools/ci/build-release.sh --target aarch64-unknown-linux-gnu --tag "$BRAN_TAG" --dist "$BRAN_DIST"`
+- **CMD-RELEASE-BUILD-MAC-X86** —
+  `./tools/ci/build-release.sh --target x86_64-apple-darwin --tag "$BRAN_TAG" --dist "$BRAN_DIST"`
+- **CMD-RELEASE-BUILD-MAC-ARM** —
+  `./tools/ci/build-release.sh --target aarch64-apple-darwin --tag "$BRAN_TAG" --dist "$BRAN_DIST"`
+- **CMD-RELEASE-BUILD-WINDOWS-X86** —
+  `./tools/ci/build-release.sh --target x86_64-pc-windows-msvc --tag "$BRAN_TAG" --dist "$BRAN_DIST"`
+- **CMD-RELEASE-DRY-SEAL** —
+  `./tools/ci/release-check.sh --tag "$BRAN_TAG" --dist "$BRAN_DIST" --dry-run-unsigned`
+- **CMD-RELEASE-SEAL** —
+  `./tools/ci/release-check.sh --tag "$BRAN_TAG" --dist "$BRAN_DIST" --fingerprint "$BRAN_FINGERPRINT"`
+
+### Planned bounded verification commands
+
+These interfaces are prospective. Their owning implementation slices must
+create them before any dependent consumer slice:
+
+- **CMD-EXACT-SHA** —
+  `python3 tools/cutover/verify_release.py --manifest "$BRAN_MANIFEST" --asset "$BRAN_ASSET" --source-sha "$BRAN_SOURCE_SHA" --fingerprint "$BRAN_FINGERPRINT"`
+- **CMD-INSTALL-VERIFY** —
+  `python3 tools/cutover/consumer_gate.py install-verify --consumer "$CONSUMER_ROOT" --revision "$CONSUMER_REVISION" --manifest "$CONSUMER_MANIFEST" --evidence "$EVIDENCE_DIR"`
+- **CMD-CONSUMER-PARITY** —
+  `python3 tools/cutover/consumer_gate.py parity --consumer "$CONSUMER_ROOT" --revision "$CONSUMER_REVISION" --manifest "$CONSUMER_MANIFEST" --evidence "$EVIDENCE_DIR"`
+- **CMD-REFERENCE-AUDIT** —
+  `python3 tools/cutover/consumer_gate.py reference-audit --consumer "$CONSUMER_ROOT" --revision "$CONSUMER_REVISION" --manifest "$CONSUMER_MANIFEST" --evidence "$EVIDENCE_DIR"`
+- **CMD-ROLLBACK** —
+  `python3 tools/cutover/consumer_gate.py rollback --consumer "$CONSUMER_ROOT" --revision "$CONSUMER_REVISION" --manifest "$CONSUMER_MANIFEST" --evidence "$EVIDENCE_DIR"`
+- **CMD-RETIREMENT-PROOF** —
+  `python3 tools/cutover/retirement_gate.py verify --manifest "$RETIREMENT_MANIFEST" --evidence "$EVIDENCE_DIR"`
+- **CMD-ROUTE-TRACE** —
+  `python3 tools/cutover/validate_route.py docs/plans/2026-07-22-bran-okf-final-cutover`
+
+The planned tools are standard-library-only, offline, and read-only unless
+invoked in the explicitly owner-approved install, rollback, or retirement
+mode. Read-only modes reject a changed consumer tree.
+
+### Stable consumer procedure IDs
+
+Each procedure binds the shared commands to one exact consumer manifest and
+checkout. It includes discovery, owner gate, install verification, validation
+and retrieval parity, hook/skill check, active-reference audit, rollback proof,
+and final `ConsumerGateReceipt`.
+
+- **PROC-PARITY-ALPHAZEDEHQ**
+- **PROC-PARITY-ALPHAZEDE-SPORTS**
+- **PROC-PARITY-BETBOT**
+- **PROC-PARITY-DEVELOPERS**
+- **PROC-PARITY-HGTS**
+- **PROC-PARITY-ALPHAZEDE-MARKETS**
+
+Additional procedures:
+
+- **PROC-PUBLICATION** — resolve release variables, run release build/seal
+  commands, stop for approval, publish later, then verify exact public assets.
+- **PROC-PROPOSAL-DRAFTS** — write both local drafts and prove their claim
+  boundaries; no external write.
+- **PROC-RETIREMENT** — evaluate the barrier, prove restoration, stop for
+  approval, apply exact manifest later, and revalidate or restore.
+- **PROC-PLAN-CANONICALIZE** — verify the five artifacts in the canonical
+  directory, ensure review embeds exact sources, and remove the stale
+  auto-slugged alias only after Bearing no longer depends on it.
+
+## Traceability Matrix
+
+| SEIT row ID | Acceptance/Risk ID | Design/Contract ID | Boundary/Test Layer | Positive Case | Negative/Failure Case | Command/Procedure ID | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| SEIT-001 | AC-002 | DES-001, DES-002, DES-003, CONTRACT-001, CONTRACT-002 | portable index conformance | frozen upstream-valid index passes `okf-v0.1` | each cited structural violation yields a stable portable code | CMD-OKF-PORTABLE, CMD-PROFILES | normative locator, fixtures, both profile outcomes |
+| SEIT-002 | AC-002 | DES-001, DES-002, DES-003, CONTRACT-001, CONTRACT-002 | portable log conformance | frozen upstream-valid log passes `okf-v0.1` | each cited structural violation yields a stable portable code | CMD-OKF-PORTABLE, CMD-PROFILES | normative locator, fixtures, ordered diagnostics |
+| SEIT-003 | AC-002, AC-008 | DES-001, DES-003, CONTRACT-001 | profile contract | portable pass/strict fail and portable fail/strict result remain separate | strict-only code changes portable status or selected exit | CMD-PROFILES | four outcome combinations and CLI envelope |
+| SEIT-004 | AC-002 | DES-004, CONTRACT-003 | test-budget gate | named CI journeys, direct CI commands, and owned fixtures are deterministically inventoried; all Rust unit tests run in CMD-FAST | missing/duplicate journey, direct command, or fixture ownership fails CMD-BUDGET before expensive steps | CMD-BUDGET, CMD-FAST | budget inventory diff and first-gate output |
+| SEIT-005 | AC-002 | DES-005, CONTRACT-003 | public-root security | root and relocated checkout find the exact public surface | doubled prefix, caller CWD, traversal, symlink, or broad scope passes | CMD-PUBLIC, CMD-FAST | resolved root, enumerated relative paths, exits |
+| SEIT-006 | AC-002 | DES-001, DES-002, DES-003, DES-004, DES-005, CONTRACT-003 | offline shared gates | shared commands pass without provider or owner-local configuration | a shared command attempts network/provider lookup | CMD-OKF-PORTABLE, CMD-BUDGET, CMD-PUBLIC, CMD-FAST | sanitized environment and receipts |
+| SEIT-007 | AC-003 | DES-006, DES-007, DES-008, CONTRACT-004 | deterministic release build | two same-input builds produce byte-identical target archives | dirty tree, missing lock/target, unknown target, or altered metadata passes | CMD-RELEASE-PLAN, CMD-RELEASE-BUILD-LINUX-X86, CMD-RELEASE-BUILD-LINUX-ARM, CMD-RELEASE-BUILD-MAC-X86, CMD-RELEASE-BUILD-MAC-ARM, CMD-RELEASE-BUILD-WINDOWS-X86 | source, tag, lock, and archive digests |
+| SEIT-008 | AC-003 | DES-006, DES-007, DES-008, DES-009, CONTRACT-004 | release seal and provenance | tag, commit, lock, checksums, signature, manifest, and provenance agree | wrong tag/SHA/fingerprint, floating URL, tampered or extra asset, or symlink passes | CMD-RELEASE-CONTRACT, CMD-RELEASE-DRY-SEAL, CMD-RELEASE-SEAL, CMD-EXACT-SHA | ReleaseIdentity and seal output |
+| SEIT-009 | AC-003 | DES-009, CONTRACT-004 | publication authority | approved exact packet is the only publishable identity | dry-run, recommendation, or stale approval authorizes publication | PROC-PUBLICATION | exact owner decision and immutable public readback |
+| SEIT-010 | AC-003, AC-004 | DES-010, CONTRACT-005 | consumer installation | staged asset verifies before one pin changes | overwrite, digest/member/version mismatch, or latest URL selects | CMD-EXACT-SHA, CMD-INSTALL-VERIFY | InstallSnapshot and pin readback |
+| SEIT-011 | AC-003, AC-004 | DES-011, CONTRACT-006 | consumer rollback | prior pin and bytes restore and focused commands pass | partial restore or failed verification reports success | CMD-ROLLBACK | RollbackReceipt and byte inventory |
+| SEIT-012 | AC-004 | DES-013, DES-014, CONTRACT-007 | semantic parity | identical frozen input produces equivalent validation/retrieval semantics | normalizer hides locator, precedence, conflict, diagnostic, or unavailable state | CMD-CONSUMER-PARITY | raw pair, normalizer version, semantic diff |
+| SEIT-013 | AC-004, AC-006 | DES-012, DES-013, DES-014, DES-019, DES-020, CONTRACT-010 | AlphazedeHQ consumer gate | install, parity, hook/skill, audit, and rollback pass | unexpected legacy reference or fail-open hook drift is ignored | PROC-PARITY-ALPHAZEDEHQ | ConsumerGateReceipt |
+| SEIT-014 | AC-004, AC-005 | DES-012, DES-013, DES-014, DES-015, DES-019, DES-020, CONTRACT-008, CONTRACT-010 | AlphaZede Sports gate | granular allow/deny/inheritance rules and complete gate pass | ambiguous, escaping, unmatched, or weakened boundary policy passes | PROC-PARITY-ALPHAZEDE-SPORTS | rule set, boundary matrix, ConsumerGateReceipt |
+| SEIT-015 | AC-004, AC-005 | DES-012, DES-013, DES-014, DES-016, DES-019, DES-020, CONTRACT-009, CONTRACT-010 | BetBot gate | approved split preserves locators, parity, bounded size, and rollback | global cap rises, content is lost, or rollback differs | PROC-PARITY-BETBOT | OversizedDocumentPlan, retrieval diff, byte rollback |
+| SEIT-016 | AC-004 | DES-012, DES-013, DES-014, DES-019, DES-020, CONTRACT-010 | developers consumer gate | public source, install, parity, audit, and rollback agree | exported source differs or floating release is used | PROC-PARITY-DEVELOPERS | ConsumerGateReceipt and export/source identity |
+| SEIT-017 | AC-004, AC-005 | DES-012, DES-014, DES-017, DES-018, DES-019, DES-020, CONTRACT-010 | HGTS consumer gate | verified checkout identity then complete gate passes | absent or wrong checkout is substituted or inferred passing | PROC-PARITY-HGTS | discovery or typed unavailable receipt |
+| SEIT-018 | AC-004 | DES-012, DES-013, DES-014, DES-019, DES-020, CONTRACT-010 | alphazede-markets gate | install, parity, audit, and rollback pass | repository identity or receipt mismatch is ignored | PROC-PARITY-ALPHAZEDE-MARKETS | ConsumerGateReceipt |
+| SEIT-019 | AC-004, AC-005 | DES-014, DES-017, DES-018, CONTRACT-007, CONTRACT-010 | unavailable parity | missing runner/corpus/capability yields typed unavailable | unavailable is normalized to success or silently skipped | PROC-PARITY-ALPHAZEDEHQ, PROC-PARITY-ALPHAZEDE-SPORTS, PROC-PARITY-BETBOT, PROC-PARITY-DEVELOPERS, PROC-PARITY-HGTS, PROC-PARITY-ALPHAZEDE-MARKETS | raw error, typed row, blocked gate |
+| SEIT-020 | AC-001, AC-004 | DES-019, DES-025, CONTRACT-013 | route DAG and write sets | consumer write sets are disjoint and shared work precedes them | overlap or dependency cycle is accepted | CMD-ROUTE-TRACE | normalized write sets and DAG report |
+| SEIT-021 | AC-006 | DES-020, DES-021, CONTRACT-010 | compatibility retention | legacy surfaces and prior binaries stay recoverable | a consumer slice deletes or disables compatibility | CMD-REFERENCE-AUDIT, PROC-PARITY-ALPHAZEDEHQ, PROC-PARITY-ALPHAZEDE-SPORTS, PROC-PARITY-BETBOT, PROC-PARITY-DEVELOPERS, PROC-PARITY-HGTS, PROC-PARITY-ALPHAZEDE-MARKETS | before/after path and reference inventory |
+| SEIT-022 | AC-004, AC-006 | DES-012, DES-020, CONTRACT-010 | active reference audit | active compatibility and historical references classify deterministically | unexpected active reference is ignored or history triggers deletion | CMD-REFERENCE-AUDIT | raw matches, classification, digest |
+| SEIT-023 | AC-006 | DES-021, CONTRACT-011 | retirement barrier | six passing receipts and fresh reference audit yield eligible | failed, unavailable, stale, or missing evidence yields eligible | CMD-RETIREMENT-PROOF | barrier identities and decision |
+| SEIT-024 | AC-006 | DES-011, DES-022, CONTRACT-006, CONTRACT-011 | retirement restoration | recovery archive restores every proposed removal before approval | missing path, digest mismatch, or uncertain restore passes | CMD-RETIREMENT-PROOF, PROC-RETIREMENT | archive digest and restoration rehearsal |
+| SEIT-025 | AC-006 | DES-022, CONTRACT-011 | retirement apply | separately approved exact manifest applies and gates pass | manifest drift, extra deletion, or post-gate failure lacks restore | PROC-RETIREMENT, CMD-FAST | approval, applied inventory, gate or restore receipt |
+| SEIT-026 | AC-007 | DES-023, CONTRACT-012 | bundle-scope proposal | local draft covers root, coexistence, inclusion, exclusion, symlink, references, and reserved docs | draft invents repository-wide or resource-limit portable rules | PROC-PROPOSAL-DRAFTS | UpstreamProposalDraft and examples |
+| SEIT-027 | AC-007, AC-008 | DES-001, DES-023, CONTRACT-001, CONTRACT-012 | layered-profile proposal | portable floor and additive results remain separate | strict failure is called portable nonconformance | PROC-PROPOSAL-DRAFTS, CMD-PROFILES | proposal and outcome examples |
+| SEIT-028 | AC-007 | DES-009, DES-023, CONTRACT-012 | proposal submission gate | recommendation follows portable proof and stable release | plan, local build, or draft authorizes external write | PROC-PROPOSAL-DRAFTS, PROC-PUBLICATION | current evidence and separate owner decision |
+| SEIT-029 | AC-001, AC-005, AC-008 | DES-025, CONTRACT-003, CONTRACT-007, CONTRACT-010, CONTRACT-013 | claim-state integrity | state labels match current receipts | plan text or prior run is surfaced as current pass | CMD-ROUTE-TRACE | RouteTrace and claim-lint result |
+| SEIT-030 | AC-001, AC-009 | DES-024, DES-025, CONTRACT-013 | canonical artifacts and review | five canonical sources validate and review embeds exact sources | divergent duplicate, missing source, stale review, or prompt dependency remains | CMD-ROUTE-TRACE, PROC-PLAN-CANONICALIZE | artifact digests, links, directory inventory |
+| SEIT-031 | AC-001, AC-004 | DES-019, DES-025, CONTRACT-013 | slice schema and assignments | every slice uses supported assignment and required manifest fields | unsupported route, reasoning, overlap, or missing field passes | CMD-ROUTE-TRACE | parsed assignments and slice manifests |
+| SEIT-032 | AC-009, AC-010 | DES-024, DES-025, CONTRACT-013 | planning stop | route returns for owner selection without execution | Explorer, Expedition, external write, or removal starts | CMD-ROUTE-TRACE, PROC-PLAN-CANONICALIZE | journey stage and unchanged product/consumer inventory |
+
+## Requirement Coverage Matrix
+
+| Requirement | Design/contract | SEIT proof | Command/procedure | Prospective implementation owner | Rollback or N/A |
+| --- | --- | --- | --- | --- | --- |
+| REQ-GATE-001 | DES-001..003, CONTRACT-001..002 | SEIT-001..003 | CMD-OKF-PORTABLE, CMD-PROFILES | shared conformance slice | revert exact core/fixture write set |
+| REQ-GATE-002 | DES-004, CONTRACT-003 | SEIT-004 | CMD-BUDGET, CMD-FAST | shared gate slice | revert registry/test paths together |
+| REQ-GATE-003 | DES-005, CONTRACT-003 | SEIT-005 | CMD-PUBLIC, CMD-FAST | public-root slice | restore prior checker bytes |
+| REQ-GATE-004 | DES-019, CONTRACT-013 | SEIT-020, SEIT-032 | CMD-ROUTE-TRACE | route/integration gate | N/A, read-only validation |
+| REQ-GATE-005 | DES-001..005, CONTRACT-003 | SEIT-006 | shared commands | shared gate slices | revert owning write set |
+| REQ-REL-001 | DES-006..008, CONTRACT-004 | SEIT-007..008 | release build/seal commands | release readiness slice | discard unpromoted dist |
+| REQ-REL-002 | DES-005, DES-008..009 | SEIT-005, SEIT-008..009 | CMD-PUBLIC, PROC-PUBLICATION | release readiness slice | stop before publication |
+| REQ-REL-003 | DES-006..008, CONTRACT-004 | SEIT-008 | CMD-RELEASE-SEAL, CMD-EXACT-SHA | release seal slice | reject identity |
+| REQ-REL-004 | DES-010, CONTRACT-005 | SEIT-010 | CMD-INSTALL-VERIFY | each consumer slice | restore prior pin |
+| REQ-REL-005 | DES-011, CONTRACT-006 | SEIT-011 | CMD-ROLLBACK | each consumer slice | is the rollback proof |
+| REQ-REL-006 | DES-009 | SEIT-009 | PROC-PUBLICATION | publication gate | no side effect before approval |
+| REQ-CONS-001 | DES-012, DES-019, CONTRACT-010 | SEIT-013..018 | six PROC-PARITY-* | six consumer slices | per-consumer |
+| REQ-CONS-002 | DES-019, CONTRACT-013 | SEIT-020 | CMD-ROUTE-TRACE | route validator | N/A |
+| REQ-CONS-003 | DES-013, CONTRACT-007 | SEIT-012 | CMD-CONSUMER-PARITY | parity harness + consumer | read-only corpus |
+| REQ-CONS-004 | DES-013..014, CONTRACT-010 | SEIT-012..019 | six PROC-PARITY-* | each consumer | CMD-ROLLBACK |
+| REQ-CONS-005 | DES-012, DES-020, CONTRACT-010 | SEIT-021..022 | CMD-REFERENCE-AUDIT | each consumer | restore changed references |
+| REQ-CONS-006 | DES-014, DES-021 | SEIT-013..019, SEIT-023 | six procedures, CMD-RETIREMENT-PROOF | gate aggregator | N/A |
+| REQ-CONS-007 | DES-012 | SEIT-010, SEIT-013..018 | six PROC-PARITY-* | owner gate per consumer | no write before approval |
+| REQ-AZS-001 | DES-015, CONTRACT-008 | SEIT-014 | PROC-PARITY-ALPHAZEDE-SPORTS | Sports slice | restore policy/pin |
+| REQ-BETBOT-001 | DES-016, CONTRACT-009 | SEIT-015 | PROC-PARITY-BETBOT | BetBot slice | exact source-byte restore |
+| REQ-PARITY-001 | DES-013, DES-017, CONTRACT-007 | SEIT-012, SEIT-019 | CMD-CONSUMER-PARITY | parity harness | read-only; unavailable blocks |
+| REQ-HGTS-001 | DES-018, CONTRACT-010 | SEIT-017 | PROC-PARITY-HGTS | HGTS slice | no write while absent |
+| REQ-COMPAT-001 | DES-020..021 | SEIT-021, SEIT-023 | CMD-REFERENCE-AUDIT, CMD-RETIREMENT-PROOF | consumers + retirement gate | retained compatibility |
+| REQ-COMPAT-002 | DES-010..011, DES-020 | SEIT-010..011, SEIT-021 | install/rollback commands | each consumer | restore prior pin/fallback |
+| REQ-RETIRE-001 | DES-021..022, CONTRACT-011 | SEIT-023..025 | PROC-RETIREMENT | final separate slice | restoration archive |
+| REQ-RETIRE-002 | DES-022, CONTRACT-011 | SEIT-024..025 | PROC-RETIREMENT | owner-gated retirement | stop before approval |
+| REQ-RETIRE-003 | DES-011, DES-022 | SEIT-024 | CMD-RETIREMENT-PROOF | retirement rehearsal | is the proof |
+| REQ-UPSTREAM-001 | DES-023, CONTRACT-012 | SEIT-026 | PROC-PROPOSAL-DRAFTS | local proposal slice | N/A, local draft |
+| REQ-UPSTREAM-002 | DES-001, DES-023, CONTRACT-012 | SEIT-027 | PROC-PROPOSAL-DRAFTS, CMD-PROFILES | local proposal slice | N/A |
+| REQ-UPSTREAM-003 | DES-009, DES-023 | SEIT-028 | proposal/publication procedures | later owner gate | no external write |
+| REQ-PLAN-001 | DES-024, CONTRACT-013 | SEIT-030 | CMD-ROUTE-TRACE, PROC-PLAN-CANONICALIZE | Bearing planning route | remove stale alias only after validation |
+| REQ-PLAN-002 | DES-025, CONTRACT-013 | SEIT-029..031 | CMD-ROUTE-TRACE | route validator | N/A |
+| REQ-PLAN-003 | CONTRACT-003, CONTRACT-013 | SEIT-001..032 | command registry | SEIT/route owner | N/A |
+| REQ-PLAN-004 | DES-019, OOPDSA DAG | SEIT-020, SEIT-031 | CMD-ROUTE-TRACE | implementation drafting | N/A |
+| REQ-PLAN-005 | DES-024..025 | SEIT-030 | Bearing review generator, CMD-ROUTE-TRACE | Bearing | regenerate, never hand-edit |
+| REQ-PLAN-006 | DES-024 | SEIT-030 | PROC-PLAN-CANONICALIZE | planning closeout | preserve canonical; remove stale alias |
+| REQ-PLAN-007 | DES-025 | SEIT-032 | CMD-ROUTE-TRACE | planning checkpoint | N/A |
+
+## Acceptance traceability
+
+| Acceptance | Required SEIT proof |
+| --- | --- |
+| AC-001 | SEIT-029..031 plus complete requirement matrix |
+| AC-002 | SEIT-001..006 |
+| AC-003 | SEIT-007..011 |
+| AC-004 | SEIT-012..020 |
+| AC-005 | SEIT-014..019 |
+| AC-006 | SEIT-021..025 |
+| AC-007 | SEIT-026..028 |
+| AC-008 | SEIT-003, SEIT-027 |
+| AC-009 | SEIT-030..032 |
+| AC-010 | SEIT-032 |
+
+## Cross-cutting Checks
+
+- **Determinism:** repeat tests with permuted discovery order and compare
+  semantic identities.
+- **Mutation containment:** snapshot every read-only fixture, consumer, and
+  evidence directory before and after.
+- **Path safety:** normalize and root-bind every enumerated or written path;
+  reject symlink aliases for release assets and escaping consumer targets.
+- **Claims:** lint every receipt and review for planned/passed/failed/
+  unavailable/rolled_back accuracy.
+- **Privacy:** scan source, fixtures, logs, receipts, proposal drafts, and
+  release assets for forbidden private material.
+- **Compatibility:** prove legacy surfaces remain callable and recoverable
+  until the final barrier.
+- **Recovery:** byte/configuration/digest uncertainty is a failed rollback.
+- **Concurrency:** compare normalized write sets and dependency DAG before
+  activating parallel consumer lanes.
+
+## Optional and unavailable tools
+
+- Provider or live model evaluation is not required.
+- Network access is not required for shared gates or local release sealing.
+- Public download verification remains unavailable until owner-approved
+  publication.
+- Consumer CI or retrieval runners that are unavailable remain separately
+  typed; fixture success cannot replace them.
+- HGTS work remains discovery-only while its checkout is absent.
+
+## Design-and-SEIT checkpoint
+
+This checkpoint is ready only when:
+
+1. `design.md` and `seit.md` parse from the canonical directory;
+2. all DES, CONTRACT, SEIT, requirement, and acceptance IDs are unique and
+   traceable;
+3. current failures are not presented as passing;
+4. no `implementation.md` or hand-edited `review.html` was created; and
+5. the receipt does not grant publication, consumer mutation, proposal
+   submission, compatibility removal, Explorer, or Expedition authority.
+
+Bearing owns baseline `review.html` generation after this checkpoint. The next
+agent must reuse these exact sources, draft only `implementation.md`, and stop
+again for deterministic review and owner route selection.
+
+## 2026-07-23 Slice 2.1 wire-contract clarification
+
+This section appends the verification procedures and fixture test matrix binding the existing Slice 2.1 command IDs (`CMD-EXACT-SHA`, `CMD-INSTALL-VERIFY`, `CMD-CONSUMER-PARITY`, `CMD-REFERENCE-AUDIT`, `CMD-ROLLBACK`, `CMD-RETIREMENT-PROOF`) to temporary standard-library-only offline fixtures without modifying existing requirements, contracts, slices, paths, or command flags.
+
+### Fixture-based verification suite for wire contracts
+
+Each command ID will be validated against temporary standard-library test fixtures to verify positive wire shapes, all required failure modes, and strict mutation containment.
+
+#### 1. Positive wire shape verification
+
+- **Consumer gate verification (`CMD-INSTALL-VERIFY`, `CMD-CONSUMER-PARITY`, `CMD-REFERENCE-AUDIT`, `CMD-ROLLBACK`):** Will be verified using complete, fully valid `ConsumerGateReceipt` fixtures across generic consumer test cases (including the six consumers `Alphazedehq`, `alphazede-sports`, `betbot`, `developers`, `hgts`, `alphazede-markets`), proving that valid `ReleaseIdentity`, `InstallSnapshot` (with evidence-backed `staged_path` and `prior_pin`), `ParityReceipt` (nested under authoritative `ReleaseIdentity`, with exact `semantic_rows[].native` and `.legacy` keys), `hook_check`, `reference_audit` (with `expected_compatibility`), and `RollbackReceipt` (with exact `restored_paths` items) structures pass with status `passed` and exit code 0.
+- **Six-consumer retirement verification (`CMD-RETIREMENT-PROOF`):** Will be verified using a complete, valid `RetirementManifest` referencing all six passing consumer receipts, valid evidence locator/digest objects for `active_reference_audit` (referencing strict JSON containing matching per-consumer status), `recovery_archive` (referencing a regular non-symlink archive), and `restoration_proof` (referencing strict JSON byte checks and commands), sorted normalized write/deletion path lists, and an `owner_approval_reference`; the fixture must prove successful evaluation without executing apply/post-apply commands and must prove identity-bound freshness.
+
+#### 2. Negative wire shape and failure mode matrix
+
+Verification commands will be executed against temporary fixtures containing single structural or semantic defects to confirm deterministic failure (non-zero exit code, typed blocker/diagnostic emission, and no side effects):
+
+- **Duplicate key failure:** JSON fixture containing duplicate keys within an object (e.g. duplicate top-level keys or duplicate `archives` keys) is rejected.
+- **Unknown behavioral key failure:** Objects containing unrecognized behavioral keys fail verification.
+- **Bad digest failure:** SHA-256 strings containing invalid length, non-hex characters, uppercase hex, or failing bounded recomputation against actual evidence files cause verification failure.
+- **Symlink / path traversal failure:** Evidence locators using absolute paths, empty strings, `.`, `..`, backslashes, or pointing to symlinks or files outside the evidence directory are rejected.
+- **Wrong / dirty revision failure:** Receipt or audit revision failing to match the CLI revision argument or current clean git HEAD causes immediate failure.
+- **InstallSnapshot evidence locator failure:** `InstallSnapshot` where `staged_path` or `prior_pin` evidence locator bytes do not hash to `selected_digest` or `prior_digest` fails verification.
+- **Missing raw parity failure:** `ParityReceipt` missing either `native_raw` or `legacy_raw` evidence locator/digest objects, or where raw evidence is not a UTF-8 JSON array corresponding one-to-one with semantic rows, fails verification.
+- **Missing semantic row key failure:** `ParityReceipt` where any `semantic_rows[].native` or `.legacy` object drops required keys (`locator`, `precedence`, `diagnostic_code`, `conflict`, `unavailable`, `outcome`) fails verification.
+- **Unavailable parity failure:** `ParityReceipt` containing `unavailable` validation/retrieval status blocks consumer completion and exits with failure status.
+- **Reference audit expected compatibility mismatch failure:** `reference_audit` missing a `compatibility-active` match for any object in `expected_compatibility`, or containing a `compatibility-active` match absent from `expected_compatibility`, fails verification.
+- **Unexpected / unclassified reference failure:** `reference_audit` containing `unexpected-active` or `unclassified` classifications fails gate verification.
+- **RollbackReceipt restored paths failure:** `RollbackReceipt` with `restored_paths` item missing exact keys (`path`, `sha256`, `source`), with invalid `source`, escaping path, or mismatching SHA-256 fails verification.
+- **Partial rollback failure:** `RollbackReceipt` with unpassed byte checks, unpassed command execution records, or missing restored paths/digests reports failure.
+- **Stale identity failure:** `ReleaseIdentity` mismatch between consumer gate receipt, install snapshot, and selected release manifest causes failure.
+- **Retirement referenced evidence failure:** `RetirementManifest` where `active_reference_audit` or `restoration_proof` referenced file is not strict JSON with exact required keys, or where `recovery_archive` is a symlink, fails verification.
+- **Missing / five / seven / duplicate consumer failure:** `RetirementManifest` containing fewer than six consumers (e.g. 5), more than six (e.g. 7), missing consumers, or duplicate consumer entries is rejected.
+- **Absent approval reference failure:** `RetirementManifest` with an empty or missing `owner_approval_reference` fails verification.
+
+#### 3. Output determinism and mutation containment
+
+- **Deterministic stdout:** Command stdout will be verified to be byte-for-byte identical across repeated runs on identical fixture inputs, with output sorted lexically by consumer, path, and semantic key, and with compact canonical JSON digests computed via UTF-8 `json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+- **Before/after directory snapshots:** Pre-run and post-run file system tree and hash snapshots will verify that read-only commands (`install-verify`, `parity`, `reference-audit`, `rollback`, and retirement `verify`) perform zero writes, zero file creations, zero deletions, and zero mutations on the target repository or evidence directory.
+</pre></details><details><summary>implementation.md</summary><pre>---
+type: implementation
+name: bran-okf-final-cutover
+status: complete
+date: 2026-07-23
+applies_to: bran
+plan_spec: ./plan-spec.md
+design: ./design.md
+seit: ./seit.md
+planning_route: codex gpt-5.6-sol
+planning_reasoning: high
+---
+
+## Dependencies
+
+- Wave 1: Slice 1.1, then Slice 1.2.
+- Wave 2: Slice 2.1 and Slice 2.2 after Wave 1.
+- Wave 3: Slice 3.1 after Wave 2.
+- Wave 4: Slice 4.1, Slice 4.2, Slice 4.3, Slice 4.4, Slice 4.5, and Slice 4.6 after Wave 3; their writers are disjoint.
+- Wave 5: Slice 5.1 after every Wave 4 consumer reaches a terminal receipt.
+- Wave 6: Slice 6.1 only after Slice 5.1 proves eligibility and the owner separately approves retirement.
+
+## Phase 1 — Shared BRAN gates
+
+### Slice 1.1 — Portable reserved-document conformance
+
+**Goal.** Close the portable reserved `index.md` and `log.md` coverage gap while keeping strict results independent.
+
+**Requirement IDs.** AC-002, AC-008; REQ-GATE-001, REQ-GATE-005.
+
+**Design IDs.** DES-001, DES-002, DES-003, CONTRACT-001, CONTRACT-002.
+
+**SEIT proof rows.** SEIT-001, SEIT-002, SEIT-003.
+
+**Type.** code
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 1.1 execution manifest
+
+**Write set.** Write only `crates/bran-core/src/profile.rs`, `fixtures/conformance/okf-v0.1-index-valid.fixture`, `fixtures/conformance/okf-v0.1-index-invalid.fixture`, `fixtures/conformance/okf-v0.1-log-valid.fixture`, `fixtures/conformance/okf-v0.1-log-invalid.fixture`, `tools/ci/test-budget.json`.
+
+**Command IDs.** CMD-OKF-PORTABLE, CMD-PROFILES.
+
+**Stop condition.** Stop if the normative portable structure cannot be cited, a strict-only rule enters the portable result, or the write set must expand.
+
+**Human decision.** None after the normative source and exact write set are verified; otherwise stop for owner scope direction.
+
+### Slice 1.2 — Public-root repair and fast-gate regression
+
+**Goal.** Remove the doubled-path failure and update `tools/ci/test-budget.json` and `tools/ci/test_budget_check.py` as a deterministic inventory of named CI journeys, direct CI commands, and owned fixtures—not one registry row per Rust unit test. Preserve `CMD-BUDGET` as the first fast-gate check, proving deterministic negative failure on missing/duplicate journeys, direct commands, or fixture ownership, while all Rust unit tests remain mandatory through `CMD-FAST` workspace test commands.
+
+**Requirement IDs.** AC-002; REQ-GATE-002, REQ-GATE-003, REQ-GATE-004, REQ-GATE-005.
+
+**Design IDs.** DES-004, DES-005, CONTRACT-003.
+
+**SEIT proof rows.** SEIT-004, SEIT-005, SEIT-006.
+
+**Type.** code
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 1.2 execution manifest
+
+**Write set.** Write only `tools/ci/public_boundary_check.py`, `tools/ci/test-budget.json`, `tools/ci/test_budget_check.py`, `crates/bran-core/src/migration.rs`, `crates/bran-core/src/packet/mod.rs`, `crates/bran-core/src/policy.rs`, `crates/bran-core/src/profile.rs`, `crates/bran-core/src/scan/mod.rs`, `crates/bran-cli/src/main.rs`.
+
+**Command IDs.** CMD-BUDGET, CMD-PUBLIC, CMD-FAST.
+
+**Stop condition.** Stop if the checker must scan outside the BRAN/public export surface, depends on caller CWD, or the budget check no longer fails first on missing or duplicate inventory entries. Stop if the clippy repair requires semantic behavior change or lint suppression.
+
+**Human decision.** None unless the public export boundary itself must change.
+
+## Phase 2 — Cutover contracts and proposal drafts
+
+### Slice 2.1 — Cutover verification tools
+
+**Goal.** Add the bounded offline verifiers required for exact release, consumer parity, reference, rollback, retirement, and route receipts.
+
+**Requirement IDs.** AC-001, AC-003, AC-004, AC-005, AC-006; REQ-REL-003, REQ-REL-004, REQ-REL-005, REQ-CONS-002, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-PARITY-001, REQ-COMPAT-001, REQ-RETIRE-001, REQ-PLAN-002, REQ-PLAN-003, REQ-PLAN-004.
+
+**Design IDs.** DES-010, DES-011, DES-013, DES-014, DES-017, DES-019, DES-021, DES-025, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-010, CONTRACT-011, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-019, SEIT-020, SEIT-021, SEIT-023, SEIT-029, SEIT-031.
+
+**Type.** code
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 2.1 execution manifest
+
+**Write set.** Write only `tools/cutover/verify_release.py`, `tools/cutover/consumer_gate.py`, `tools/cutover/retirement_gate.py`, `tools/cutover/validate_route.py`, `tools/ci/test-budget.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-RETIREMENT-PROOF, CMD-ROUTE-TRACE.
+
+**Stop condition.** Stop on a dependency, network requirement, hidden consumer rule, write-capable default, semantic-normalization loss, or path outside the exact write set.
+
+**Human decision.** None; every later side-effect mode remains separately gated.
+
+### Slice 2.2 — Upstream OKF proposal drafts
+
+**Goal.** Draft the bundle-scope clarification and layered-profile issue without external submission.
+
+**Requirement IDs.** AC-007, AC-008; REQ-UPSTREAM-001, REQ-UPSTREAM-002, REQ-UPSTREAM-003.
+
+**Design IDs.** DES-001, DES-009, DES-023, CONTRACT-001, CONTRACT-012.
+
+**SEIT proof rows.** SEIT-026, SEIT-027, SEIT-028.
+
+**Type.** documentation
+
+**Design lenses.** CDD, SecDD, RDD, ODD.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** agy agent default
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** off
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 2.2 execution manifest
+
+**Write set.** Write only `docs/integrations/proposals/okf-bundle-scan-scope.md`, `docs/integrations/proposals/okf-layered-profile-separation.md`.
+
+**Command IDs.** PROC-PROPOSAL-DRAFTS, CMD-PROFILES.
+
+**Stop condition.** Stop if either draft claims uncited normative behavior, combines the proposals, or implies submission/publication authority.
+
+**Human decision.** Separate owner approval is required later for each exact external text and destination.
+
+## Phase 3 — Stable release
+
+### Slice 3.1 — Reproducible seal, publication gate, and exact public verification
+
+**Goal.** Build and seal the exact multi-platform release, stop for publication approval, then verify immutable public assets.
+
+**Requirement IDs.** AC-003; REQ-REL-001, REQ-REL-002, REQ-REL-003, REQ-REL-006, REQ-UPSTREAM-003.
+
+**Design IDs.** DES-006, DES-007, DES-008, DES-009, CONTRACT-004.
+
+**SEIT proof rows.** SEIT-007, SEIT-008, SEIT-009.
+
+**Type.** operational
+
+**Design lenses.** CDD, SecDD, RDD, ODD.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** agy agent default
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** off
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 3.1 execution manifest
+
+**Write set.** No writes required in the repository; release archives, seal evidence, and public readback receipts remain outside the source checkout.
+
+**Command IDs.** CMD-RELEASE-PLAN, CMD-RELEASE-BUILD-LINUX-X86, CMD-RELEASE-BUILD-LINUX-ARM, CMD-RELEASE-BUILD-MAC-X86, CMD-RELEASE-BUILD-MAC-ARM, CMD-RELEASE-BUILD-WINDOWS-X86, CMD-RELEASE-CONTRACT, CMD-RELEASE-DRY-SEAL, CMD-RELEASE-SEAL, CMD-EXACT-SHA, PROC-PUBLICATION.
+
+**Stop condition.** Stop on dirty source, missing target, non-reproducible archive, identity/signature/public-boundary mismatch, floating URL, or approval drift.
+
+**Human decision.** Owner approval of the exact tag, source SHA, digest set, fingerprint, destination, and boundary receipt is required before signing, uploading, publishing, or public installation verification.
+
+## Phase 4 — Disjoint consumer migrations
+
+### Slice 4.1 — AlphazedeHQ migration and parity
+
+**Goal.** Install the exact release, switch the BRAN-backed advisory path, prove parity and rollback, and retain every compatibility surface.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-REL-004, REQ-REL-005, REQ-CONS-001, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-CONS-007, REQ-PARITY-001, REQ-COMPAT-001, REQ-COMPAT-002.
+
+**Design IDs.** DES-010, DES-011, DES-012, DES-013, DES-014, DES-017, DES-019, DES-020, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-010, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-013, SEIT-019, SEIT-020, SEIT-021, SEIT-022.
+
+**Type.** consumer
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 4.1 execution manifest
+
+**Write set.** Within the AlphazedeHQ checkout write only `.bran/policy.yaml`, `.bran/evidence/bran-cutover.json`, `.grok/hooks/use-okf.sh`, `.grok/hooks/use-okf.json`, `tools/okf/runtime/bran-release-pin.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-ROUTE-TRACE, PROC-PARITY-ALPHAZEDEHQ.
+
+**Stop condition.** Stop on repository/revision mismatch, unavailable retrieval, hook contract drift, unexpected active reference, parity failure, or rollback mismatch.
+
+**Human decision.** Owner approval of this checkout, revision, artifact digest, exact write set, commands, and rollback is required before mutation.
+
+### Slice 4.2 — AlphaZede Sports migration and granular boundary parity
+
+**Goal.** Install the exact release and prove the repository's granular public-boundary policy, parity, references, and rollback.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-REL-004, REQ-REL-005, REQ-CONS-001, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-CONS-007, REQ-AZS-001, REQ-PARITY-001, REQ-COMPAT-001, REQ-COMPAT-002.
+
+**Design IDs.** DES-010, DES-011, DES-012, DES-013, DES-014, DES-015, DES-017, DES-019, DES-020, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-008, CONTRACT-010, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-014, SEIT-019, SEIT-020, SEIT-021, SEIT-022.
+
+**Type.** consumer
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 4.2 execution manifest
+
+**Write set.** Within the alphazede-sports checkout write only `.bran/policy.yaml`, `.bran/evidence/bran-cutover.json`, `tools/okf/runtime/bran-release-pin.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-ROUTE-TRACE, PROC-PARITY-ALPHAZEDE-SPORTS.
+
+**Stop condition.** Stop on repository/revision mismatch, ambiguous boundary precedence, unmatched required path, unavailable retrieval, parity/reference failure, or rollback mismatch.
+
+**Human decision.** Owner approval of this checkout, revision, boundary rules, artifact digest, exact write set, commands, and rollback is required before mutation.
+
+### Slice 4.3 — BetBot migration and oversized-document resolution
+
+**Goal.** Install the exact release and resolve the oversized knowledge document without raising BRAN's global limit, then prove parity and rollback.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-REL-004, REQ-REL-005, REQ-CONS-001, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-CONS-007, REQ-BETBOT-001, REQ-PARITY-001, REQ-COMPAT-001, REQ-COMPAT-002.
+
+**Design IDs.** DES-010, DES-011, DES-012, DES-013, DES-014, DES-016, DES-017, DES-019, DES-020, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-009, CONTRACT-010, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-015, SEIT-019, SEIT-020, SEIT-021, SEIT-022.
+
+**Type.** consumer
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 4.3 execution manifest
+
+**Write set.** Within the BetBot checkout write only `.bran/policy.yaml`, `.bran/evidence/bran-cutover.json`, `.bran/migrations/oversized-document-plan.json`, `docs/okf`, `tools/okf/runtime/bran-release-pin.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-ROUTE-TRACE, PROC-PARITY-BETBOT.
+
+**Stop condition.** Stop if the exact oversized source is outside `docs/okf`, the semantic split lacks owner approval, locators/relationships change without mapping, retrieval is unavailable, parity fails, or rollback differs.
+
+**Human decision.** Owner approval of the exact source and split paths, checkout revision, artifact digest, write set, commands, and rollback is required before mutation.
+
+### Slice 4.4 — developers public consumer migration and parity
+
+**Goal.** Install the exact public release and prove exported-source identity, parity, references, and rollback.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-REL-004, REQ-REL-005, REQ-CONS-001, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-CONS-007, REQ-PARITY-001, REQ-COMPAT-001, REQ-COMPAT-002.
+
+**Design IDs.** DES-010, DES-011, DES-012, DES-013, DES-014, DES-017, DES-019, DES-020, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-010, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-016, SEIT-019, SEIT-020, SEIT-021, SEIT-022.
+
+**Type.** consumer
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 4.4 execution manifest
+
+**Write set.** Within the developers checkout write only `.bran/policy.yaml`, `.bran/evidence/bran-cutover.json`, `tools/okf/runtime/bran-release-pin.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-ROUTE-TRACE, PROC-PARITY-DEVELOPERS.
+
+**Stop condition.** Stop on repository/revision mismatch, export/source identity mismatch, floating asset, unavailable retrieval, parity/reference failure, or rollback mismatch.
+
+**Human decision.** Owner approval of this checkout, revision, artifact digest, exact write set, commands, and rollback is required before mutation.
+
+### Slice 4.5 — HGTS discovery, migration, and parity
+
+**Goal.** Verify HGTS identity when available, then install and prove parity and rollback without substituting another checkout.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-REL-004, REQ-REL-005, REQ-CONS-001, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-CONS-007, REQ-HGTS-001, REQ-PARITY-001, REQ-COMPAT-001, REQ-COMPAT-002.
+
+**Design IDs.** DES-010, DES-011, DES-012, DES-013, DES-014, DES-017, DES-018, DES-019, DES-020, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-010, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-017, SEIT-019, SEIT-020, SEIT-021, SEIT-022.
+
+**Type.** consumer
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 4.5 execution manifest
+
+**Write set.** When HGTS is absent, write nothing; after identity and owner approval, within the HGTS checkout write only `.bran/policy.yaml`, `.bran/evidence/bran-cutover.json`, `tools/okf/runtime/bran-release-pin.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-ROUTE-TRACE, PROC-PARITY-HGTS.
+
+**Stop condition.** Stop with `unavailable` while HGTS is absent, or on identity/revision mismatch, unavailable retrieval, parity/reference failure, or rollback mismatch.
+
+**Human decision.** Owner approval of the verified checkout, revision, artifact digest, exact write set, commands, and rollback is required before any HGTS mutation.
+
+### Slice 4.6 — alphazede-markets migration and parity
+
+**Goal.** Install the exact release and prove policy, validation/retrieval parity, references, and rollback.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-REL-004, REQ-REL-005, REQ-CONS-001, REQ-CONS-003, REQ-CONS-004, REQ-CONS-005, REQ-CONS-006, REQ-CONS-007, REQ-PARITY-001, REQ-COMPAT-001, REQ-COMPAT-002.
+
+**Design IDs.** DES-010, DES-011, DES-012, DES-013, DES-014, DES-017, DES-019, DES-020, CONTRACT-005, CONTRACT-006, CONTRACT-007, CONTRACT-010, CONTRACT-013.
+
+**SEIT proof rows.** SEIT-010, SEIT-011, SEIT-012, SEIT-018, SEIT-019, SEIT-020, SEIT-021, SEIT-022.
+
+**Type.** consumer
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** codex gpt-5.6-terra
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** full
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 4.6 execution manifest
+
+**Write set.** Within the alphazede-markets checkout write only `.bran/policy.yaml`, `.bran/evidence/bran-cutover.json`, `tools/okf/runtime/bran-release-pin.json`.
+
+**Command IDs.** CMD-EXACT-SHA, CMD-INSTALL-VERIFY, CMD-CONSUMER-PARITY, CMD-REFERENCE-AUDIT, CMD-ROLLBACK, CMD-ROUTE-TRACE, PROC-PARITY-ALPHAZEDE-MARKETS.
+
+**Stop condition.** Stop on repository/revision mismatch, unavailable retrieval, policy/parity/reference failure, or rollback mismatch.
+
+**Human decision.** Owner approval of this checkout, revision, artifact digest, exact write set, commands, and rollback is required before mutation.
+
+## Phase 5 — Global evidence barrier
+
+### Slice 5.1 — Retirement eligibility and restoration rehearsal
+
+**Goal.** Aggregate six immutable consumer receipts, audit active references, and prove restoration before retirement can be recommended.
+
+**Requirement IDs.** AC-004, AC-005, AC-006; REQ-CONS-006, REQ-COMPAT-001, REQ-RETIRE-001, REQ-RETIRE-002, REQ-RETIRE-003.
+
+**Design IDs.** DES-011, DES-020, DES-021, DES-022, CONTRACT-006, CONTRACT-010, CONTRACT-011.
+
+**SEIT proof rows.** SEIT-021, SEIT-022, SEIT-023, SEIT-024, SEIT-029.
+
+**Type.** operational
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** agy agent default
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** off
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 5.1 execution manifest
+
+**Write set.** No writes required in consumer repositories; the retirement manifest, reference audit, and restoration rehearsal remain owner-reviewable runtime evidence.
+
+**Command IDs.** CMD-REFERENCE-AUDIT, CMD-RETIREMENT-PROOF, PROC-RETIREMENT.
+
+**Stop condition.** Stop on any non-passing, stale, missing, or unavailable consumer receipt, unexpected active reference, recovery archive mismatch, or failed restoration rehearsal.
+
+**Human decision.** No removal is authorized; return the exact retirement packet for a separate owner decision.
+
+## Phase 6 — Separately approved global retirement
+
+### Slice 6.1 — Compatibility retirement transaction
+
+**Goal.** After separate approval, apply the exact global retirement manifest, run integrated gates, and restore on any failure.
+
+**Requirement IDs.** AC-006; REQ-COMPAT-001, REQ-COMPAT-002, REQ-RETIRE-001, REQ-RETIRE-002, REQ-RETIRE-003.
+
+**Design IDs.** DES-011, DES-021, DES-022, CONTRACT-006, CONTRACT-011.
+
+**SEIT proof rows.** SEIT-023, SEIT-024, SEIT-025.
+
+**Type.** destructive
+
+**Design lenses.** CDD, SecDD, RDD, ODD, OOPDSA.
+
+**Implementation role.** Crewmate
+
+**Agent model route.** agy agent default
+
+**Agent reasoning level.** medium
+
+**Ponytail mode.** off
+
+**Review path.** Harness-native read-only reviewer; Surveyor fallback only when unavailable.
+
+### 6.1 execution manifest
+
+**Write set.** Across the owner-approved Alphazede workspace write only `Alphazedehq/.grok/hooks/use-okf.sh`, `Alphazedehq/.grok/hooks/use-okf.json`, `Alphazedehq/skills/use-okf`, `Alphazedehq/tools/okf/okf`, `Alphazedehq/tools/okf/config.yaml`, `alphazede-sports/tools/okf/config.yaml`, `betbot/tools/okf/config.yaml`, `developers/tools/okf/config.yaml`, `hgts/tools/okf/config.yaml`, `alphazede-markets/tools/okf/config.yaml`.
+
+**Command IDs.** CMD-RETIREMENT-PROOF, PROC-RETIREMENT, CMD-FAST.
+
+**Stop condition.** Stop before writes without six passing receipts and exact approval; after writes, stop and restore on manifest drift, extra deletion, active reference, or any integrated-gate failure.
+
+**Human decision.** Separate explicit owner approval of the exact retirement manifest, deletion targets, recovery archive, restoration proof, commands, and evidence is mandatory.
+</pre></details></section><section id="bearing-final-qa" data-status="pending"><h2>Actual implementation and QA</h2><p>Pending implementation and validation.</p></section></main></body></html>

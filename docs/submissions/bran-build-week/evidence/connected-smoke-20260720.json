@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "evidence_id": "connected-smoke-20260720",
+  "visibility": "private_submission_evidence",
+  "classification": "post_review_connected_compatibility_smoke",
+  "compatibility_smoke_not_matrix": true,
+  "sample_count": 1,
+  "claim_scope": "one successful post-review Spark Medium connected CLI compatibility smoke on the corrected controlled corpus",
+  "attribution": "The work product was produced by Spark using BRAN.",
+  "revisions": {
+    "bran": "36574d01c7c6acad9fb97e09d3aad2c7cf683122",
+    "arena": "83253293a08380aeddb16874616e90cd21d2a081",
+    "release_binary_sha256": "f168b8ef650d86ea69df1c5a01a6c10e5b3dcf9f709aa0d705e92d0e5583ccf1"
+  },
+  "corpus": {
+    "candidate_visible_files": 512,
+    "logical_sha256": "cb4fab25ecc7dfa132b65608608afb6fa2245e8f3248a1a7f2a1f3752aa7d6d5",
+    "agents_md_sha256": "7ee82085ca220d8bd73862344ee25b9e6efdcb20e00c99a1ec5f1ebfb6c3d29e",
+    "claude_md_sha256": "36ed3c9d399a304e28bf8827de16b530f50b283edcbf507d520eaf26b6af6341",
+    "instruction_contract": "neutral instructions with identical semantics, different wording, and identical content across comparison arms"
+  },
+  "request": {
+    "command": "bran -p --trust-current-root --agent spark-medium --reasoning medium --tools read,search --no-session \"Investigate why events from different accounts sometimes collapse in the retry queue. Explain the bug, the fix, and how to test it.\"",
+    "digest": "146040e3e7713a32d8a69d9625a28e8d77c569740af15694a9bd7bf5bce0da7b",
+    "sqz": "off",
+    "conversation_session": "none",
+    "token_ceiling": {
+      "classification": "unset",
+      "value": null
+    },
+    "max_answer_bytes": 65536
+  },
+  "inner_agent": {
+    "profile": "spark-medium",
+    "provider_model": "gpt-5.3-codex-spark",
+    "reasoning": "medium",
+    "allowed_tools": [
+      "read",
+      "search"
+    ],
+    "denied_tools": [
+      "edit",
+      "network",
+      "shell",
+      "write"
+    ]
+  },
+  "outcome": {
+    "classification": "measured",
+    "exit_code": 0,
+    "wall_duration_seconds": 15.41,
+    "max_rss_kib": 119008,
+    "tool_calls": 7,
+    "failed_tool_calls": 1,
+    "answer_correct": true,
+    "answer_requirements": "correct bug, account-scoped fix, and focused test",
+    "citation_count": 8,
+    "all_citations_exact_packet_locators": true,
+    "bran_grounding_validation": "passed"
+  },
+  "actual_provider_tokens": {
+    "classification": "actual",
+    "input": 68555,
+    "output": 5652,
+    "total": 74207,
+    "cached_input_subset": 53376,
+    "reasoning_output_subset": 4727,
+    "subset_accounting": "cached input is included in input and reasoning output is included in output; neither subset is added again"
+  },
+  "estimated_packet_metrics": {
+    "classification": "estimated",
+    "input_bytes": 4878,
+    "input_bytes_divided_by_four": 1220,
+    "output_bytes": 1006,
+    "output_bytes_divided_by_four": 252,
+    "included_in_actual_provider_tokens": false
+  },
+  "identities": {
+    "provider_run_id": "019f8008-ea79-7123-8331-a9ba8ccc4a49",
+    "result_id": "sha256:422b8c82a558e1e15a7f423971f6b8b04b97da02814d9c9be8d53a00185c3710",
+    "telemetry_json_sha256": "52dfa4fe308b1b4886157851ce5586aa190db06005a6182e541d040297617166",
+    "host_module_sha256": "65b7d5cb2dc02138bf8327c6b389b74d560f4a4d434768a3b635642b848c5f48",
+    "wrapper_sha256": "a16e5009bfa6ff82e688967c4dfec9ef2aca52e8042fad5564e8d8162d019f8e"
+  },
+  "preserved_failed_attempts": [
+    {
+      "classification": "preflight_failure",
+      "wall_duration_seconds": 0.06,
+      "cause": "state root permissions were 0755 instead of private same-UID 0700",
+      "provider_invoked": false,
+      "actual_provider_tokens": "unavailable",
+      "included_in_sample_count": false
+    },
+    {
+      "classification": "compatibility_failure",
+      "cause": "the inner agent completed, but exact packet-citation validation failed before result publication",
+      "provider_invoked": true,
+      "actual_provider_tokens": "unavailable",
+      "included_in_sample_count": false
+    }
+  ],
+  "local_verification": {
+    "arena_full_gate": {
+      "classification": "measured",
+      "revision": "83253293a08380aeddb16874616e90cd21d2a081",
+      "pytest": "374 passed in 57.49 seconds",
+      "ruff": "passed",
+      "mypy": "passed over 50 sources in strict mode",
+      "bandit": "exit 0 with warnings only"
+    },
+    "native_review": "one Arena phase review returned patch incorrect; valid findings were remediated without a duplicate review"
+  },
+  "external_evidence": {
+    "hosted_ci": {
+      "classification": "unavailable",
+      "reason": "exact local commits were not pushed and the Arena repository has no remote"
+    },
+    "dollar_spend": {
+      "classification": "unavailable",
+      "value": null
+    },
+    "understand_anything_execution": {
+      "classification": "blocked",
+      "reason": "supply-chain policy"
+    },
+    "obsidian": {
+      "classification": "measured_provider_free",
+      "scope": "BRAN Core export only; no GUI or native plugin"
+    }
+  },
+  "scrub": {
+    "local_paths_included": false,
+    "credential_material_included": false,
+    "raw_model_output_included": false,
+    "personal_data_included": false
+  }
+}

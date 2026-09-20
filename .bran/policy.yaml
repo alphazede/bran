@@ -56,6 +56,20 @@ coverage:
   - unclassified
 
 document_coverage:
+  canonical_documents:
+    - AGENTS.md
+    - CLAUDE.md
+    - docs/README.md
+    - docs/bugs/2026-07-25-hook-fires-on-command-tokens-not-target-paths.md
+    - docs/bugs/2026-07-25-query-ranking-favors-path-tokens-over-content.md
+    - docs/integrations/proposals/okf-bundle-scan-scope.md
+    - docs/integrations/proposals/okf-layered-profile-separation.md
+    - docs/submissions/bran-build-week/README.md
+    - docs/submissions/bran-build-week/customer-setup/README.md
+    - docs/submissions/bran-build-week/demo-recording-runbook.md
+    - docs/submissions/bran-build-week/demo-video-outline.md
+    - docs/submissions/bran-build-week/research-paper.md
+    - docs/submissions/bran-build-week/submission-checklist.md
   legacy_documents:
     - README.md
     - docs/integrations/agent-setup.md
