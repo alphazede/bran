@@ -118,16 +118,7 @@ const ADAPTER_ROWS: &[(Format, &str)] = &[
     (Format::Pptx, "pptx-ordinary-projection"),
     (Format::Pptx, "pptx-unsupported-benign-fidelity"),
     (Format::Pptx, "pptx-round-trip-anchors"),
-    (Format::Pdf, "pdf-ordinary-projection"),
-    (Format::Pdf, "pdf-malformed-object-graph"),
-    (Format::Pdf, "pdf-recursive-structure"),
-    (Format::Pdf, "pdf-active-action"),
-    (Format::Pdf, "pdf-embedded-file"),
-    (Format::Pdf, "pdf-encrypted"),
-    (Format::Pdf, "pdf-signed"),
-    (Format::Pdf, "pdf-dlp-canary"),
-    (Format::Pdf, "pdf-oversized-stream"),
-    (Format::Pdf, "pdf-round-trip-anchors"),
+    // PDF rows are executable in tests/pdf.rs against the registered adapter.
 ];
 
 fn expect(row: &str) -> Expect {
