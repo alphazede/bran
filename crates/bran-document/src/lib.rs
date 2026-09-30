@@ -8,6 +8,7 @@
 
 pub mod canonical;
 pub mod conformance;
+pub mod docx;
 pub mod export;
 pub mod opc;
 pub mod xml;
