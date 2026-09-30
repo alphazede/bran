@@ -915,6 +915,35 @@ fn xlsx_relationship_ids_resolve_in_scope() {
     );
 }
 
+/// A 1904-epoch workbook keeps its epoch through import and export, so
+/// date-serial cells read the same date before and after the round trip.
+#[test]
+fn xlsx_1904_epoch_round_trips() {
+    let bytes = Parts::parse(FEATURES)
+        .edit(WORKBOOK, "<sheets>", r#"<workbookPr date1904="1"/><sheets>"#)
+        .zip();
+    let imported = import(&bytes).expect("imports");
+    assert!(
+        text(&imported).contains(r#""date1904":true"#),
+        "epoch lost on import: {}",
+        text(&imported)
+    );
+    let out = exported(&imported);
+    let entries = zip::read(&out.bytes, &limits(), &Cancel::default()).unwrap();
+    let workbook = entries
+        .iter()
+        .find(|entry| entry.name == "xl/workbook.xml")
+        .expect("workbook part");
+    let xml = String::from_utf8(workbook.data.clone()).unwrap();
+    assert!(
+        xml.contains(r#"<workbookPr date1904="1"/>"#),
+        "epoch lost on export: {xml}"
+    );
+    let second = import(&out.bytes).expect("export re-imports");
+    assert!(text(&second).contains(r#""date1904":true"#));
+    assert_eq!(second.anchors, imported.anchors);
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the

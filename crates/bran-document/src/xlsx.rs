@@ -135,7 +135,7 @@ pub fn import(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Imported
         unsupported: BTreeSet::new(),
         tables: BTreeSet::new(),
     };
-    let (sheets, names, anchors) = reader.workbook()?;
+    let (sheets, names, anchors, date1904) = reader.workbook()?;
     reader.leftovers();
     let mut strings = Vec::new();
     collect_strings(&sheets, &mut strings);
@@ -165,6 +165,7 @@ pub fn import(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Imported
         ("family", s("grid")),
         ("sheets", sheets),
         ("defined_names", names),
+        ("date1904", flag(date1904)),
         ("anchors", Json::Arr(anchors.clone())),
         ("unsupported", Json::Arr(unsupported)),
         ("fidelity", fidelity(&codes)),
@@ -285,7 +286,7 @@ impl<'a> Reader<'a> {
     }
 
     #[allow(clippy::type_complexity)]
-    fn workbook(&mut self) -> Result<(Json, Json, Vec<Json>), Refusal> {
+    fn workbook(&mut self) -> Result<(Json, Json, Vec<Json>, bool), Refusal> {
         let office = self
             .relationships("")
             .into_iter()
@@ -298,6 +299,7 @@ impl<'a> Reader<'a> {
             .ok_or(Refusal::MalformedContainer)?;
         let mut entries: Vec<[String; 4]> = Vec::new();
         let mut defined: Vec<(Vec<(String, String)>, String)> = Vec::new();
+        let mut date1904 = false;
         let mut stack: Vec<String> = Vec::new();
         let mut scope: Vec<Vec<(String, String)>> = Vec::new();
         let events = self.events(workbook)?;
@@ -307,6 +309,11 @@ impl<'a> Reader<'a> {
                     scope.push(xmlns_frame(&attributes));
                     match (stack.len(), name.as_str()) {
                         (1, "sheets" | "definedNames") => {}
+                        (1, "workbookPr") => {
+                            self.codes
+                                .insert("workbook-settings-not-imported".to_owned());
+                            date1904 = xml_true(attr(&attributes, "date1904"));
+                        }
                         (1, other) if SETTINGS.contains(&other) => {
                             self.codes
                                 .insert("workbook-settings-not-imported".to_owned());
@@ -455,6 +462,7 @@ impl<'a> Reader<'a> {
             Json::Arr(sheets),
             Json::Arr(names.into_values().collect()),
             anchors,
+            date1904,
         ))
     }
 
@@ -1280,6 +1288,11 @@ pub fn export(imported: &Imported) -> Result<Exported, Refusal> {
     }
     let sheets = list(&projection, "sheets")?;
     let names = list(&projection, "defined_names")?;
+    let date1904 = match get(&projection, "date1904") {
+        None | Some(Json::Bool(false)) => false,
+        Some(Json::Bool(true)) => true,
+        Some(_) => return Err(Refusal::ExportUnsupported),
+    };
     // The whole projection is emitted: sheets and names as workbook parts,
     // `unsupported` and `fidelity` inside the receipt. Every string is
     // checked, plus the receipt codes the receipt repeats as `import_receipt`.
@@ -1336,7 +1349,7 @@ pub fn export(imported: &Imported) -> Result<Exported, Refusal> {
         ),
     ])
     .to_bytes();
-    let parts = Writer::default().workbook(sheets, names, &receipt)?;
+    let parts = Writer::default().workbook(sheets, names, date1904, &receipt)?;
     let entries: Vec<zip::WriteEntry<'_>> = parts
         .iter()
         .map(|(name, data)| zip::WriteEntry {
@@ -1372,6 +1385,7 @@ impl Writer {
         mut self,
         sheets: &[Json],
         names: &[Json],
+        date1904: bool,
         receipt: &[u8],
     ) -> Result<BTreeMap<String, Vec<u8>>, Refusal> {
         if sheets.is_empty() {
@@ -1463,10 +1477,15 @@ impl Writer {
             "styles.xml",
             false,
         )?);
+        let epoch = if date1904 {
+            "<workbookPr date1904=\"1\"/>"
+        } else {
+            ""
+        };
         self.put(
             "xl/workbook.xml",
             format!(
-                "<workbook xmlns=\"{MAIN}\" xmlns:r=\"{OFFICE_REL}\"><sheets>{sheet_xml}</sheets>{defined}</workbook>"
+                "<workbook xmlns=\"{MAIN}\" xmlns:r=\"{OFFICE_REL}\">{epoch}<sheets>{sheet_xml}</sheets>{defined}</workbook>"
             ),
             Some(WORKBOOK_TYPE),
         );
@@ -2159,6 +2178,11 @@ fn attr<'b>(attributes: &'b [(String, String)], key: &str) -> Option<&'b str> {
 
 fn required<'b>(attributes: &'b [(String, String)], key: &str) -> Result<&'b str, Refusal> {
     attr(attributes, key).ok_or(Refusal::MalformedContainer)
+}
+
+/// An XML boolean that is only true when explicitly set: `1` or `true`.
+fn xml_true(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true"))
 }
 
 fn s(value: &str) -> Json {

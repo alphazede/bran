@@ -36,6 +36,7 @@ the envelope's byte rule, so equal workbooks give equal bytes.
 | `value`, `cached` | `{"type": ..., "value": ...}` with type `number`, `string`, `boolean`, `error`, or `date`. Numbers keep their lexical form; nothing is parsed into a float. |
 | `formula` | `text`, and `kind`, `ref`, `si` for shared and array formulas; `quarantined` when active (below) |
 | `defined_names` | `name`, `value`, `scope` (sheet name for a local name), `hidden` |
+| `date1904` | Present and `true` when the source workbook uses the 1904 date system; omitted for 1900. Serials are kept as written and the epoch is re-emitted, so dates render the same day after export. |
 | `anchors` | Citation anchors in the envelope's grid shape: `id`, `family: grid`, `role`, `text`, `text_digest`, `locator {sheet, row, column}` |
 | `unsupported` | Every relationship or element the adapter does not model, typed and content-addressed |
 | `fidelity` | The envelope's grid features: `text`, `sheets`, `cells`, `formulas`, `charts`, `macros` |
