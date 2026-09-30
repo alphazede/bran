@@ -4,6 +4,7 @@ pub mod adapters;
 pub mod agent;
 pub mod boundary;
 pub mod bundle;
+pub mod database;
 pub mod derived_state;
 pub mod export;
 pub mod frontmatter;
@@ -16,6 +17,7 @@ pub mod profile;
 pub mod repair;
 pub mod scan;
 pub mod schema;
+pub mod scip;
 pub mod view;
 
 // Profile validation exports (Slice 1.2 wiring only)
