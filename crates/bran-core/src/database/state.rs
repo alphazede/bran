@@ -22,6 +22,8 @@ pub enum StateStoreError {
     QuotaExceeded,
     NotFound,
     EmptyInput,
+    /// A path below the state root is a symlink or not the expected kind of entry.
+    Unconfined,
     Io(io::ErrorKind),
 }
 
@@ -34,6 +36,9 @@ impl fmt::Display for StateStoreError {
             Self::QuotaExceeded => f.write_str("state quota would be exceeded"),
             Self::NotFound => f.write_str("state object not found"),
             Self::EmptyInput => f.write_str("state object is empty"),
+            Self::Unconfined => {
+                f.write_str("state path crosses a symlink or unexpected entry below its root")
+            }
             Self::Io(kind) => write!(f, "state storage I/O failure: {kind:?}"),
         }
     }
@@ -53,7 +58,12 @@ pub trait StateStore {
 }
 
 /// Durable single-node store under `<state root>/<location>/<namespace>/`.
-// ponytail: one writer per namespace; concurrent server writers need the PostgreSQL backend.
+///
+/// Every directory and file below the host-supplied state root is inspected
+/// without following symlinks before it is read, written, or removed.
+// ponytail: checks precede use (no openat/O_NOFOLLOW in std), so a concurrent
+// writer inside the state root could still race them; one writer per namespace,
+// and concurrent server writers need the PostgreSQL backend.
 #[derive(Debug)]
 pub struct FileStateStore {
     dir: PathBuf,
@@ -63,9 +73,48 @@ pub struct FileStateStore {
     next_temp: u64,
 }
 
+/// `Some(metadata)` for an existing entry, never following a symlink.
+fn entry(path: &Path) -> Result<Option<fs::Metadata>, StateStoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Whether a real directory exists at `path`; a symlink or file is refused.
+fn real_dir(path: &Path) -> Result<bool, StateStoreError> {
+    match entry(path)? {
+        None => Ok(false),
+        Some(metadata) if metadata.is_dir() => Ok(true),
+        Some(_) => Err(StateStoreError::Unconfined),
+    }
+}
+
+/// The length of a regular file at `path`; a symlink or directory is refused.
+fn regular_file(path: &Path) -> Result<Option<u64>, StateStoreError> {
+    match entry(path)? {
+        None => Ok(None),
+        Some(metadata) if metadata.is_file() => Ok(Some(metadata.len())),
+        Some(_) => Err(StateStoreError::Unconfined),
+    }
+}
+
+/// Every entry of `dir` with its length; anything but a regular file is refused.
+fn regular_files(dir: &Path) -> Result<Vec<(PathBuf, u64)>, StateStoreError> {
+    let mut files = Vec::new();
+    for item in fs::read_dir(dir)? {
+        let path = item?.path();
+        let length = regular_file(&path)?.ok_or(StateStoreError::Unconfined)?;
+        files.push((path, length));
+    }
+    Ok(files)
+}
+
 impl FileStateStore {
     /// Opens (or initialises) one namespace. Refuses without writing on any
-    /// unsupported backend, requested encryption, or unknown layout version.
+    /// unsupported backend, requested encryption, unknown layout version, or
+    /// path that crosses a symlink below `state_root`.
     pub fn open(
         descriptor: &StateStoreDescriptor,
         state_root: &Path,
@@ -73,47 +122,72 @@ impl FileStateStore {
         if descriptor.backend() != StateBackend::File || descriptor.encryption_key().is_some() {
             return Err(StateStoreError::Unavailable);
         }
-        let dir = state_root
-            .join(descriptor.location())
-            .join(descriptor.namespace());
-        match fs::read(dir.join("VERSION")) {
-            Ok(bytes) => {
-                let version = std::str::from_utf8(&bytes)
-                    .ok()
-                    .and_then(|text| text.strip_suffix('\n'))
-                    .filter(|text| {
-                        !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
-                    })
-                    .ok_or(StateStoreError::Corrupt)?;
-                if version != STATE_LAYOUT_VERSION {
-                    return Err(StateStoreError::MigrationFailed);
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if dir.exists() && fs::read_dir(&dir)?.next().is_some() {
-                    return Err(StateStoreError::Corrupt);
-                }
-                fs::create_dir_all(&dir)?;
-                fs::write(dir.join("VERSION"), format!("{STATE_LAYOUT_VERSION}\n"))?;
-            }
-            Err(error) => return Err(error.into()),
+        let mut components = vec![state_root.to_path_buf()];
+        for segment in descriptor
+            .location()
+            .split('/')
+            .chain([descriptor.namespace()])
+        {
+            let next = components[components.len() - 1].join(segment);
+            components.push(next);
         }
-        fs::create_dir_all(dir.join("objects"))?;
-        fs::create_dir_all(dir.join("tmp"))?;
-        let mut recovered_partial_writes = 0;
-        for entry in fs::read_dir(dir.join("tmp"))? {
-            fs::remove_file(entry?.path())?;
-            recovered_partial_writes += 1;
+        let dir = components[components.len() - 1].clone();
+        let mut present = true;
+        for component in &components[1..] {
+            present = present && real_dir(component)?;
         }
-        let mut used = 0;
-        for entry in fs::read_dir(dir.join("objects"))? {
-            used += entry?.metadata()?.len();
+        let objects = dir.join("objects");
+        let staging = dir.join("tmp");
+        let version = match present {
+            true => regular_file(&dir.join("VERSION"))?,
+            false => None,
+        };
+        if version.is_some() {
+            let bytes = fs::read(dir.join("VERSION"))?;
+            let found = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| text.strip_suffix('\n'))
+                .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+                .ok_or(StateStoreError::Corrupt)?;
+            if found != STATE_LAYOUT_VERSION {
+                return Err(StateStoreError::MigrationFailed);
+            }
+        } else if present && fs::read_dir(&dir)?.next().is_some() {
+            return Err(StateStoreError::Corrupt);
+        }
+        let objects_present = present && real_dir(&objects)?;
+        let staging_present = present && real_dir(&staging)?;
+        let staged = match staging_present {
+            true => regular_files(&staging)?,
+            false => Vec::new(),
+        };
+        let stored = match objects_present {
+            true => regular_files(&objects)?,
+            false => Vec::new(),
+        };
+        // Everything below the root is now known to be real; only then mutate.
+        fs::create_dir_all(state_root)?;
+        for component in &components[1..] {
+            if !real_dir(component)? {
+                fs::create_dir(component)?;
+            }
+        }
+        if version.is_none() {
+            fs::write(dir.join("VERSION"), format!("{STATE_LAYOUT_VERSION}\n"))?;
+        }
+        for (present, path) in [(objects_present, &objects), (staging_present, &staging)] {
+            if !present {
+                fs::create_dir(path)?;
+            }
+        }
+        for (path, _) in &staged {
+            fs::remove_file(path)?;
         }
         Ok(Self {
             dir,
             quota: descriptor.quota_bytes(),
-            used,
-            recovered_partial_writes,
+            used: stored.iter().map(|(_, length)| length).sum(),
+            recovered_partial_writes: staged.len(),
             next_temp: 0,
         })
     }
@@ -129,17 +203,16 @@ impl FileStateStore {
 
     /// Re-hashes every object. Returns the object count, or `Corrupt`.
     pub fn verify(&self) -> Result<usize, StateStoreError> {
-        let mut count = 0;
-        for entry in fs::read_dir(self.dir.join("objects"))? {
-            let name = entry?.file_name();
-            let id = name
-                .to_str()
+        let objects = regular_files(&self.dir.join("objects"))?;
+        for (path, _) in &objects {
+            let id = path
+                .file_name()
+                .and_then(|name| name.to_str())
                 .and_then(|hex| ResultId::parse(&format!("sha256:{hex}")).ok())
                 .ok_or(StateStoreError::Corrupt)?;
             self.get(&id)?;
-            count += 1;
         }
-        Ok(count)
+        Ok(objects.len())
     }
 }
 
@@ -150,46 +223,46 @@ impl StateStore for FileStateStore {
         }
         let id = ResultId::sha256(bytes);
         let path = self.object(&id);
-        // An existing object is already counted at its true size; a corrupt one is rewritten.
-        let exists = match fs::read(&path) {
-            Ok(existing) if existing == bytes => return Ok(id),
-            Ok(_) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error.into()),
-        };
-        let size = bytes.len() as u64;
-        if !exists
-            && self
-                .used
-                .checked_add(size)
-                .is_none_or(|total| total > self.quota)
-        {
-            return Err(StateStoreError::QuotaExceeded);
+        let existing = regular_file(&path)?;
+        if existing.is_some() && fs::read(&path)? == bytes {
+            return Ok(id);
         }
+        // A damaged object is replaced. Usage is recounted from disk, because
+        // the damage changed its size behind this handle's back.
+        let used = match existing {
+            Some(_) => regular_files(&self.dir.join("objects"))?
+                .iter()
+                .map(|(_, length)| length)
+                .sum(),
+            None => self.used,
+        };
+        let replacing = existing.unwrap_or(0);
+        let total = used
+            .saturating_sub(replacing)
+            .checked_add(bytes.len() as u64)
+            .filter(|total| *total <= self.quota)
+            .ok_or(StateStoreError::QuotaExceeded)?;
         let temp = self
             .dir
             .join("tmp")
             .join(format!("{}.{}", id.value(), self.next_temp));
         self.next_temp += 1;
         // ponytail: no parent-directory fsync after rename; add it if power-loss durability matters.
-        let written = fs::File::create(&temp)
+        let written = fs::File::create_new(&temp)
             .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
             .and_then(|()| fs::rename(&temp, &path));
         if let Err(error) = written {
             let _ = fs::remove_file(&temp);
             return Err(error.into());
         }
-        if !exists {
-            self.used += size;
-        }
+        self.used = total;
         Ok(id)
     }
 
     fn get(&self, id: &ResultId) -> Result<Vec<u8>, StateStoreError> {
-        let bytes = fs::read(self.object(id)).map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => StateStoreError::NotFound,
-            kind => StateStoreError::Io(kind),
-        })?;
+        let path = self.object(id);
+        regular_file(&path)?.ok_or(StateStoreError::NotFound)?;
+        let bytes = fs::read(&path)?;
         if ResultId::sha256(&bytes) != *id {
             return Err(StateStoreError::Corrupt);
         }
@@ -365,6 +438,131 @@ mod tests {
             assert!(!shown.contains(state_root.to_str().unwrap()), "{shown}");
         }
         assert_eq!(snapshot(&repository), canonical);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("bran-p8-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn quota_eight() -> StateStoreDescriptor {
+        StateStoreDescriptor::parse(
+            "kind: state-store\nid: local-state\nbackend: file\nlocation: state\nnamespace: alpha\nquota_bytes: 8\n",
+        )
+        .unwrap()
+    }
+
+    fn disk_bytes(dir: &Path) -> u64 {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum()
+    }
+
+    #[test]
+    fn repair_accounts_quota() {
+        // Review F6: repairing a truncated object must count its true size.
+        let base = scratch("state-repair");
+        let objects = base.join("state/alpha/objects");
+        let mut store = FileStateStore::open(&quota_eight(), &base).unwrap();
+        let id = store.put(b"12345678").unwrap();
+        drop(store);
+        fs::write(objects.join(id.value()), b"x").unwrap();
+        let mut store = FileStateStore::open(&quota_eight(), &base).unwrap();
+        assert_eq!(store.put(b"12345678").unwrap(), id);
+        assert_eq!(store.used_bytes(), 8);
+        assert_eq!(store.put(b"abcdefg"), Err(StateStoreError::QuotaExceeded));
+        assert_eq!(store.used_bytes(), 8);
+        assert_eq!(disk_bytes(&objects), 8);
+        // The same holds when the object is damaged while the store is open.
+        fs::write(objects.join(id.value()), b"x").unwrap();
+        assert_eq!(store.put(b"12345678").unwrap(), id);
+        assert_eq!(store.used_bytes(), disk_bytes(&objects));
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_paths_refuse_symlink_escape() {
+        // Review F1: no read, write, or cleanup may follow a symlink out of the state root.
+        use std::os::unix::fs::symlink;
+        let base = scratch("state-symlink");
+        let outside = base.join("canonical");
+        let root = base.join("root");
+        fs::create_dir_all(outside.join("alpha/tmp")).unwrap();
+        fs::write(outside.join("alpha/VERSION"), "1\n").unwrap();
+        fs::write(outside.join("alpha/tmp/canonical.md"), "# Canonical\n").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let before = snapshot(&outside);
+
+        // The location itself is a symlink out of the root.
+        symlink(&outside, root.join("state")).unwrap();
+        assert_eq!(
+            FileStateStore::open(&quota_eight(), &root).unwrap_err(),
+            StateStoreError::Unconfined
+        );
+        assert_eq!(snapshot(&outside), before);
+        fs::remove_file(root.join("state")).unwrap();
+
+        // The namespace directory is a symlink.
+        fs::create_dir_all(root.join("state")).unwrap();
+        symlink(outside.join("alpha"), root.join("state/alpha")).unwrap();
+        assert_eq!(
+            FileStateStore::open(&quota_eight(), &root).unwrap_err(),
+            StateStoreError::Unconfined
+        );
+        assert_eq!(snapshot(&outside), before);
+        fs::remove_file(root.join("state/alpha")).unwrap();
+
+        // The staging or object directory, or a staged entry, is a symlink.
+        FileStateStore::open(&quota_eight(), &root).unwrap();
+        let namespace = root.join("state/alpha");
+        fs::remove_dir(namespace.join("tmp")).unwrap();
+        symlink(outside.join("alpha/tmp"), namespace.join("tmp")).unwrap();
+        assert_eq!(
+            FileStateStore::open(&quota_eight(), &root).unwrap_err(),
+            StateStoreError::Unconfined
+        );
+        assert_eq!(snapshot(&outside), before);
+        fs::remove_file(namespace.join("tmp")).unwrap();
+        fs::create_dir(namespace.join("tmp")).unwrap();
+        symlink(
+            outside.join("alpha/tmp/canonical.md"),
+            namespace.join("tmp/staged"),
+        )
+        .unwrap();
+        assert_eq!(
+            FileStateStore::open(&quota_eight(), &root).unwrap_err(),
+            StateStoreError::Unconfined
+        );
+        assert_eq!(snapshot(&outside), before);
+        fs::remove_file(namespace.join("tmp/staged")).unwrap();
+        // An object entry that is a symlink is refused, not followed.
+        let mut store = FileStateStore::open(&quota_eight(), &root).unwrap();
+        let id = ResultId::sha256(b"# Canonical\n");
+        symlink(
+            outside.join("alpha/tmp/canonical.md"),
+            namespace.join("objects").join(id.value()),
+        )
+        .unwrap();
+        assert_eq!(store.get(&id), Err(StateStoreError::Unconfined));
+        assert_eq!(
+            store.put(b"# Canonical\n"),
+            Err(StateStoreError::Unconfined)
+        );
+        assert_eq!(snapshot(&outside), before);
+        drop(store);
+        fs::remove_file(namespace.join("objects").join(id.value())).unwrap();
+        fs::remove_dir(namespace.join("objects")).unwrap();
+        symlink(outside.join("alpha"), namespace.join("objects")).unwrap();
+        assert_eq!(
+            FileStateStore::open(&quota_eight(), &root).unwrap_err(),
+            StateStoreError::Unconfined
+        );
+        assert_eq!(snapshot(&outside), before);
         fs::remove_dir_all(&base).unwrap();
     }
 }

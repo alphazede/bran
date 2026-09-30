@@ -164,13 +164,27 @@ gate accepts a deliberately small grammar and rejects everything else:
   `OPENQUERY`, `OPENDATASOURCE`, `dblink`, `table@link`, relation names with
   more than two parts, or column names with more than three)
 - function calls only from `abs`, `avg`, `coalesce`, `count`, `length`,
-  `lower`, `max`, `min`, `round`, `sum`, and `upper`. Everything else, such as
-  `load_extension`, `readfile`, `pg_read_file`, `pg_sleep`, or `randomblob`,
-  is `UnsafeFunction`. So is a schema-qualified call such as `other.count(x)`,
-  which could resolve to a user-defined function.
-- every relation after `FROM` or `JOIN` is fully qualified `schema.relation`
-  and present in the descriptor allowlist. Unqualified names are rejected,
-  because a server search path could resolve them to another schema.
+  `lower`, `max`, `min`, `round`, `sum`, and `upper`, named directly.
+  Everything else, such as `load_extension`, `readfile`, `pg_read_file`,
+  `pg_sleep`, or `randomblob`, is `UnsafeFunction`. So is a schema-qualified
+  call such as `other.count(x)`, which could resolve to a user-defined
+  function, and a call through a grammar word, literal, or quoted name, such
+  as `first(x)`, `like(x, y)`, `'randomblob'(4)`, or `"abs"(x)`. Any other `(`
+  must follow an operator, `,`, `(`, or one of `SELECT`, `DISTINCT`, `WHERE`,
+  `AND`, `OR`, `NOT`, `IN`, `ON`, `HAVING`, `BY`, `BETWEEN`, `LIMIT`, or
+  `OFFSET`, where it can only group an expression or list. So `x LIKE ('a')`
+  must be written `x LIKE 'a'`.
+- `IN` must be followed by `(`. `x IN schema.relation` would read a relation
+  outside the `FROM` list, so it is `Malformed`.
+- every relation in the `FROM` list is fully qualified `schema.relation` and
+  present in the descriptor allowlist. Unqualified names are rejected, because
+  a server search path could resolve them to another schema. At parenthesis
+  depth zero, `FROM`, `,`, and `JOIN` each introduce a relation until
+  `WHERE`, `GROUP`, `ORDER`, `HAVING`, `LIMIT`, or `OFFSET` ends the list,
+  including a `,` after a join's `ON` expression. A relation may be followed
+  only by an alias, `,`, a join keyword, `ON`, or one of those clause words.
+  Modifiers such as `NOT INDEXED`, `INDEXED BY`, or `USING` are `Malformed`,
+  so they cannot hide a later relation from the allowlist check.
 - row queries need `ORDER BY`, so truncation and result digests are
   deterministic
 - at most 8192 bytes and 1024 tokens
@@ -211,21 +225,31 @@ Tests: `database::sql::tests::p8_database_sql_gate`, plus
 `database::evidence::extract` checks policy before it contacts the engine. A
 refused request (rows under `introspection`, a gate rejection, or an SQL
 digest that is not allowlisted) returns `ExtractionRefusal`. The engine is
-never called. An accepted request always yields exactly one outcome:
+never called. An accepted request always yields exactly one outcome.
+
+The effective deadline is the earlier of the caller's deadline and the
+descriptor's `timeout_ms`. The adapter receives it with the cancellation flag
+(`Interrupt`) on every catalog and row call and must stop in-flight engine
+work when either fires. BRAN also rechecks both after every engine call: the
+opening snapshot, the catalog, the row stream (even an empty one), and the
+closing snapshot. After an interruption it makes no further engine call, and a
+blocking call that overran or was cancelled never yields admissible evidence.
 
 | Outcome | When | Rows kept | Packet admission |
 |---|---|---|---|
 | `schema-only` | no row request | none | admitted |
 | `bounded-rows` | every row fit `max_rows` and `max_bytes` | all | admitted |
 | `truncated` | the engine had more rows or bytes than the limits | the bounded prefix | admitted, with `truncated: true` |
-| `cancelled` | the cancellation flag was set, or the engine reported cancel | none | refused |
-| `timeout` | the descriptor `timeout_ms` or the caller's deadline passed, or the engine reported timeout | none | refused |
+| `cancelled` | the cancellation flag was set at any point, or the engine reported cancel | none | refused |
+| `timeout` | the effective deadline passed at any point, or the engine reported timeout | none | refused |
 | `unavailable` | no adapter for this engine, or the adapter reported unavailable | none | refused |
 | `stale-snapshot` | the observed snapshot differs from the pinned one, or changed during extraction | none | refused |
 | `dlp-rejected` | the DLP check reported findings | none | refused |
 
-Cancelled, timed-out, stale, and DLP-rejected extractions keep no partial rows.
-They produce a receipt and nothing a packet can cite. An engine for which no
+Refused outcomes (cancelled, timed out, unavailable, stale, and DLP-rejected)
+keep no partial rows and no catalog. Their record has `"columns":[]`, so a
+column name that DLP flagged, or that DLP never checked, cannot reach the
+sealed record. They produce a receipt and nothing a packet can cite. An engine for which no
 adapter is compiled in (PostgreSQL today) is reported as `unavailable`. BRAN
 never simulates it.
 
@@ -237,12 +261,17 @@ Every extraction produces one canonical JSON record (sorted keys, no
 whitespace) with:
 
 - `adapter` and `engine`
-- `source_id` and `credential` (the opaque reference, or `null`)
-- `access`, `relations`, and `columns` (`schema.relation.column` locators)
+- `source_id`, `database` (the validated SQLite path or PostgreSQL handle,
+  which cannot contain credentials), and `credential` (the opaque reference,
+  or `null`). Changing the configured database changes the record, the
+  evidence digest, and the packet node id.
+- `access`, `relations`, and `columns` (`schema.relation.column` locators; empty
+  for refused outcomes)
 - `derivation`: `schema-only`, `projection`, or `query`
 - `query_digest`: the normalized gate digest, or `null`
 - `snapshot`: `{"state":"attested","value":…}` or
-  `{"state":"unavailable","value":null}`
+  `{"state":"unavailable","value":null}`. Engine snapshot text is untrusted, so
+  anything other than a `sha256:` digest is sealed as its digest.
 - `row_count` and `truncated`
 - `extracted_at`, supplied by the caller so replays are deterministic
 - `limits`: `max_rows`, `max_bytes`, and `timeout_ms`
@@ -304,7 +333,14 @@ Behaviour:
   the first layout, so there is no migration yet. A future migration must keep
   this refuse-without-writing rule.
 - **Quota.** A `put` that would exceed `quota_bytes` is `QuotaExceeded`. It
-  leaves no temp file and does not change usage.
+  leaves no temp file and does not change usage. Repairing a damaged object
+  recounts usage from disk, subtracts the damaged length, adds the true length,
+  and enforces the quota on that total.
+- **Confinement.** Every directory from the state root down to the namespace,
+  `objects/`, `tmp/`, `VERSION`, and every object and staged entry is inspected
+  without following symlinks before it is read, written, or removed. A symlink
+  or unexpected entry is `Unconfined`, and `open` refuses before it creates,
+  writes, or deletes anything. The host-supplied state root itself is trusted.
 - **Isolation.** A handle can read and write only its own namespace.
 - **Canonical data.** The store writes only under its own namespace directory.
   It never reads or writes repository content. The state store is never a
@@ -313,8 +349,11 @@ Behaviour:
 
 Errors are content-free: no paths, bytes, or credentials.
 
-Concurrency limit: a namespace allows one writer at a time. Concurrent server
-workloads are what a PostgreSQL backend would be for.
+Limits: a namespace allows one writer at a time; two open handles each track
+their own usage and can together exceed the quota. The confinement checks run
+before each use, because portable `std` has no `openat` or `O_NOFOLLOW`, so a
+process that can already write inside the state root could race them.
+Concurrent server workloads are what a PostgreSQL backend would be for.
 
 Test: `database::state::tests::p8_state_store_failures`.
 
@@ -328,7 +367,8 @@ non-ASCII text, a long value for byte truncation, and a synthetic key-shaped
 note for DLP.
 
 `fixtures/database/queries.tsv` is the shared SQL corpus, one
-`class<TAB>effect<TAB>sql` row per statement. It holds allowed queries plus
+`class<TAB>effect<TAB>rejection<TAB>sql` row per statement. `rejection` is the
+exact `SqlRejection` the Rust gate must return (`-` for allowed queries). It holds allowed queries plus
 adversarial statements by class: `write`, `multi-statement`, `session`,
 `procedure`, `unsafe-function`, `external-link`, `compound`,
 `secret-reflection`, and `policy`. The `effect` column says what the engine
@@ -348,7 +388,8 @@ and `gate-only` query under the SQLite guard, and requires every other
 adversarial statement to be refused with the database unchanged. It also shows
 that a progress-handler interrupt stops a long query, which is how a SQLite
 adapter implements timeout and cancellation. The Rust gate test reads the same
-corpus and requires the gate to refuse all 40 adversarial rows.
+corpus and requires the gate to return the exact listed rejection for all 47
+adversarial rows.
 
 ## Offline default
 
@@ -365,21 +406,25 @@ selected.
 | Only validated references to host-managed credentials | `database::tests::p8_database_boundary_config` |
 | Write SQL, multi-statements, unsafe functions, external links, and secret reflection rejected | `database::sql::tests::p8_database_sql_gate`; `tools/ci/database_contract_check.py` |
 | Eight outcomes typed separately | `database::evidence::tests::p8_database_evidence_packet` |
-| Evidence enters packets with stable provenance and truncation/derivation state | `database::evidence::tests::p8_database_evidence_packet` |
-| Corruption, migration failure, quota exhaustion, and partial writes fail visibly without losing canonical data | `database::state::tests::p8_state_store_failures` |
+| Evidence enters packets with stable provenance and truncation/derivation state | Partial. Library level: `database::evidence::tests::p8_database_evidence_packet` and `provenance_binds_database_origin`. No real database evidence reaches `bran packet` yet (see [Not done](#not-done)). |
+| Corruption, migration failure, quota exhaustion, and partial writes fail visibly without losing canonical data | `database::state::tests::p8_state_store_failures`, `repair_accounts_quota`, and `state_paths_refuse_symlink_escape` |
 | Deterministic synthetic fixture database | `fixtures/database/`; `tools/ci/database_contract_check.py` |
 | No cloud database or network for the default suite | All of the above run offline in `./tools/ci/check.sh --fast` |
 
 ## Not done
 
-- **Rust SQLite and PostgreSQL adapters.** A Rust SQLite binding needs an
-  engine dependency. `rusqlite` 0.31 bundles SQLite 3.45 (older than current
-  security fixes) and needs a C compiler, which conflicts with
-  CONTRIBUTING's "stable Rust toolchain, nothing else". `rusqlite` 0.33 and
-  later pull `foldhash` (Zlib), which `deny.toml` does not allow. Choosing a
-  binding is an owner decision. Until then, the port and gate are proven here
-  and the engine guard is proven through Python's standard `sqlite3`.
-  PostgreSQL needs a server and a network adapter, and is not attempted.
+- **Rust SQLite and PostgreSQL adapters (deferred by owner decision).** A
+  Rust SQLite binding needs an engine dependency, and the owner's delegate
+  deferred adding one (2026-09-30). The trade-offs recorded for that decision:
+  `rusqlite` 0.31 bundles SQLite 3.45 (older than current security fixes) and
+  needs a C compiler, which conflicts with CONTRIBUTING's "stable Rust
+  toolchain, nothing else"; `rusqlite` 0.33 and later pull `foldhash` (Zlib),
+  which `deny.toml` does not allow. Until an adapter lands, the port and gate
+  are proven here and the engine guard is proven through Python's standard
+  `sqlite3`. PostgreSQL needs a server and a network adapter, and is not
+  attempted. So the packet-entry acceptance item is **partial**: packet entry
+  is proven through `PacketAssembler` with a synthetic engine, but no real
+  database evidence can reach a packet yet.
 - **SQLite and PostgreSQL state backends.** Same dependency decision. The
   descriptors accept them, and `open` reports `unavailable`.
 - **CLI wiring.** `bran packet` does not yet load descriptors or run

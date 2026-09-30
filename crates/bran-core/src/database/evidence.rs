@@ -93,20 +93,33 @@ pub enum EngineFailure {
     Timeout,
 }
 
+/// Cancellation and the effective deadline. Adapters must stop in-flight
+/// engine work when either fires (SQLite: a progress handler); BRAN also
+/// rechecks both after every engine call.
+pub struct Interrupt<'a> {
+    pub cancel: &'a AtomicBool,
+    pub deadline: Instant,
+}
+
 /// The evidence-source port. An adapter must also enforce read-only access in
 /// the engine itself (see `docs/database-boundary.md`).
 pub trait EvidenceEngine {
     /// Adapter name and version, for example `sqlite-reference/1`.
     fn adapter(&self) -> &str;
-    /// Engine-attested snapshot identity, or `None` when the engine cannot attest one.
+    /// Engine-attested snapshot identity, or `None` when the engine cannot
+    /// attest one. Anything other than a `sha256:` digest is sealed as its digest.
     fn snapshot(&mut self) -> Result<Option<String>, EngineFailure>;
     /// Catalog for the allowlisted relations only.
-    fn catalog(&mut self, relations: &[RelationName])
-        -> Result<Vec<RelationSchema>, EngineFailure>;
+    fn catalog(
+        &mut self,
+        relations: &[RelationName],
+        interrupt: &Interrupt<'_>,
+    ) -> Result<Vec<RelationSchema>, EngineFailure>;
     /// Streams rows until exhausted or until `sink` returns `false`.
     fn rows(
         &mut self,
         query: &GatedQuery,
+        interrupt: &Interrupt<'_>,
         sink: &mut dyn FnMut(Vec<Cell>) -> bool,
     ) -> Result<(), EngineFailure>;
 }
@@ -298,6 +311,8 @@ fn failure(failure: EngineFailure) -> EvidenceOutcome {
 }
 
 /// Runs the engine under BRAN-enforced cancellation, deadline, and bounds.
+/// Interruption is rechecked after every engine call, so a blocking call that
+/// overruns or is cancelled never yields admissible evidence.
 fn collect(
     engine: &mut dyn EvidenceEngine,
     request: &ExtractionRequest<'_>,
@@ -305,13 +320,16 @@ fn collect(
     run: &mut Run,
 ) -> EvidenceOutcome {
     let timeout = Duration::from_millis(request.source.limits().timeout_ms);
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .map_or(request.deadline, |limit| limit.min(request.deadline));
+    let interrupt = Interrupt {
+        cancel: request.cancel,
+        deadline: Instant::now()
+            .checked_add(timeout)
+            .map_or(request.deadline, |limit| limit.min(request.deadline)),
+    };
     let interrupted = || {
-        if request.cancel.load(Ordering::SeqCst) {
+        if interrupt.cancel.load(Ordering::SeqCst) {
             Some(EvidenceOutcome::Cancelled)
-        } else if Instant::now() >= deadline {
+        } else if Instant::now() >= interrupt.deadline {
             Some(EvidenceOutcome::Timeout)
         } else {
             None
@@ -321,18 +339,24 @@ fn collect(
         return outcome;
     }
     run.snapshot = match engine.snapshot() {
-        Ok(snapshot) => snapshot,
+        Ok(snapshot) => snapshot.map(sealed_snapshot),
         Err(error) => return failure(error),
     };
+    if let Some(outcome) = interrupted() {
+        return outcome;
+    }
     if let Some(pinned) = request.source.snapshot() {
         if run.snapshot.as_deref() != Some(pinned) {
             return EvidenceOutcome::StaleSnapshot;
         }
     }
-    run.catalog = match engine.catalog(request.source.relations()) {
+    run.catalog = match engine.catalog(request.source.relations(), &interrupt) {
         Ok(catalog) => catalog,
         Err(error) => return failure(error),
     };
+    if let Some(outcome) = interrupted() {
+        return outcome;
+    }
     run.catalog
         .sort_by(|left, right| left.relation.cmp(&right.relation));
     let outcome = match query {
@@ -342,7 +366,7 @@ fn collect(
             let (rows, truncated) = (&mut run.rows, &mut run.truncated);
             let mut stopped = None;
             let mut bytes = 0_usize;
-            let result = engine.rows(query, &mut |row| {
+            let result = engine.rows(query, &interrupt, &mut |row| {
                 if let Some(outcome) = interrupted() {
                     stopped = Some(outcome);
                     return false;
@@ -356,7 +380,7 @@ fn collect(
                 rows.push(row);
                 true
             });
-            match (stopped, result) {
+            match (stopped.or_else(interrupted), result) {
                 (Some(outcome), _) => outcome,
                 (None, Err(error)) => failure(error),
                 (None, Ok(())) if run.truncated => EvidenceOutcome::Truncated,
@@ -367,10 +391,26 @@ fn collect(
     if !outcome.admitted() {
         return outcome;
     }
-    match engine.snapshot() {
-        Ok(after) if after == run.snapshot => outcome,
-        Ok(_) => EvidenceOutcome::StaleSnapshot,
-        Err(error) => failure(error),
+    let after = match engine.snapshot() {
+        Ok(snapshot) => snapshot.map(sealed_snapshot),
+        Err(error) => return failure(error),
+    };
+    if let Some(interrupted) = interrupted() {
+        return interrupted;
+    }
+    if after == run.snapshot {
+        outcome
+    } else {
+        EvidenceOutcome::StaleSnapshot
+    }
+}
+
+/// Engine snapshot text is untrusted: only a `sha256:` digest is sealed.
+fn sealed_snapshot(snapshot: String) -> String {
+    if super::is_digest(&snapshot) {
+        snapshot
+    } else {
+        digest(&snapshot)
     }
 }
 
@@ -382,18 +422,25 @@ fn finish(
     mut run: Run,
 ) -> DatabaseEvidence {
     let source = request.source;
-    let catalog = catalog_json(&run.catalog);
     let mut dlp = DlpStatus::NotEvaluated;
     if outcome.admitted() {
-        dlp = (request.dlp)(&format!("{catalog}\n{}", rows_text(&run.rows)));
+        dlp = (request.dlp)(&format!(
+            "{}\n{}",
+            catalog_json(&run.catalog),
+            rows_text(&run.rows)
+        ));
         if dlp == DlpStatus::Findings {
             outcome = EvidenceOutcome::DlpRejected;
         }
     }
+    // Refused outcomes keep no engine metadata: an unchecked or DLP-flagged
+    // column name must not reach the sealed record.
     if !outcome.admitted() {
+        run.catalog.clear();
         run.rows.clear();
         run.truncated = false;
     }
+    let catalog = catalog_json(&run.catalog);
     let result_digest = digest(&rows_text(&run.rows));
     let limits = source.limits();
     let mut record = String::from("{\"access\":");
@@ -413,6 +460,8 @@ fn finish(
         &mut record,
         source.credential().map(ToString::to_string).as_deref(),
     );
+    record.push_str(",\"database\":");
+    write_escaped_string_for_bundle(&mut record, source.database());
     record.push_str(",\"derivation\":");
     write_escaped_string_for_bundle(
         &mut record,
@@ -572,6 +621,10 @@ max_bytes: 4096
         failure: Option<EngineFailure>,
         cancel_after: Option<(usize, Arc<AtomicBool>)>,
         delay: Duration,
+        catalog_delay: Duration,
+        catalog_cancel: Option<Arc<AtomicBool>>,
+        snapshot_cancel: Option<(usize, Arc<AtomicBool>)>,
+        extra_column: Option<String>,
         calls: usize,
         last_sql: Option<String>,
     }
@@ -592,6 +645,10 @@ max_bytes: 4096
                 failure: None,
                 cancel_after: None,
                 delay: Duration::ZERO,
+                catalog_delay: Duration::ZERO,
+                catalog_cancel: None,
+                snapshot_cancel: None,
+                extra_column: None,
                 calls: 0,
                 last_sql: None,
             }
@@ -604,6 +661,11 @@ max_bytes: 4096
         }
         fn snapshot(&mut self) -> Result<Option<String>, EngineFailure> {
             self.calls += 1;
+            if let Some((call, flag)) = &self.snapshot_cancel {
+                if self.calls == *call {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
             let next = if self.snapshots.len() > 1 {
                 self.snapshots.remove(0)
             } else {
@@ -614,29 +676,34 @@ max_bytes: 4096
         fn catalog(
             &mut self,
             relations: &[RelationName],
+            _interrupt: &Interrupt<'_>,
         ) -> Result<Vec<RelationSchema>, EngineFailure> {
             self.calls += 1;
+            std::thread::sleep(self.catalog_delay);
+            if let Some(flag) = &self.catalog_cancel {
+                flag.store(true, Ordering::SeqCst);
+            }
             Ok(relations
                 .iter()
                 .map(|relation| RelationSchema {
                     relation: relation.clone(),
                     kind: RelationKind::Table,
-                    columns: vec![
-                        ColumnSchema {
-                            name: "id".into(),
-                            declared_type: "INTEGER".into(),
-                        },
-                        ColumnSchema {
-                            name: "status".into(),
+                    columns: ["id", "status"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .chain(self.extra_column.clone())
+                        .map(|name| ColumnSchema {
+                            name,
                             declared_type: "TEXT".into(),
-                        },
-                    ],
+                        })
+                        .collect(),
                 })
                 .collect())
         }
         fn rows(
             &mut self,
             query: &GatedQuery,
+            _interrupt: &Interrupt<'_>,
             sink: &mut dyn FnMut(Vec<Cell>) -> bool,
         ) -> Result<(), EngineFailure> {
             self.calls += 1;
@@ -650,6 +717,12 @@ max_bytes: 4096
                 }
                 if !sink(row.clone()) {
                     return Ok(());
+                }
+            }
+            // An index past the last row cancels after the stream ends.
+            if let Some((after, flag)) = &self.cancel_after {
+                if *after >= self.rows.len() {
+                    flag.store(true, Ordering::SeqCst);
                 }
             }
             self.failure.map_or(Ok(()), Err)
@@ -1097,5 +1170,146 @@ max_bytes: 4096
                 NotAdmitted(refused.outcome())
             );
         }
+    }
+
+    #[test]
+    fn dlp_rejection_drops_catalog_locators() {
+        // Review F2: a detected secret in engine metadata must not reach provenance.
+        let source = EvidenceSourceDescriptor::parse(SOURCE).unwrap();
+        let later = Instant::now() + Duration::from_secs(3_600);
+        let idle = AtomicBool::new(false);
+        let detect = |text: &str| {
+            if text.contains("synthetic-review-secret") {
+                DlpStatus::Findings
+            } else {
+                DlpStatus::Passed
+            }
+        };
+        let mut engine = SyntheticEngine::new(2);
+        engine.extra_column = Some("password=synthetic-review-secret".into());
+        let rejected = run(Some(&mut engine), &source, None, &idle, later, &detect).unwrap();
+        assert_eq!(rejected.outcome(), EvidenceOutcome::DlpRejected);
+        assert!(
+            !rejected.record().contains("synthetic-review-secret"),
+            "{}",
+            rejected.record()
+        );
+        assert!(
+            rejected.record().contains(r#""columns":[]"#),
+            "{}",
+            rejected.record()
+        );
+        assert!(rejected.packet_evidence(EvidencePriority::Related).is_err());
+        // Engine-supplied snapshot text is untrusted too: only a digest is sealed.
+        let mut engine = SyntheticEngine::new(2);
+        engine.snapshots = vec![Some("token=synthetic-snapshot-secret".into())];
+        let passed = |_: &str| DlpStatus::Passed;
+        let evidence = run(Some(&mut engine), &source, None, &idle, later, &passed).unwrap();
+        assert!(
+            !evidence.record().contains("synthetic-snapshot-secret"),
+            "{}",
+            evidence.record()
+        );
+        assert!(evidence
+            .record()
+            .contains(r#""snapshot":{"state":"attested","value":"sha256:"#));
+    }
+
+    #[test]
+    fn catalog_interruption_is_not_admitted() {
+        // Review F5: a slow or cancelled catalog read must not become schema-only evidence.
+        let passed = |_: &str| DlpStatus::Passed;
+        let later = Instant::now() + Duration::from_secs(3_600);
+        let idle = AtomicBool::new(false);
+        let quick = EvidenceSourceDescriptor::parse(&format!("{SOURCE}timeout_ms: 1\n")).unwrap();
+        let mut engine = SyntheticEngine::new(2);
+        engine.catalog_delay = Duration::from_millis(20);
+        let slow = run(Some(&mut engine), &quick, None, &idle, later, &passed).unwrap();
+        assert_eq!(slow.outcome(), EvidenceOutcome::Timeout);
+        assert!(slow.packet_evidence(EvidencePriority::Related).is_err());
+
+        let source = EvidenceSourceDescriptor::parse(SOURCE).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut engine = SyntheticEngine::new(2);
+        engine.catalog_cancel = Some(flag.clone());
+        let cancelled = run(Some(&mut engine), &source, None, &flag, later, &passed).unwrap();
+        assert_eq!(cancelled.outcome(), EvidenceOutcome::Cancelled);
+        assert!(cancelled
+            .packet_evidence(EvidencePriority::Related)
+            .is_err());
+        // After an interruption the engine is not contacted again.
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut engine = SyntheticEngine::new(2);
+        engine.catalog_cancel = Some(flag.clone());
+        let before_rows = run(
+            Some(&mut engine),
+            &source,
+            Some(&projection()),
+            &flag,
+            later,
+            &passed,
+        )
+        .unwrap();
+        assert_eq!(before_rows.outcome(), EvidenceOutcome::Cancelled);
+        assert_eq!(engine.last_sql, None);
+        assert_eq!(engine.calls, 2);
+
+        // Cancellation after the last row is still a cancellation.
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut engine = SyntheticEngine::new(2);
+        engine.cancel_after = Some((2, flag.clone()));
+        let late = run(
+            Some(&mut engine),
+            &source,
+            Some(&projection()),
+            &flag,
+            later,
+            &passed,
+        )
+        .unwrap();
+        assert_eq!(late.outcome(), EvidenceOutcome::Cancelled);
+        assert!(late.rows().is_empty());
+        assert_eq!(engine.calls, 3, "no final snapshot after cancellation");
+
+        // Cancellation during the closing snapshot read is not admitted either.
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut engine = SyntheticEngine::new(2);
+        engine.snapshot_cancel = Some((3, flag.clone()));
+        let closing = run(Some(&mut engine), &source, None, &flag, later, &passed).unwrap();
+        assert_eq!(closing.outcome(), EvidenceOutcome::Cancelled);
+    }
+
+    #[test]
+    fn provenance_binds_database_origin() {
+        // Review F7: the configured database handle is part of the evidence identity.
+        let passed = |_: &str| DlpStatus::Passed;
+        let later = Instant::now() + Duration::from_secs(3_600);
+        let idle = AtomicBool::new(false);
+        let extract_from = |database: &str| {
+            let source =
+                EvidenceSourceDescriptor::parse(&SOURCE.replace("data/orders.sqlite", database))
+                    .unwrap();
+            let mut engine = SyntheticEngine::new(2);
+            engine.snapshots = vec![None];
+            run(Some(&mut engine), &source, None, &idle, later, &passed).unwrap()
+        };
+        let one = extract_from("data/one.db");
+        let two = extract_from("data/two.db");
+        assert!(
+            one.record().contains(r#""database":"data/one.db""#),
+            "{}",
+            one.record()
+        );
+        assert_ne!(one.record(), two.record());
+        assert_ne!(one.evidence_digest(), two.evidence_digest());
+        let node = |evidence: &DatabaseEvidence| {
+            evidence
+                .packet_evidence(EvidencePriority::Required)
+                .unwrap()
+                .0
+                .id()
+                .clone()
+        };
+        assert_ne!(node(&one), node(&two));
     }
 }

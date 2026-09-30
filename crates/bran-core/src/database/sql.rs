@@ -235,11 +235,27 @@ const SESSION: &[&str] = &[
 ];
 const PROCEDURE: &[&str] = &["call", "exec", "execute", "do"];
 const COMPOUND: &[&str] = &["union", "intersect", "except"];
-/// Words that may precede `(` without being a function call, and are never names.
+/// Words that are never names (columns, relations, or aliases).
 const GRAMMAR: &[&str] = &[
     "select", "distinct", "all", "from", "where", "and", "or", "not", "as", "join", "inner",
     "left", "outer", "cross", "on", "group", "by", "order", "asc", "desc", "limit", "offset",
     "having", "is", "null", "in", "between", "like", "true", "false", "nulls", "first", "last",
+];
+/// Words after which `(` opens a parenthesized expression or list, never a call.
+const EXPRESSION_OPENERS: &[&str] = &[
+    "select", "distinct", "where", "and", "or", "not", "in", "on", "having", "by", "between",
+    "limit", "offset",
+];
+/// Symbols after which `(` opens a parenthesized expression.
+const OPERATORS: &[&str] = &[
+    "(", ",", "=", "<", ">", "<=", ">=", "<>", "!=", "+", "-", "*", "/", "%", "||",
+];
+/// Words that end a `FROM` list at parenthesis depth zero.
+const FROM_END: &[&str] = &["where", "group", "order", "having", "limit", "offset"];
+/// Words that may follow a relation (and its alias) inside a `FROM` list.
+const RELATION_FOLLOWERS: &[&str] = &[
+    "join", "inner", "left", "outer", "cross", "on", "where", "group", "order", "having", "limit",
+    "offset",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -306,18 +322,26 @@ fn gate_as(
     if !tokens[0].is_word("select") {
         return Err(SqlRejection::NotSelect);
     }
-    // A call must name an allowlisted function directly; `schema.count(` could
-    // resolve to a user-defined function in another schema.
+    // Every `(` is either a call to an allowlisted function named directly, or
+    // a grouping after an operator or expression keyword. Grammar words such as
+    // `first` or `like` are never callable, and `schema.count(` could resolve
+    // to a user-defined function in another schema.
     for (index, pair) in tokens.windows(2).enumerate() {
-        let unlisted = match &pair[0] {
-            Token::Word(word) => {
-                !GRAMMAR.contains(&word.as_str()) && !ALLOWED_FUNCTIONS.contains(&word.as_str())
+        if pair[1] != Token::Symbol("(") {
+            // `x IN schema.relation` would read a relation outside the FROM list.
+            if pair[0].is_word("in") {
+                return Err(SqlRejection::Malformed);
             }
-            Token::Quoted(_) => true,
+            continue;
+        }
+        let qualified = index > 0 && tokens[index - 1] == Token::Symbol(".");
+        let permitted = match &pair[0] {
+            Token::Word(word) if ALLOWED_FUNCTIONS.contains(&word.as_str()) => !qualified,
+            Token::Word(word) => EXPRESSION_OPENERS.contains(&word.as_str()),
+            Token::Symbol(symbol) => OPERATORS.contains(symbol),
             _ => false,
         };
-        let qualified = index > 0 && tokens[index - 1] == Token::Symbol(".");
-        if pair[1] == Token::Symbol("(") && (unlisted || qualified) {
+        if !permitted {
             return Err(SqlRejection::UnsafeFunction);
         }
     }
@@ -368,15 +392,30 @@ fn chain(tokens: &[Token], start: usize) -> (Vec<&str>, usize) {
     (parts, index)
 }
 
-/// Checks name-chain depth and every `FROM`/`JOIN` relation against the allowlist.
+/// Checks name-chain depth and every relation in the `FROM` list against the
+/// allowlist. Inside the list, only `,` and joins may introduce a relation, and
+/// only an alias, a join, `ON`, or a clause keyword may follow one, so modifiers
+/// such as `NOT INDEXED`, `INDEXED BY`, or `USING` cannot hide a later relation.
 fn relations(
     tokens: &[Token],
     allowed: &[RelationName],
 ) -> Result<Vec<RelationName>, SqlRejection> {
     let mut found = BTreeSet::new();
+    let mut depth = 0_usize;
+    let mut in_from = false;
     let mut index = 0;
     while index < tokens.len() {
-        if !(tokens[index].is_word("from") || tokens[index].is_word("join")) {
+        let token = &tokens[index];
+        match token {
+            Token::Symbol("(") => depth += 1,
+            Token::Symbol(")") => depth = depth.checked_sub(1).ok_or(SqlRejection::Malformed)?,
+            Token::Word(word) if depth == 0 && FROM_END.contains(&word.as_str()) => in_from = false,
+            _ => {}
+        }
+        let starts_relation = depth == 0
+            && (token.is_word("from")
+                || in_from && (token.is_word("join") || *token == Token::Symbol(",")));
+        if !starts_relation {
             let (parts, next) = chain(tokens, index);
             if parts.len() > 3 {
                 return Err(SqlRejection::ExternalReference);
@@ -384,27 +423,34 @@ fn relations(
             index = next.max(index + 1);
             continue;
         }
-        loop {
-            let (parts, next) = chain(tokens, index + 1);
-            let relation = match parts.as_slice() {
-                [] => return Err(SqlRejection::Malformed),
-                [_] => return Err(SqlRejection::UnqualifiedRelation),
-                [schema, relation] => RelationName::parse(&format!("{schema}.{relation}"))
-                    .filter(|relation| allowed.contains(relation))
-                    .ok_or(SqlRejection::RelationNotAllowed)?,
-                _ => return Err(SqlRejection::ExternalReference),
-            };
-            found.insert(relation);
-            index = next;
-            if tokens.get(index).is_some_and(|token| token.is_word("as")) {
-                index += 2;
-            } else if tokens.get(index).and_then(Token::name).is_some() {
-                index += 1;
+        in_from = true;
+        let (parts, mut next) = chain(tokens, index + 1);
+        let relation = match parts.as_slice() {
+            [] => return Err(SqlRejection::Malformed),
+            [_] => return Err(SqlRejection::UnqualifiedRelation),
+            [schema, relation] => RelationName::parse(&format!("{schema}.{relation}"))
+                .filter(|relation| allowed.contains(relation))
+                .ok_or(SqlRejection::RelationNotAllowed)?,
+            _ => return Err(SqlRejection::ExternalReference),
+        };
+        found.insert(relation);
+        if tokens.get(next).is_some_and(|token| token.is_word("as")) {
+            if tokens.get(next + 1).and_then(Token::name).is_none() {
+                return Err(SqlRejection::Malformed);
             }
-            if tokens.get(index) != Some(&Token::Symbol(",")) {
-                break;
-            }
+            next += 2;
+        } else if tokens.get(next).and_then(Token::name).is_some() {
+            next += 1;
         }
+        match tokens.get(next) {
+            None | Some(Token::Symbol(",")) => {}
+            Some(Token::Word(word)) if RELATION_FOLLOWERS.contains(&word.as_str()) => {}
+            Some(_) => return Err(SqlRejection::Malformed),
+        }
+        index = next;
+    }
+    if depth != 0 {
+        return Err(SqlRejection::Malformed);
     }
     Ok(found.into_iter().collect())
 }
@@ -545,41 +591,35 @@ mod tests {
             .collect()
     }
 
-    fn expected(class: &str) -> &'static [SqlRejection] {
-        match class {
-            "write" => &[SqlRejection::WriteOrDdl],
-            "multi-statement" => &[SqlRejection::MultiStatement],
-            "session" => &[SqlRejection::SessionMutation],
-            "procedure" => &[SqlRejection::ProcedureCall],
-            "unsafe-function" => &[SqlRejection::UnsafeFunction],
-            "external-link" => &[SqlRejection::ExternalReference],
-            "compound" => &[SqlRejection::Compound],
-            "secret-reflection" => &[
-                SqlRejection::MultiStatement,
-                SqlRejection::Comment,
-                SqlRejection::UnsafeFunction,
-            ],
-            "policy" => &[
-                SqlRejection::UnqualifiedRelation,
-                SqlRejection::Unordered,
-                SqlRejection::RelationNotAllowed,
-            ],
-            other => panic!("unknown corpus class {other}"),
-        }
-    }
+    const CLASSES: &[&str] = &[
+        "allowed",
+        "write",
+        "multi-statement",
+        "session",
+        "procedure",
+        "unsafe-function",
+        "external-link",
+        "compound",
+        "secret-reflection",
+        "policy",
+    ];
 
     #[test]
     fn p8_database_sql_gate() {
         let allowed = allowed();
         let mut accepted = 0;
         let mut refused = 0;
+        let mut mismatches = Vec::new();
         for line in CORPUS.lines() {
-            let mut fields = line.splitn(3, '\t');
-            let (class, _effect, sql) = (
+            // class <TAB> engine effect <TAB> exact gate rejection <TAB> sql
+            let mut fields = line.splitn(4, '\t');
+            let (class, _effect, rejection, sql) = (
+                fields.next().unwrap(),
                 fields.next().unwrap(),
                 fields.next().unwrap(),
                 fields.next().unwrap(),
             );
+            assert!(CLASSES.contains(&class), "unknown corpus class {class}");
             let result = gate(sql, &allowed);
             if class == "allowed" {
                 let query = result.unwrap_or_else(|error| panic!("{error}: {sql}"));
@@ -588,8 +628,15 @@ mod tests {
                 accepted += 1;
                 continue;
             }
-            let error = result.expect_err(sql);
-            assert!(expected(class).contains(&error), "{class} {error:?}: {sql}");
+            let error = match result {
+                Err(error) if format!("{error:?}") == rejection => error,
+                other => {
+                    mismatches.push(format!(
+                        "{class}: expected {rejection}, got {other:?}: {sql}"
+                    ));
+                    continue;
+                }
+            };
             // Secret reflection: a rejection never carries any of its input.
             let shown = format!("{error} {error:?}");
             assert!(!shown.contains("synthetic"), "{shown}");
@@ -598,7 +645,8 @@ mod tests {
             }
             refused += 1;
         }
-        assert_eq!((accepted, refused), (5, 40));
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+        assert_eq!((accepted, refused), (5, 47));
 
         // Whitespace and keyword case do not change the normalized digest.
         let canonical = gate("SELECT id, name FROM main.customers ORDER BY id", &allowed).unwrap();

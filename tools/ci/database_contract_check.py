@@ -79,12 +79,13 @@ def guarded(path: Path) -> sqlite3.Connection:
 
 
 def corpus() -> list[tuple[str, str, str]]:
+    """Rows are class, engine effect, exact Rust gate rejection, SQL."""
     rows = []
     for number, line in enumerate((FIXTURES / "queries.tsv").read_text(encoding="utf-8").splitlines(), 1):
         fields = line.split("\t")
-        if len(fields) != 3 or not all(fields):
-            raise ValueError(f"queries.tsv line {number} is not class<TAB>effect<TAB>sql")
-        rows.append((fields[0], fields[1], fields[2]))
+        if len(fields) != 4 or not all(fields) or (fields[0] == "allowed") != (fields[2] == "-"):
+            raise ValueError(f"queries.tsv line {number} is not class<TAB>effect<TAB>rejection<TAB>sql")
+        rows.append((fields[0], fields[1], fields[3]))
     return rows
 
 

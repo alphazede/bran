@@ -1,45 +1,52 @@
-allowed	-	SELECT id, name, region FROM main.customers ORDER BY id
-allowed	-	SELECT o.id, o.total_cents FROM main.orders AS o WHERE o.status = 'paid' ORDER BY o.id
-allowed	-	SELECT c.region, count(*) AS order_count FROM main.customers AS c JOIN main.orders AS o ON o.customer_id = c.id GROUP BY c.region ORDER BY c.region
-allowed	-	SELECT customer_id, total_cents FROM main.order_totals WHERE total_cents > ? ORDER BY customer_id
-allowed	-	select id from main.orders where status in ('paid', 'shipped') and total_cents between 100 and 5000 order by id limit 3
-write	mutates	INSERT INTO main.orders VALUES (99, 1, 100, 'paid')
-write	mutates	UPDATE main.orders SET status = 'void' WHERE id = 1
-write	mutates	DELETE FROM main.orders
-write	mutates	DROP TABLE main.orders
-write	mutates	CREATE TABLE main.copied AS SELECT * FROM main.customers
-write	mutates	REPLACE INTO main.orders VALUES (1, 1, 1, 'void')
-write	-	SELECT * INTO backup_orders FROM main.orders ORDER BY id
-write	-	WITH gone AS (DELETE FROM main.orders RETURNING *) SELECT * FROM gone ORDER BY 1
-multi-statement	mutates	SELECT id FROM main.orders ORDER BY id; DELETE FROM main.orders
-multi-statement	mutates	SELECT 1 FROM main.orders ORDER BY 1; UPDATE main.orders SET total_cents = 0
-multi-statement	gate-only	SELECT id FROM main.orders ORDER BY id;
-session	-	PRAGMA writable_schema = ON
-session	-	SET search_path TO attacker_schema
-session	-	BEGIN IMMEDIATE
-session	-	SELECT id FROM main.orders ORDER BY id FOR UPDATE
-procedure	-	CALL refresh_orders()
-procedure	-	EXEC xp_cmdshell 'whoami'
-procedure	-	EXECUTE prepared_delete
-unsafe-function	-	SELECT load_extension('synthetic_extension') FROM main.orders ORDER BY 1
-unsafe-function	-	SELECT readfile('/etc/passwd') FROM main.orders ORDER BY 1
-unsafe-function	-	SELECT pg_read_file('pg_hba.conf') FROM main.orders ORDER BY 1
-unsafe-function	-	SELECT pg_sleep(600) FROM main.orders ORDER BY 1
-unsafe-function	-	SELECT randomblob(1000000000) FROM main.orders ORDER BY 1
-unsafe-function	-	SELECT "load_extension"('synthetic_extension') FROM main.orders ORDER BY 1
-unsafe-function	-	SELECT attacker.count(id) FROM main.orders ORDER BY 1
-external-link	-	ATTACH DATABASE ':memory:' AS exfil
-external-link	-	SELECT * FROM remote_orders@finance_link ORDER BY 1
-external-link	-	SELECT * FROM finance.dbo.main.orders ORDER BY 1
-external-link	-	SELECT * FROM dblink('host=db.example.invalid', 'SELECT 1') AS t ORDER BY 1
-external-link	-	SELECT * FROM OPENROWSET('SQLNCLI', 'Server=db.example.invalid', 'SELECT 1') ORDER BY 1
-external-link	-	IMPORT FOREIGN SCHEMA public FROM SERVER finance INTO local_schema
-compound	gate-only	SELECT id FROM main.orders UNION SELECT id FROM main.customers ORDER BY 1
-compound	gate-only	SELECT id FROM main.orders WHERE customer_id IN (SELECT id FROM main.customers) ORDER BY id
-compound	gate-only	WITH recent AS (SELECT id FROM main.orders) SELECT id FROM recent ORDER BY id
-secret-reflection	-	SELECT 'password=synthetic-secret-value' FROM main.orders ORDER BY 1; DROP TABLE main.orders
-secret-reflection	gate-only	SELECT id FROM main.orders WHERE status = 'access_token=synthetic-token-value' ORDER BY id -- hidden
-secret-reflection	-	SELECT pg_read_file('postgres://reader:synthetic-password@db.example.invalid/orders') FROM main.orders ORDER BY 1
-policy	gate-only	SELECT id FROM orders ORDER BY id
-policy	gate-only	SELECT id FROM main.orders
-policy	-	SELECT name FROM main.sqlite_master ORDER BY 1
+allowed	-	-	SELECT id, name, region FROM main.customers ORDER BY id
+allowed	-	-	SELECT o.id, o.total_cents FROM main.orders AS o WHERE o.status = 'paid' ORDER BY o.id
+allowed	-	-	SELECT c.region, count(*) AS order_count FROM main.customers AS c JOIN main.orders AS o ON o.customer_id = c.id GROUP BY c.region ORDER BY c.region
+allowed	-	-	SELECT customer_id, total_cents FROM main.order_totals WHERE total_cents > ? ORDER BY customer_id
+allowed	-	-	select id from main.orders where status in ('paid', 'shipped') and total_cents between 100 and 5000 order by id limit 3
+write	mutates	WriteOrDdl	INSERT INTO main.orders VALUES (99, 1, 100, 'paid')
+write	mutates	WriteOrDdl	UPDATE main.orders SET status = 'void' WHERE id = 1
+write	mutates	WriteOrDdl	DELETE FROM main.orders
+write	mutates	WriteOrDdl	DROP TABLE main.orders
+write	mutates	WriteOrDdl	CREATE TABLE main.copied AS SELECT * FROM main.customers
+write	mutates	WriteOrDdl	REPLACE INTO main.orders VALUES (1, 1, 1, 'void')
+write	-	WriteOrDdl	SELECT * INTO backup_orders FROM main.orders ORDER BY id
+write	-	WriteOrDdl	WITH gone AS (DELETE FROM main.orders RETURNING *) SELECT * FROM gone ORDER BY 1
+multi-statement	mutates	MultiStatement	SELECT id FROM main.orders ORDER BY id; DELETE FROM main.orders
+multi-statement	mutates	MultiStatement	SELECT 1 FROM main.orders ORDER BY 1; UPDATE main.orders SET total_cents = 0
+multi-statement	gate-only	MultiStatement	SELECT id FROM main.orders ORDER BY id;
+session	-	SessionMutation	PRAGMA writable_schema = ON
+session	-	SessionMutation	SET search_path TO attacker_schema
+session	-	SessionMutation	BEGIN IMMEDIATE
+session	-	SessionMutation	SELECT id FROM main.orders ORDER BY id FOR UPDATE
+procedure	-	ProcedureCall	CALL refresh_orders()
+procedure	-	ProcedureCall	EXEC xp_cmdshell 'whoami'
+procedure	-	ProcedureCall	EXECUTE prepared_delete
+unsafe-function	-	UnsafeFunction	SELECT load_extension('synthetic_extension') FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT readfile('/etc/passwd') FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT pg_read_file('pg_hba.conf') FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT pg_sleep(600) FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT randomblob(1000000000) FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT "load_extension"('synthetic_extension') FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT attacker.count(id) FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT first(id) FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT like('%', id) FROM main.orders ORDER BY 1
+unsafe-function	-	UnsafeFunction	SELECT 'randomblob'(4) FROM main.orders ORDER BY 1
+external-link	-	ExternalReference	ATTACH DATABASE ':memory:' AS exfil
+external-link	-	ExternalReference	SELECT * FROM remote_orders@finance_link ORDER BY 1
+external-link	-	ExternalReference	SELECT * FROM finance.dbo.main.orders ORDER BY 1
+external-link	-	ExternalReference	SELECT * FROM dblink('host=db.example.invalid', 'SELECT 1') AS t ORDER BY 1
+external-link	-	ExternalReference	SELECT * FROM OPENROWSET('SQLNCLI', 'Server=db.example.invalid', 'SELECT 1') ORDER BY 1
+external-link	-	ExternalReference	IMPORT FOREIGN SCHEMA public FROM SERVER finance INTO local_schema
+compound	gate-only	Compound	SELECT id FROM main.orders UNION SELECT id FROM main.customers ORDER BY 1
+compound	gate-only	Compound	SELECT id FROM main.orders WHERE customer_id IN (SELECT id FROM main.customers) ORDER BY id
+compound	gate-only	Compound	WITH recent AS (SELECT id FROM main.orders) SELECT id FROM recent ORDER BY id
+secret-reflection	-	MultiStatement	SELECT 'password=synthetic-secret-value' FROM main.orders ORDER BY 1; DROP TABLE main.orders
+secret-reflection	gate-only	Comment	SELECT id FROM main.orders WHERE status = 'access_token=synthetic-token-value' ORDER BY id -- hidden
+secret-reflection	-	UnsafeFunction	SELECT pg_read_file('postgres://reader:synthetic-password@db.example.invalid/orders') FROM main.orders ORDER BY 1
+policy	gate-only	UnqualifiedRelation	SELECT id FROM orders ORDER BY id
+policy	gate-only	Unordered	SELECT id FROM main.orders
+policy	-	RelationNotAllowed	SELECT name FROM main.sqlite_master ORDER BY 1
+policy	-	Malformed	SELECT s.name FROM main.orders NOT INDEXED, main.sqlite_master AS s ORDER BY s.name
+policy	-	Malformed	SELECT id FROM main.orders INDEXED BY sqlite_autoindex_orders_1 ORDER BY id
+policy	-	RelationNotAllowed	SELECT s.name FROM main.orders AS o JOIN main.customers AS c ON c.id = o.customer_id, main.sqlite_master AS s ORDER BY 1
+policy	-	Malformed	SELECT id FROM main.orders WHERE status IN main.customers ORDER BY id
