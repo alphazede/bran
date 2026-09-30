@@ -23,6 +23,7 @@ const WORKBOOK_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
 const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const OFFICE_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const STRICT_OFFICE_REL: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships";
 const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const MAX_ROW: u32 = 1_048_576;
 const MAX_COLUMN: u32 = 16_384;
@@ -298,7 +299,9 @@ impl<'a> Reader<'a> {
         let mut entries: Vec<[String; 4]> = Vec::new();
         let mut defined: Vec<(Vec<(String, String)>, String)> = Vec::new();
         let mut stack: Vec<String> = Vec::new();
-        for event in self.events(workbook)? {
+        let events = self.events(workbook)?;
+        let prefixes = relationship_prefixes(&events);
+        for event in events {
             match event {
                 Event::Open { name, attributes } => {
                     match (stack.len(), name.as_str()) {
@@ -315,7 +318,9 @@ impl<'a> Reader<'a> {
                             required(&attributes, "name")?.to_owned(),
                             required(&attributes, "sheetId")?.to_owned(),
                             attr(&attributes, "state").unwrap_or("visible").to_owned(),
-                            required(&attributes, "id")?.to_owned(),
+                            relationship_id(&attributes, &prefixes)
+                                .ok_or(Refusal::MalformedContainer)?
+                                .to_owned(),
                         ]),
                         (2, "definedName") if stack[1] == "definedNames" => {
                             defined.push((attributes.clone(), String::new()))
@@ -569,7 +574,9 @@ impl<'a> Reader<'a> {
         let mut cell: Option<RawCell> = None;
         let (mut row, mut column) = (0u32, 0u32);
         let mut stack: Vec<String> = Vec::new();
-        for event in self.events(part)? {
+        let events = self.events(part)?;
+        let prefixes = relationship_prefixes(&events);
+        for event in events {
             match event {
                 Event::Open { name, attributes } => {
                     let parent = stack.last().map(String::as_str).unwrap_or_default();
@@ -657,7 +664,8 @@ impl<'a> Reader<'a> {
                             merged.push(s(reference));
                         }
                         (2, "hyperlink") if parent == "hyperlinks" => {
-                            let link = self.hyperlink(&attributes, &links)?;
+                            let id = relationship_id(&attributes, &prefixes);
+                            let link = self.hyperlink(&attributes, id, &links)?;
                             hyperlinks.push(link);
                         }
                         (2, "dataValidation") if parent == "dataValidations" => {
@@ -880,11 +888,12 @@ impl<'a> Reader<'a> {
     fn hyperlink(
         &mut self,
         attributes: &[(String, String)],
+        id: Option<&str>,
         links: &BTreeMap<String, &Relationship>,
     ) -> Result<Json, Refusal> {
         let reference = required(attributes, "ref")?;
         range(reference).ok_or(Refusal::MalformedContainer)?;
-        let target = match attr(attributes, "id").and_then(|id| links.get(id)) {
+        let target = match id.and_then(|id| links.get(id)) {
             Some(relationship) if relationship.external && kind(relationship) == "hyperlink" => {
                 self.consume(relationship);
                 Some(relationship.target.as_str())
@@ -2085,6 +2094,37 @@ fn kebab(name: &str) -> String {
     out
 }
 
+/// Prefixes a part binds to the relationships namespace. Attribute keys keep
+/// their prefix as written, so a relationship id is found through the
+/// namespace binding, never by assuming the conventional `r:` or by a local
+/// name that a foreign namespace could also use.
+fn relationship_prefixes(events: &[Event]) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Open { attributes, .. } => Some(attributes),
+            _ => None,
+        })
+        .flatten()
+        .filter(|(_, value)| value == OFFICE_REL || value == STRICT_OFFICE_REL)
+        .filter_map(|(key, _)| key.strip_prefix("xmlns:").map(str::to_owned))
+        .collect()
+}
+
+fn relationship_id<'b>(
+    attributes: &'b [(String, String)],
+    prefixes: &BTreeSet<String>,
+) -> Option<&'b str> {
+    attributes
+        .iter()
+        .find(|(key, _)| {
+            key.split_once(':')
+                .is_some_and(|(prefix, local)| local == "id" && prefixes.contains(prefix))
+        })
+        .map(|(_, value)| value.as_str())
+}
+
+/// An unprefixed attribute: SpreadsheetML's own attributes have no namespace.
 fn attr<'b>(attributes: &'b [(String, String)], key: &str) -> Option<&'b str> {
     attributes
         .iter()

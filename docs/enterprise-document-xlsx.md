@@ -46,6 +46,12 @@ stored under `cached`, apart from `formula`, and a formula cell's anchor text
 reads `=SUM(Table1[Value]) [cached: 42]`. A formula without a cached value
 gets no value. BRAN never recalculates.
 
+Relationship ids (`r:id` on sheets and hyperlinks) are resolved through the
+part's namespace binding for the relationships namespace, transitional or
+strict, whatever prefix the producer chose. The shared XML reader keeps
+attribute prefixes as written, so an `id` in a foreign namespace never stands
+in for a relationship id. SpreadsheetML's own attributes are unprefixed.
+
 Anchor ids are stable across export and re-import because they use
 workbook identities, not part names: `anc:xlsx:s<sheetId>` (role `sheet`),
 `anc:xlsx:s<sheetId>:r<row>c<column>` (role `cell`, or `header` in a table's
@@ -169,7 +175,9 @@ unsupported, and export refuses them rather than write an invalid formula.
 ## Independent readers
 
 On 2026-09-30 the exports of the base and feature fixtures were opened in
-two independent readers. `xlsx_reader_samples` writes them when
+two independent readers, and again after the adapter moved to the stricter
+shared intake (prefixed attribute keys, XML 1.0 character checks, exact
+deflate and local-header checks). `xlsx_reader_samples` writes them when
 `BRAN_XLSX_READER_DIR` is set; it is ignored by default, and the readers are
 not dependencies of any crate or gate.
 
@@ -185,7 +193,7 @@ not dependencies of any crate or gate.
 |---|---|---|
 | Deterministic regardless of ZIP entry order, shared-string ordering, timestamps | done | `xlsx_import_is_deterministic`; conformance re-encoding step on every admitted row |
 | Fixtures cover formulas and cached values, tables, named ranges, merged cells, comments, links, charts, images | done | `fixtures/enterprise-documents/conformance/xlsx-features.parts`; `xlsx_features_import`; `xlsx_cached_results_are_never_presented_as_calculated` |
-| Adversarial fixtures: external links, macro-enabled workbooks, malformed XML, path escape, decompression limits | done | `xlsx_hostile_workbooks_are_refused` and the 30 shared package rows run through the adapter |
+| Adversarial fixtures: external links, macro-enabled workbooks, malformed XML, path escape, decompression limits | done | `xlsx_hostile_workbooks_are_refused`, `xlsx_relationship_ids_resolve_through_namespace_bindings`, and the 39 shared package rows run through the adapter |
 | Exported workbooks open in two independent readers and include a fidelity receipt | done | Reader table above; receipt part checked in `xlsx_round_trip_preserves_supported_content` |
 | Import-export-import preserves cell types, formulas, sheet identities, relationships, citation locators | done | `xlsx_round_trip_preserves_supported_content`; conformance row `xlsx-round-trip-anchors` |
 | DLP and public-boundary checks run before export | done | `xlsx_export_runs_dlp_and_public_boundary_first` |

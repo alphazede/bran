@@ -575,6 +575,67 @@ fn xlsx_active_formulas_are_quarantined() {
     assert_eq!(xlsx::export(&imported).err(), Some(Refusal::ActiveContent));
 }
 
+/// Attribute keys keep their prefix as written: a relationship id resolves
+/// through its namespace binding, whatever the prefix, and an `id` in a
+/// foreign namespace never stands in for it. Control characters travel as
+/// `_xHHHH_` escapes, which the strict XML reader accepts; a raw control
+/// character reference is refused.
+#[test]
+fn xlsx_relationship_ids_resolve_through_namespace_bindings() {
+    let reference = features();
+    let mut renamed = Parts::parse(FEATURES)
+        .edit(WORKBOOK, "xmlns:r=", "xmlns:rel=")
+        .edit(WORKBOOK, r#"r:id="rId1""#, r#"rel:id="rId1""#)
+        .edit(WORKBOOK, r#"r:id="rId2""#, r#"rel:id="rId2""#)
+        .edit(SHEET1, "xmlns:r=", "xmlns:q=");
+    for id in ["rId1", "rId2", "rId3", "rId4"] {
+        renamed = renamed.edit(SHEET1, &format!("r:id=\"{id}\""), &format!("q:id=\"{id}\""));
+    }
+    assert_eq!(import(&renamed.zip()).expect("any bound prefix"), reference);
+
+    let foreign = Parts::parse(FEATURES)
+        .edit(
+            WORKBOOK,
+            r#"r:id="rId2""#,
+            r#"x:id="rId2" xmlns:x="urn:synthetic:other""#,
+        )
+        .zip();
+    assert_eq!(import(&foreign), Err(Refusal::MalformedContainer));
+    let foreign_link = Parts::parse(FEATURES)
+        .edit(
+            SHEET1,
+            r#"<hyperlink ref="A2" r:id="rId1"/>"#,
+            r#"<hyperlink ref="A2" x:id="rId1" xmlns:x="urn:synthetic:other"/>"#,
+        )
+        .zip();
+    let canonical = text(&import(&foreign_link).expect("imports"));
+    assert!(
+        canonical.contains(r#""hyperlinks":[{"ref":"A2"},"#),
+        "{canonical}"
+    );
+    // The relationship nothing claimed is still listed, never dropped.
+    assert!(
+        canonical.contains(r#"{"kind":"hyperlink","relationship":"#),
+        "{canonical}"
+    );
+
+    let control = Parts::parse(FEATURES)
+        .edit(
+            "xl/sharedStrings.xml",
+            "<t>Alpha</t>",
+            "<t>Alpha_x0007_</t>",
+        )
+        .zip();
+    let first = import(&control).expect("escaped control imports");
+    assert!(text(&first).contains(r#""value":"Alpha\u0007""#));
+    let again = import(&exported(&first).bytes).expect("export passes the strict reader");
+    assert_eq!(again.anchors, first.anchors);
+    let raw = Parts::parse(FEATURES)
+        .edit("xl/sharedStrings.xml", "<t>Alpha</t>", "<t>Alpha&#7;</t>")
+        .zip();
+    assert_eq!(import(&raw), Err(Refusal::MalformedXml));
+}
+
 fn exported(imported: &Imported) -> Exported {
     xlsx::export(imported).expect("export succeeds")
 }
