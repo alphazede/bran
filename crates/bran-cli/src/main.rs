@@ -1,3 +1,6 @@
+mod source_revision;
+
+use source_revision::SourceRevision;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -134,20 +137,108 @@ impl TypedExit {
     }
 }
 
+/// Deployment configuration for registered-root mode
+/// (docs/deployment-profile.md). Set by the operator, never by a request.
+const REGISTERED_ROOTS_ENV: &str = "BRAN_REGISTERED_ROOTS";
+/// Largest `query`/`packet` request text admitted in registered-root mode.
+const MAX_REGISTERED_REQUEST_BYTES: usize = 8 * 1024;
+const UNAVAILABLE_IN_REGISTERED_ROOT_MODE: &str = "unavailable_in_registered_root_mode";
+
+/// Registered-root mode: every entry is an absolute directory spelled exactly
+/// as its canonical path, and a request root must equal one byte for byte.
+struct RegisteredRoots(Vec<PathBuf>);
+
+impl RegisteredRoots {
+    fn parse(value: &OsStr) -> Result<Self, &'static str> {
+        let roots: Vec<PathBuf> = std::env::split_paths(value).collect();
+        let exact = |root: &PathBuf| {
+            root.is_absolute()
+                && fs::canonicalize(root)
+                    .is_ok_and(|real| real.as_os_str() == root.as_os_str() && real.is_dir())
+        };
+        if roots.iter().all(exact) {
+            Ok(Self(roots))
+        } else {
+            Err("registered_roots_invalid")
+        }
+    }
+
+    fn admit_root(&self, root: &str) -> Result<(), &'static str> {
+        if self
+            .0
+            .iter()
+            .any(|entry| entry.as_os_str() == OsStr::new(root))
+        {
+            Ok(())
+        } else {
+            Err("root_not_registered")
+        }
+    }
+}
+
+fn admit_registered_request(text: &str) -> Result<(), &'static str> {
+    if text.len() > MAX_REGISTERED_REQUEST_BYTES {
+        Err("request_oversized")
+    } else if !is_public_dlp_safe(text) {
+        Err("request_dlp_rejected")
+    } else {
+        Ok(())
+    }
+}
+
+/// Registered-root rejections never echo the command, root, or request.
+fn make_registered_mode_error(detail: &str) -> String {
+    make_envelope("", "error", "null", &[], &[detail.to_owned()], "{}", "{}")
+}
+
+/// Each root's git HEAD, in request order, as registered-root provenance.
+fn source_revisions_json<'a>(roots: impl IntoIterator<Item = &'a str>) -> String {
+    let entries = roots
+        .into_iter()
+        .map(|root| {
+            let (status, reference, value, reason) = match source_revision::read(Path::new(root)) {
+                SourceRevision::Attested { reference, commit } => (
+                    "attested",
+                    reference.map_or("null".to_owned(), |name| {
+                        format!("\"{}\"", json_escape(&name))
+                    }),
+                    format!("\"{commit}\""),
+                    "null".to_owned(),
+                ),
+                SourceRevision::Unavailable(reason) => (
+                    "unavailable",
+                    "null".to_owned(),
+                    "null".to_owned(),
+                    format!("\"{reason}\""),
+                ),
+            };
+            format!(
+                "{{\"root\":\"{}\",\"kind\":\"git-head\",\"status\":\"{status}\",\"ref\":{reference},\"value\":{value},\"reason\":{reason}}}",
+                json_escape(root)
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", entries.join(","))
+}
+
+/// Registered-root mode appends `source_revisions` to provenance; without it
+/// the envelope is unchanged.
+fn registered_provenance(provenance: &str, revisions: Option<&str>) -> String {
+    match (revisions, provenance.strip_suffix('}')) {
+        (Some(list), Some("{")) => format!("{{\"source_revisions\":{list}}}"),
+        (Some(list), Some(body)) => format!("{body},\"source_revisions\":{list}}}"),
+        _ => provenance.to_owned(),
+    }
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() == 1
-        && arguments[0] == "tui"
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-    {
+    let registry = std::env::var_os(REGISTERED_ROOTS_ENV);
+    let is_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if registry.is_none() && arguments.len() == 1 && arguments[0] == "tui" && is_terminal {
         return run_tui();
     }
-    CliApp::run_for_terminal(
-        arguments,
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-    )
-    .write_to_stdio()
+    CliApp::run_inner(arguments, is_terminal, None, registry).write_to_stdio()
 }
 
 struct CliApp;
@@ -159,7 +250,7 @@ impl CliApp {
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
     {
-        Self::run_inner(arguments, false, None)
+        Self::run_inner(arguments, false, None, None)
     }
 
     #[cfg(test)]
@@ -168,18 +259,24 @@ impl CliApp {
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
     {
-        Self::run_inner(arguments, false, Some(stdin))
+        Self::run_inner(arguments, false, Some(stdin), None)
     }
 
+    #[cfg(test)]
     fn run_for_terminal<I>(arguments: I, is_terminal: bool) -> CliResult
     where
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
     {
-        Self::run_inner(arguments, is_terminal, None)
+        Self::run_inner(arguments, is_terminal, None, None)
     }
 
-    fn run_inner<I>(arguments: I, is_terminal: bool, stdin_bytes: Option<&[u8]>) -> CliResult
+    fn run_inner<I>(
+        arguments: I,
+        is_terminal: bool,
+        stdin_bytes: Option<&[u8]>,
+        registry: Option<OsString>,
+    ) -> CliResult
     where
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
@@ -193,6 +290,21 @@ impl CliApp {
             },
             None => return CliResult::usage(MISSING_COMMAND_ERROR.to_owned()),
         };
+
+        // Registered-root mode admits no other command, not even help or smoke,
+        // and an empty or invalid registry refuses every command.
+        let registered = match registry {
+            Some(value) => match RegisteredRoots::parse(&value) {
+                Ok(roots) => Some(roots),
+                Err(detail) => return CliResult::operation(make_registered_mode_error(detail)),
+            },
+            None => None,
+        };
+        if registered.is_some() && !matches!(cmd, "check" | "query" | "packet") {
+            return CliResult::usage(make_registered_mode_error(
+                UNAVAILABLE_IN_REGISTERED_ROOT_MODE,
+            ));
+        }
 
         match cmd {
             "-h" | "--help" | "help" => {
@@ -260,6 +372,24 @@ impl CliApp {
                 if qtext.trim().is_empty() {
                     return CliResult::usage(make_query_error("missing_query"));
                 }
+                if let Some(roots) = &registered {
+                    let admitted = if record {
+                        Err(UNAVAILABLE_IN_REGISTERED_ROOT_MODE)
+                    } else {
+                        std::iter::once(&root)
+                            .chain(&added)
+                            .try_for_each(|candidate| roots.admit_root(candidate))
+                            .and_then(|()| admit_registered_request(&qtext))
+                    };
+                    if let Err(detail) = admitted {
+                        return CliResult::usage(make_query_error(detail));
+                    }
+                }
+                let revisions = registered.as_ref().map(|_| {
+                    source_revisions_json(
+                        std::iter::once(root.as_str()).chain(added.iter().map(String::as_str)),
+                    )
+                });
                 let result = if added.is_empty() {
                     do_query(root, qtext, record)
                 } else {
@@ -275,7 +405,7 @@ impl CliApp {
                             &data,
                             &warns,
                             &fails,
-                            &provenance,
+                            &registered_provenance(&provenance, revisions.as_deref()),
                             &metrics,
                         ))
                     }
@@ -285,7 +415,7 @@ impl CliApp {
                         "null",
                         &[],
                         &[msg],
-                        "{}",
+                        &registered_provenance("{}", revisions.as_deref()),
                         "{}",
                     )),
                 }
@@ -309,17 +439,36 @@ impl CliApp {
                 if qtext.trim().is_empty() {
                     return CliResult::usage(make_packet_error("missing_query"));
                 }
+                if let Some(roots) = &registered {
+                    if let Err(detail) = roots
+                        .admit_root(&root)
+                        .and_then(|()| admit_registered_request(&qtext))
+                    {
+                        return CliResult::usage(make_packet_error(detail));
+                    }
+                }
+                let revisions = registered
+                    .as_ref()
+                    .map(|_| source_revisions_json([root.as_str()]));
                 match do_packet(root, qtext, &controls) {
-                    Ok((data, warns, fails, provenance, metrics)) => CliResult::success(
-                        make_envelope("packet", "ok", &data, &warns, &fails, &provenance, &metrics),
-                    ),
+                    Ok((data, warns, fails, provenance, metrics)) => {
+                        CliResult::success(make_envelope(
+                            "packet",
+                            "ok",
+                            &data,
+                            &warns,
+                            &fails,
+                            &registered_provenance(&provenance, revisions.as_deref()),
+                            &metrics,
+                        ))
+                    }
                     Err(failure) => CliResult::operation(make_envelope(
                         "packet",
                         "error",
                         &failure.data,
                         &[],
                         &[failure.detail],
-                        "{}",
+                        &registered_provenance("{}", revisions.as_deref()),
                         &failure.metrics,
                     )),
                 }
@@ -338,6 +487,12 @@ impl CliApp {
                     return CliResult::usage(make_check_error("invalid_policy_stdin_flag"));
                 }
                 let (policy_source, root, profile) = match args.first().map(String::as_str) {
+                    // A request must not replace repository policy in registered-root mode.
+                    Some("--policy-stdin") if registered.is_some() => {
+                        return CliResult::usage(make_check_error(
+                            UNAVAILABLE_IN_REGISTERED_ROOT_MODE,
+                        ));
+                    }
                     Some("--policy-stdin") => {
                         let root = match args.get(1) {
                             Some(r) => r.clone(),
@@ -417,18 +572,34 @@ impl CliApp {
                         if args.len() > 2 {
                             return CliResult::usage(make_check_error("too_many_args"));
                         }
+                        if let Some(Err(detail)) =
+                            registered.as_ref().map(|roots| roots.admit_root(r))
+                        {
+                            return CliResult::usage(make_check_error(detail));
+                        }
                         let p = match RepositoryPolicy::load(Path::new(r)) {
                             Ok(p) => p,
                             Err(e) => {
-                                return CliResult::usage(make_check_error(&policy_error_failure(
-                                    &e,
-                                )));
+                                let revisions =
+                                    registered.as_ref().map(|_| source_revisions_json([r]));
+                                return CliResult::usage(make_envelope(
+                                    "check",
+                                    "error",
+                                    "null",
+                                    &[],
+                                    &[policy_error_failure(&e)],
+                                    &registered_provenance("{}", revisions.as_deref()),
+                                    "{}",
+                                ));
                             }
                         };
                         ("repository-file", r.to_owned(), (profile, p))
                     }
                     None => return CliResult::usage(make_check_error("missing_root")),
                 };
+                let revisions = registered
+                    .as_ref()
+                    .map(|_| source_revisions_json([root.as_str()]));
                 match do_check(root, profile.0, &profile.1, policy_source) {
                     Ok((data, warns, fails, exitc, status, provenance, metrics)) => {
                         let mut r = CliResult::success(make_envelope(
@@ -437,7 +608,7 @@ impl CliApp {
                             &data,
                             &warns,
                             &fails,
-                            &provenance,
+                            &registered_provenance(&provenance, revisions.as_deref()),
                             &metrics,
                         ));
                         r.exit_code = exitc;
@@ -450,7 +621,7 @@ impl CliApp {
                         "null",
                         &[],
                         &[msg],
-                        "{}",
+                        &registered_provenance("{}", revisions.as_deref()),
                         "{}",
                     )),
                 }

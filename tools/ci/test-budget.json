@@ -476,6 +476,28 @@
       "support_fixtures": []
     },
     {
+      "stable_id": "P8-DEPLOYMENT-CONTRACT",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "python",
+      "name": "tools/ci/deployment_contract_check.py",
+      "category": "security",
+      "classification": "new",
+      "source": "tools/ci/deployment_contract_check.py",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DEPLOYMENT-PROFILE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_deployment_profile",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/deployment_profile.rs",
+      "support_fixtures": []
+    },
+    {
       "stable_id": "P8-SCIP-BASELINE",
       "phase": 8,
       "slice": "8.7",
@@ -501,6 +523,17 @@
       "support_fixtures": [
         "fixtures/symbols/symbol-navigation-v1.json"
       ]
+    },
+    {
+      "stable_id": "P8-SOURCE-REVISION",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_source_revision",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-cli/src/source_revision.rs",
+      "support_fixtures": []
     },
     {
       "stable_id": "P8-STATE-STORE",
