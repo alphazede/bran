@@ -42,6 +42,12 @@ adds PPTX rules:
 Nothing is fetched, executed, or played. External hyperlinks are recorded as
 text and receipted as `hyperlink-not-fetched` by the intake.
 
+The shared reader keeps attribute prefixes as written. The adapter resolves
+relationship attributes (`id`, `embed`, `link`) by namespace, not by prefix:
+any prefix bound to the Transitional or Strict relationship namespace reads as
+`r:`, and `r` bound to another namespace is not a relationship attribute. A
+producer's prefix choice therefore cannot hide a link or an image.
+
 ## Canonical content
 
 `import` returns the harness `Imported` value. Its canonical bytes are
@@ -142,6 +148,7 @@ Tests are in `crates/bran-document/tests/pptx.rs`; the corpus rows are in
 |---|---|
 | `pptx_import_maps_presentation_structure` | slide order, ids, sections, layouts, hidden slides, reading order, groups, text boxes, runs, breaks, fields, links, tables, notes, comments, alt text, assets, anchors, receipt |
 | `pptx_import_ignores_archive_order_timestamps_and_compression` | determinism across re-encodings |
+| `pptx_relationship_attributes_resolve_by_namespace` | relationship attributes read by namespace, not prefix |
 | `pptx_ordinary_projection_is_recorded` | recorded canonical digest |
 | `pptx_unsupported_features_are_receipted` | transitions, animations, charts, SmartArt, video, alternate content |
 | `pptx_adversarial_decks_are_refused` | 25 hostile decks through `conformance::check` |

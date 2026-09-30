@@ -221,7 +221,7 @@ not use.
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
 | Measured on 2026-09-30 (debug build) | 0.8 s, 120 checks | 23.7 s, 120 checks |
-| Measured on 2026-09-30 (debug build, PPTX adapter registered) | 0.7 s, 126 checks | 28.7 s, 126 checks |
+| Measured on 2026-09-30 (debug build, PPTX adapter registered) | 1.0 s, 162 checks | 28.6 s, 162 checks |
 | Fixture file size | 8 KiB each | same files |
 
 The budgets are constants at the top of the test file. A tier that runs

@@ -42,6 +42,11 @@ const MAIN_TYPES: [&str; 3] = [
     "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
 ];
 const TABLE_URI: &str = "http://schemas.openxmlformats.org/drawingml/2006/table";
+/// Transitional and Strict relationship namespaces.
+const REL_NAMESPACES: [&str; 2] = [
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "http://purl.oclc.org/ooxml/officeDocument/relationships",
+];
 /// Relationship types whose targets are embedded or executable objects.
 const EMBEDDED: [&str; 3] = ["/package", "/oleObject", "/control"];
 /// Click actions that start a program, macro, or OLE verb.
@@ -164,15 +169,54 @@ struct Node {
 
 /// Arena tree over the shared reader's events. Nodes are in document order
 /// and `end` closes each subtree, so nothing here recurses to build or drop.
+/// Attributes in a relationship namespace are keyed `r:<local>` whatever
+/// prefix the part bound to it, so a producer's prefix choice cannot hide a
+/// link or image; `r` bound to any other namespace becomes `r-foreign:`.
+/// Every other key stays as the shared reader wrote it.
 struct Dom(Vec<Node>);
 
 impl Dom {
     fn parse(data: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Self, Refusal> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut open: Vec<usize> = Vec::new();
+        // Namespace declarations of each open element, innermost last.
+        let mut scopes: Vec<Vec<(String, String)>> = Vec::new();
         for event in xml::parse(data, limits, cancel)? {
             match event {
-                Event::Open { name, attributes } => {
+                Event::Open {
+                    name,
+                    mut attributes,
+                } => {
+                    let declared: Vec<(String, String)> = attributes
+                        .iter()
+                        .filter_map(|(key, uri)| {
+                            key.strip_prefix("xmlns:")
+                                .map(|prefix| (prefix.to_owned(), uri.clone()))
+                        })
+                        .collect();
+                    for (key, _) in &mut attributes {
+                        let renamed = match key.split_once(':') {
+                            Some((prefix, local)) if prefix != "xmlns" => {
+                                let uri = declared
+                                    .iter()
+                                    .chain(scopes.iter().rev().flatten())
+                                    .find(|(bound, _)| bound == prefix)
+                                    .map(|(_, uri)| uri.as_str());
+                                match uri {
+                                    Some(uri) if REL_NAMESPACES.contains(&uri) => {
+                                        Some(format!("r:{local}"))
+                                    }
+                                    Some(_) if prefix == "r" => Some(format!("r-foreign:{local}")),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(renamed) = renamed {
+                            *key = renamed;
+                        }
+                    }
+                    scopes.push(declared);
                     let index = nodes.len();
                     if let Some(&parent) = open.last() {
                         nodes[parent].children.push(index);
@@ -187,6 +231,7 @@ impl Dom {
                     open.push(index);
                 }
                 Event::Close => {
+                    scopes.pop();
                     if let Some(index) = open.pop() {
                         nodes[index].end = nodes.len();
                     }
@@ -396,16 +441,7 @@ impl<'a> Deck<'a> {
             .into_iter()
             .flat_map(|list| dom.named(list, "sldId"))
         {
-            // `id` and `r:id` share a local name. A slide id is numeric; a
-            // relationship id is an xsd:ID, which never starts with a digit.
-            let (mut id, mut rid) = (None, None);
-            for (key, value) in &dom.0[entry].attributes {
-                if key == "id" && value.starts_with(|c: char| c.is_ascii_digit()) {
-                    id = Some(value.as_str());
-                } else if key == "id" {
-                    rid = Some(value.as_str());
-                }
-            }
+            let (id, rid) = (dom.attr(entry, "id"), dom.attr(entry, "r:id"));
             let id = id
                 .and_then(|value| value.parse::<u32>().ok())
                 .filter(|value| (256..=2_147_483_647).contains(value))
@@ -571,7 +607,7 @@ impl<'a> Deck<'a> {
                     let (mut shape, _) = self.common(dom, source, node, "picture")?;
                     let image = match dom
                         .path(node, &["blipFill", "blip"])
-                        .and_then(|blip| dom.attr(blip, "embed"))
+                        .and_then(|blip| dom.attr(blip, "r:embed"))
                     {
                         Some(rid) => self.asset(source, rid)?,
                         None => Json::Null,
@@ -766,7 +802,7 @@ impl<'a> Deck<'a> {
         let action = dom.attr(node, "action").filter(|a| !a.is_empty());
         check_action(action)?;
         let (mut url, mut slide) = (None, None);
-        if let Some(rid) = dom.attr(node, "id").filter(|id| !id.is_empty()) {
+        if let Some(rid) = dom.attr(node, "r:id").filter(|id| !id.is_empty()) {
             let relationship = self
                 .relationship(source, rid)
                 .ok_or(Refusal::MalformedContainer)?;

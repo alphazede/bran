@@ -777,6 +777,45 @@ fn pptx_mutated_decks_never_panic() {
     assert!(admitted > 0, "some mutations must stay admissible");
 }
 
+/// Rewrites every relationship attribute prefix in one slide part.
+fn rebind(deck: Deck, part: &str, declaration: &str, prefix: &str) -> Deck {
+    let mut deck = deck;
+    let data = &mut deck.0.iter_mut().find(|(name, _)| name == part).unwrap().1;
+    let text = String::from_utf8(data.clone()).unwrap();
+    let text = text
+        .replace(&format!("xmlns:r=\"{REL}\""), declaration)
+        .replace(" r:id=", &format!(" {prefix}:id="))
+        .replace(" r:embed=", &format!(" {prefix}:embed="));
+    *data = text.into_bytes();
+    deck
+}
+
+#[test]
+fn pptx_relationship_attributes_resolve_by_namespace() {
+    let ordinary = import(&Deck::ordinary());
+    // Another prefix bound to the relationship namespace reads the same.
+    let renamed = rebind(
+        Deck::ordinary(),
+        SLIDE3,
+        &format!("xmlns:rel=\"{REL}\""),
+        "rel",
+    );
+    let renamed = import(&renamed);
+    assert_eq!(renamed.canonical, ordinary.canonical);
+    // `r` bound to a foreign namespace is not a relationship attribute: the
+    // picture has no image and the links name no relationship.
+    let foreign = rebind(
+        Deck::ordinary(),
+        SLIDE3,
+        "xmlns:r=\"urn:example:not-relationships\"",
+        "r",
+    );
+    let deck = content(&import(&foreign).canonical);
+    let shapes = arr(get(&arr(get(&deck, "slides"))[1], "shapes"));
+    assert_eq!(get(&shapes[3], "image"), &Json::Null);
+    assert_eq!(get(get(&shapes[4], "link"), "slide"), &Json::Null);
+}
+
 /// Opt-in: exports the synthetic decks and opens them in independent readers.
 /// Set `BRAN_PPTX_READER_DIR` to a directory the readers may use (a snap
 /// LibreOffice needs a non-hidden directory under the home directory) and
