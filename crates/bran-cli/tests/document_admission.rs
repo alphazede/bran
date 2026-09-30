@@ -1,4 +1,5 @@
-//! Issue #46: exercise the real CLI against the committed XLSX corpus.
+//! Issue #46: exercise the real CLI against the committed document corpus.
+use bran_document::canonical::{sha256_hex, Json};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,21 +21,30 @@ impl Repository {
     }
 
     fn workbook(&self, replacement: Option<&str>) -> Vec<u8> {
+        self.package(
+            "fixtures/enterprise-documents/conformance/xlsx-base.parts",
+            "ledger.xlsx",
+            replacement.map(|text| ("Synthetic label", text)),
+        )
+    }
+
+    fn package(&self, fixture: &str, filename: &str, patch: Option<(&str, &str)>) -> Vec<u8> {
         // Python is already required by the offline contract gate. Build a
-        // native workbook from the same reviewable parts as adapter tests.
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/enterprise-documents/conformance/xlsx-base.parts");
+        // native package from the same reviewable parts as adapter tests.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../{fixture}"));
+        let (from, to) = patch.unwrap_or_default();
         let output = Command::new("python3")
             .args([
                 "-c",
-                "import io,pathlib,sys,zipfile\nparts={}\nfor line in pathlib.Path(sys.argv[1]).read_text().splitlines():\n if line.startswith('--- '): name=line[4:]; parts[name]=[]\n else: parts[name].append(line)\nout=io.BytesIO()\nwith zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as archive:\n for name,lines in parts.items():\n  data='\\n'.join(lines)\n  if sys.argv[2]: data=data.replace('Synthetic label',sys.argv[2])\n  archive.writestr(zipfile.ZipInfo(name,(2026,1,1,0,0,0)),data.encode())\nsys.stdout.buffer.write(out.getvalue())",
+                "import io,pathlib,sys,zipfile\nparts={}\nfor line in pathlib.Path(sys.argv[1]).read_text().splitlines():\n if line.startswith('--- '): name=line[4:]; parts[name]=[]\n else: parts[name].append(line)\nout=io.BytesIO()\nwith zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as archive:\n for name,lines in parts.items():\n  data='\\n'.join(lines)\n  if sys.argv[2]: data=data.replace(sys.argv[2],sys.argv[3])\n  archive.writestr(zipfile.ZipInfo(name,(2026,1,1,0,0,0)),data.encode())\nsys.stdout.buffer.write(out.getvalue())",
             ])
             .arg(fixture)
-            .arg(replacement.unwrap_or_default())
+            .arg(from)
+            .arg(to)
             .output()
             .expect("offline corpus ZIP builder runs");
         assert!(output.status.success(), "ZIP builder failed");
-        fs::write(self.0.join("ledger.xlsx"), &output.stdout).unwrap();
+        fs::write(self.0.join(filename), &output.stdout).unwrap();
         output.stdout
     }
 
@@ -198,16 +208,29 @@ fn document_packet_selects_native_xlsx_anchors_deterministically() {
 #[test]
 fn document_packet_refuses_malformed_documents_with_typed_reason() {
     let repo = Repository::new("refused");
-    fs::write(repo.0.join("ledger.xlsx"), b"not a ZIP container").unwrap();
-    let (code, output) = repo.run(&["packet", ".", "ledger"]);
-    assert_eq!(code, 0, "{output}");
-    assert!(output.contains("\"document_evidence\":"), "{output}");
-    assert!(
-        output.contains("\"code\":\"malformed-container\""),
-        "{output}"
-    );
-    assert!(output.contains("\"selected_locators\":[]"), "{output}");
-    assert!(!output.contains("not a ZIP container"), "{output}");
+    for extension in ["docx", "pptx", "xlsx", "pdf"] {
+        let filename = format!("malformed.{extension}");
+        fs::write(repo.0.join(&filename), b"not a ZIP container").unwrap();
+        let refusal = if extension == "pdf" {
+            "malformed-pdf"
+        } else {
+            "malformed-container"
+        };
+        for command in ["query", "packet"] {
+            let (code, output) = repo.run(&[command, ".", "malformed"]);
+            assert_eq!(code, 0, "{output}");
+            assert!(output.contains("\"document_evidence\":"), "{output}");
+            assert!(
+                output.contains(&format!("\"code\":\"{refusal}\"")),
+                "{output}"
+            );
+            assert!(output.contains("\"unsupported\":[]"), "{output}");
+            assert!(output.contains("\"sources\":[],\"matches\":[]"), "{output}");
+            assert!(output.contains("\"selected_locators\":[]"), "{output}");
+            assert!(!output.contains("not a ZIP container"), "{output}");
+        }
+        fs::remove_file(repo.0.join(filename)).unwrap();
+    }
 }
 
 #[test]
@@ -232,18 +255,133 @@ fn document_outputs_unchanged_without_document_evidence() {
     }
 }
 
+fn assert_document_evidence(
+    repo: &Repository,
+    filename: &str,
+    source_type: &str,
+    query: &str,
+    anchor: &str,
+    native_locator: &str,
+    fidelity: &str,
+) {
+    let bytes = fs::read(repo.0.join(filename)).unwrap();
+    let fidelity = Json::parse(fidelity.as_bytes()).unwrap();
+    for command in ["query", "packet"] {
+        let (code, output) = repo.run(&[command, ".", query]);
+        assert_eq!(code, 0, "{output}");
+        let result = Json::parse(output.as_bytes()).unwrap();
+        let evidence = result
+            .get("data")
+            .unwrap()
+            .get("document_evidence")
+            .unwrap();
+        assert_eq!(evidence.get("unsupported"), Some(&Json::Arr(Vec::new())));
+        assert_eq!(evidence.get("refusals"), Some(&Json::Arr(Vec::new())));
+        let Some(Json::Arr(matches)) = evidence.get("matches") else {
+            panic!("missing matches: {output}");
+        };
+        let matched = matches
+            .iter()
+            .find(|value| value.get("anchor") == Some(&Json::Str(anchor.to_owned())))
+            .unwrap_or_else(|| panic!("missing {anchor}: {output}"));
+        for (field, value) in [
+            ("path", filename.to_owned()),
+            ("source_type", source_type.to_owned()),
+            ("native_locator", native_locator.to_owned()),
+            ("source_digest", sha256_hex(&bytes)),
+            ("derivation", "embedded".to_owned()),
+        ] {
+            assert_eq!(matched.get(field), Some(&Json::Str(value)), "{output}");
+        }
+        assert_eq!(matched.get("fidelity"), Some(&fidelity), "{output}");
+        assert_eq!(matched.get("rank"), Some(&Json::Int(1)), "{output}");
+        if command == "packet" {
+            assert_eq!(matched.get("excerpt"), Some(&Json::Str(query.to_owned())));
+        }
+        assert_eq!(repo.run(&[command, ".", query]), (code, output));
+    }
+    let (code, output) = repo.run(&["document", "inspect", ".", filename]);
+    assert_eq!(code, 0, "{output}");
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut validator = Command::new("python3")
+        .args([
+            "-c",
+            "import json,pathlib,sys\nroot=pathlib.Path(sys.argv[1])\nsys.path.insert(0,str(root/'tools/ci'))\nimport enterprise_contract_check as oracle\nimport test_budget_check as schema_validator\nenvelope=json.load(sys.stdin)['data']['envelope']\nschema=json.loads((root/'schemas/enterprise-document-evidence-envelope.schema.json').read_text())\nerrors=schema_validator.validate_instance(envelope,schema,schema)\nassert not errors,errors\nassert oracle.classify(envelope) is None\nassert envelope['source']['locator']==sys.argv[2]\n",
+        ])
+        .arg(repository)
+        .arg(filename)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("offline envelope validator runs");
+    validator
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(output.as_bytes())
+        .unwrap();
+    assert!(validator.wait().unwrap().success(), "invalid envelope");
+    assert_eq!(fs::read(repo.0.join(filename)).unwrap(), bytes);
+}
+
 #[test]
-fn document_query_reports_unsupported_formats() {
-    let repo = Repository::new("unsupported");
-    fs::write(repo.0.join("draft.docx"), b"placeholder").unwrap();
-    let (code, output) = repo.run(&["query", ".", "draft"]);
+fn document_query_and_packet_return_native_docx_anchors_deterministically() {
+    let repo = Repository::new("docx");
+    repo.package(
+        "fixtures/enterprise-documents/conformance/docx-base.parts",
+        "memo.docx",
+        None,
+    );
+    assert_document_evidence(
+        &repo,
+        "memo.docx",
+        "docx",
+        "Synthetic heading",
+        "docx:s1:b1",
+        "s1#1",
+        r#"{"text":"normalized","paragraphs":"normalized","headings":"normalized","lists":"normalized","tables":"normalized","headers_footers":"unsupported","macros":"unsupported"}"#,
+    );
+}
+
+#[test]
+fn document_query_and_packet_return_native_pptx_anchors_deterministically() {
+    let repo = Repository::new("pptx");
+    // The base corpus omits the native shape id. Supply one for this
+    // positive case; the missing-id refusal is covered separately.
+    repo.package(
+        "fixtures/enterprise-documents/conformance/pptx-base.parts",
+        "deck.pptx",
+        Some((
+            "<p:sp>",
+            "<p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>",
+        )),
+    );
+    assert_document_evidence(
+        &repo,
+        "deck.pptx",
+        "pptx",
+        "Synthetic slide title",
+        "anc:pptx:slide-256:shape-2",
+        "slide 1 shape 2",
+        r#"{"text":"normalized","slides":"exact","shapes":"normalized","speaker_notes":"normalized","z_order":"exact","macros":"unsupported","animations":"unsupported"}"#,
+    );
+}
+
+#[test]
+fn document_packet_refuses_pptx_without_native_shape_identity() {
+    let repo = Repository::new("pptx-missing-shape");
+    repo.package(
+        "fixtures/enterprise-documents/conformance/pptx-base.parts",
+        "deck.pptx",
+        None,
+    );
+    let (code, output) = repo.run(&["packet", ".", "deck"]);
     assert_eq!(code, 0, "{output}");
     assert!(
-        output.contains("\"unsupported\":[{\"path\":\"draft.docx\",\"source_type\":\"docx\"}]"),
+        output.contains("\"code\":\"unsupported-container\""),
         "{output}"
     );
-    assert!(output.contains("\"refusals\":[]"), "{output}");
-    assert_eq!(repo.run(&["query", ".", "draft"]), (code, output));
+    assert!(output.contains("\"sources\":[],\"matches\":[]"), "{output}");
+    assert!(!output.contains("Synthetic slide title"), "{output}");
 }
 
 #[test]
@@ -302,9 +440,47 @@ fn document_packet_refuses_dlp_findings_without_reflecting_them() {
     .unwrap();
     let canary = canaries.lines().find(|line| !line.is_empty()).unwrap();
     repo.workbook(Some(canary));
+    repo.package(
+        "fixtures/enterprise-documents/conformance/docx-base.parts",
+        "memo.docx",
+        Some(("Synthetic heading", canary)),
+    );
+    repo.package(
+        "fixtures/enterprise-documents/conformance/pptx-base.parts",
+        "deck.pptx",
+        Some(("Synthetic slide title", canary)),
+    );
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/enterprise-documents/conformance/pdf-base.objects");
+    let pdf = classic_pdf(
+        &fs::read_to_string(fixture)
+            .unwrap()
+            .replace("Synthetic PDF heading", canary),
+    );
+    fs::write(repo.0.join("memo.pdf"), pdf).unwrap();
     let (code, output) = repo.run(&["packet", ".", "ledger"]);
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("\"code\":\"dlp-findings\""), "{output}");
     assert!(output.contains("\"selected_locators\":[]"), "{output}");
+    assert!(output.contains("\"sources\":[],\"matches\":[]"), "{output}");
+    let result = Json::parse(output.as_bytes()).unwrap();
+    let Some(Json::Arr(refusals)) = result
+        .get("data")
+        .unwrap()
+        .get("document_evidence")
+        .unwrap()
+        .get("refusals")
+    else {
+        panic!("missing refusals: {output}");
+    };
+    for filename in ["ledger.xlsx", "memo.docx", "deck.pptx", "memo.pdf"] {
+        assert!(
+            refusals.iter().any(|refusal| {
+                refusal.get("path") == Some(&Json::Str(filename.to_owned()))
+                    && refusal.get("code") == Some(&Json::Str("dlp-findings".to_owned()))
+            }),
+            "missing DLP refusal for {filename}: {output}"
+        );
+    }
     assert!(!output.contains(canary), "DLP input was reflected");
 }

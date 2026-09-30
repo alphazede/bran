@@ -5,7 +5,7 @@ okf_status: active
 tags:
   - public
   - developer
-freshness: "2026-09-15"
+freshness: "2026-09-30"
 resource: https://github.com/alphazede/bran
 public_boundary: public
 ---
@@ -193,10 +193,13 @@ Admission design (why, for the record):
   The walk mirrors the repository scanner (sorted entries, `.branignore` /
   `.okfignore` / `.gitignore`, no symlinks, depth 64, root containment) and
   caps at 64 files with an `omitted_files` count.
-- Routing is by registered adapter, not by file: an extension whose adapter
-  has not landed (DOCX and PPTX until #21 and #22 merge) is reported under
-  `unsupported`, never refused and never ranked. Each format adds only a
-  projection reader; envelope assembly is shared.
+- Routing is by registered adapter, not by file: all four adapters (#21,
+  #22, #23, #26) have landed, so `unsupported` is empty and retained for
+  forward compatibility. Each format adds only a projection reader; envelope
+  assembly is shared. DOCX projections carry the adapter's hyphenated
+  fidelity vocabulary, so admission validates it and emits the static
+  envelope `flow` map (formatting `normalized`, headers/footers and macros
+  `unsupported`); the other three projections already carry envelope keys.
 - Document anchors never rank as Markdown sources. `score_source_candidates`
   skips document paths, so a refused file cannot be selected by a path
   match; admitted anchors rank in the appended member only, by matched-term

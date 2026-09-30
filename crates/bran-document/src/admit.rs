@@ -1,10 +1,9 @@
 //! Admission of adapter projections into the #20 evidence envelope (issue #46).
 //!
 //! An adapter's `import` is routed by [`Format`] through the conformance
-//! registry, so DOCX and PPTX plug in when their adapters register: only a
-//! projection reader below is per-format. Import runs first, so package, XML,
-//! hazard, DLP, and public-boundary refusals keep their typed codes; the
-//! envelope is then built from the projection alone and refused (never
+//! registry; only the projection reader below is per-format. Import runs
+//! first, so package, XML, hazard, DLP, and public-boundary refusals keep their
+//! typed codes; the envelope is then built from the projection alone and refused (never
 //! invented) when it cannot satisfy the schema and its semantic oracle.
 
 use crate::canonical::{sha256_hex, Json};
@@ -142,6 +141,47 @@ fn valid_fidelity(fidelity: &Json) -> bool {
     }
 }
 
+/// DOCX projection fidelity uses the adapter's hyphenated vocabulary, not the
+/// envelope's flow keys; admission validates it and emits the conservative
+/// envelope map below.
+fn valid_docx_fidelity(fidelity: &Json) -> bool {
+    match fidelity {
+        // Plain text can have no observed normalization or omission.
+        Json::Obj(map) => map.iter().all(|(key, value)| {
+            let mut bytes = key.bytes();
+            let head = bytes.next().is_some_and(|b| b.is_ascii_lowercase());
+            head && bytes
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+                && matches!(
+                    value,
+                    Json::Str(level)
+                        if matches!(
+                            level.as_str(),
+                            "exact" | "normalized" | "approximated" | "unsupported"
+                        )
+                )
+        }),
+        _ => false,
+    }
+}
+
+/// Envelope `flow` fidelity the DOCX adapter can carry (per its adapter doc):
+/// formatting is normalized, headers/footers and macros are unsupported.
+fn docx_envelope_fidelity() -> Json {
+    Json::Obj(BTreeMap::from([
+        (
+            "headers_footers".to_owned(),
+            Json::Str("unsupported".to_owned()),
+        ),
+        ("headings".to_owned(), Json::Str("normalized".to_owned())),
+        ("lists".to_owned(), Json::Str("normalized".to_owned())),
+        ("macros".to_owned(), Json::Str("unsupported".to_owned())),
+        ("paragraphs".to_owned(), Json::Str("normalized".to_owned())),
+        ("tables".to_owned(), Json::Str("normalized".to_owned())),
+        ("text".to_owned(), Json::Str("normalized".to_owned())),
+    ]))
+}
+
 fn str_field<'a>(value: &'a Json, key: &str) -> Option<&'a str> {
     match value.get(key) {
         Some(Json::Str(text)) => Some(text),
@@ -163,13 +203,33 @@ fn read_projection(
     format: Format,
     projection: &Json,
 ) -> Option<(Vec<EvidenceAnchor>, Json, &'static str)> {
-    let fidelity = projection.get("fidelity")?.clone();
-    if !valid_fidelity(&fidelity) {
-        return None;
-    }
     match format {
-        Format::Xlsx => {
-            if str_field(projection, "schema_version") != Some(crate::xlsx::PROJECTION) {
+        Format::Docx | Format::Pptx | Format::Xlsx => {
+            let (fidelity, processor) = match format {
+                Format::Docx => {
+                    if str_field(projection, "schema_version") != Some(crate::docx::MODEL_VERSION)
+                        || str_field(projection, "format") != Some("docx")
+                        || !valid_docx_fidelity(projection.get("fidelity")?)
+                    {
+                        return None;
+                    }
+                    (docx_envelope_fidelity(), crate::docx::MODEL_VERSION)
+                }
+                Format::Pptx => {
+                    if str_field(projection, "schema") != Some(crate::pptx::SCHEMA) {
+                        return None;
+                    }
+                    (projection.get("fidelity")?.clone(), crate::pptx::SCHEMA)
+                }
+                Format::Xlsx => {
+                    if str_field(projection, "schema_version") != Some(crate::xlsx::PROJECTION) {
+                        return None;
+                    }
+                    (projection.get("fidelity")?.clone(), crate::xlsx::PROJECTION)
+                }
+                Format::Pdf => return None,
+            };
+            if !valid_fidelity(&fidelity) {
                 return None;
             }
             let Json::Arr(anchors) = projection.get("anchors")? else {
@@ -185,8 +245,34 @@ fn read_projection(
                     return None;
                 };
                 let locator = anchor.get("locator")?;
-                if str_field(locator, "family") != Some("grid") {
+                if str_field(locator, "family") != Some(family(format)) {
                     return None;
+                }
+                // Keep the native identities; refuse ones outside the
+                // envelope's locator bounds instead of inventing a citation.
+                match format {
+                    Format::Docx => {
+                        let section = str_field(locator, "section")?;
+                        let ordinal = int_field(locator, "ordinal")?;
+                        if section.is_empty()
+                            || section.chars().count() > 256
+                            || !(1..=1_000_000).contains(&ordinal)
+                        {
+                            return None;
+                        }
+                    }
+                    Format::Pptx => {
+                        let slide = int_field(locator, "slide")?;
+                        let shape = int_field(locator, "shape")?;
+                        let z = int_field(locator, "z_index")?;
+                        if !(1..=1_000_000).contains(&slide)
+                            || !(1..=1_000_000).contains(&shape)
+                            || !(0..=1_000_000).contains(&z)
+                        {
+                            return None;
+                        }
+                    }
+                    _ => {}
                 }
                 if !(valid_id(id) && valid_role(format, role)) {
                     return None;
@@ -200,9 +286,13 @@ fn read_projection(
                     derivation: Derivation::Embedded,
                 });
             }
-            Some((out, fidelity, crate::xlsx::PROJECTION))
+            Some((out, fidelity, processor))
         }
         Format::Pdf => {
+            let fidelity = projection.get("fidelity")?.clone();
+            if !valid_fidelity(&fidelity) {
+                return None;
+            }
             if str_field(projection, "projection") != Some(crate::pdf::PROJECTION) {
                 return None;
             }
@@ -283,9 +373,6 @@ fn read_projection(
             }
             Some((out, fidelity, crate::pdf::PROJECTION))
         }
-        // DOCX (#21) and PPTX (#22) register their adapters and add a reader
-        // arm here; the envelope assembly below is unchanged.
-        Format::Docx | Format::Pptx => None,
     }
 }
 
