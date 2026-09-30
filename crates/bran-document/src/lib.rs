@@ -6,6 +6,7 @@
 //! Every limit counts bytes, parts, or nodes, never wall-clock time, so the
 //! same input and limits give the same outcome on every machine.
 
+pub mod admit;
 pub mod canonical;
 pub mod conformance;
 pub mod export;
@@ -53,6 +54,7 @@ pub enum Refusal {
     PdfDepthLimit,
     PdfObjectLimit,
     PdfPageLimit,
+    NoAdmissibleText,
 }
 
 impl Refusal {
@@ -84,6 +86,7 @@ impl Refusal {
             Self::PdfDepthLimit => "pdf-depth-limit",
             Self::PdfObjectLimit => "pdf-object-limit",
             Self::PdfPageLimit => "pdf-page-limit",
+            Self::NoAdmissibleText => "no-admissible-text",
         }
     }
 }
