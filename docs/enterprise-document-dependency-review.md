@@ -5,7 +5,7 @@ okf_status: active
 tags:
   - public
   - developer
-freshness: "2026-09-29"
+freshness: "2026-09-30"
 resource: https://github.com/alphazede/bran
 public_boundary: public
 ---
@@ -115,6 +115,35 @@ stream-expansion, and page limits; the parser's repair of damaged
 cross-reference tables must surface as a fidelity diagnostic, never as
 silent success.
 
+### Checks recorded by #23 (2026-09-30)
+
+`hayro-syntax` 0.7.2 with `default-features = false, features = ["std"]`
+resolves to two more crates, `rustc-hash` 2.1.3 and `smallvec` 1.16.2, both
+MIT OR Apache-2.0, so the licence check would pass. The nesting and
+expansion checks do not:
+
+- A page whose content object is `[` nested N times, read through
+  `Pdf::new` and `XRef::get` in a debug build on an 8 MiB main-thread stack:
+  100, 1,000, and 10,000 levels parsed; 100,000 levels aborted the process
+  with `fatal runtime error: stack overflow`. `Array::skip` recurses once
+  per level and has no depth limit. Test threads have 2 MiB stacks, so the
+  threshold there is lower.
+- A Flate content stream of 194,266 bytes decoded through `Stream::decoded`
+  to 200,000,000 bytes. The decoder takes no output limit, and `Pdf::new`
+  and `XRef::get` decode cross-reference and object streams internally
+  before BRAN sees them, so BRAN cannot bound that expansion by wrapping the
+  crate.
+
+An abort is not a typed error, and the expansion happens inside the crate,
+so the condition above is not met and `hayro-syntax` is not added. As with
+the ZIP reader, BRAN reads PDF syntax itself (`crates/bran-document/src/pdf_syntax.rs`):
+a lexer, objects with a depth and node limit, cross-reference tables and
+streams, object streams, header-scan repair reported as `xref-repaired`, and
+Flate through the workspace's existing `flate2` with ratio, part, and total
+limits. The full tier parses 1,000,000 nested levels to a typed
+`pdf-depth-limit` refusal. `lopdf` and `pdf` (pdf-rs) stay rejected for the
+reasons in the table.
+
 ## PDF export ([#23](https://github.com/alphazede/bran/issues/23))
 
 | Candidate | Version | Licence | Transitive | Unsafe | Blocked licences | Finding |
@@ -129,6 +158,13 @@ detail. If #23 cannot meet the accessible-export acceptance with
 `pdf-writer`, it stops and asks for that decision. Any PDF/A claim needs an
 independent validator either way.
 
+#23 did not need `pdf-writer` either. The export is one font, one content
+stream per page, and a structure tree with one element per block; the
+adapter writes those objects directly in about 200 lines, deterministically,
+and poppler, Ghostscript, and LibreOffice open the result
+([`enterprise-document-pdf-adapter.md`](enterprise-document-pdf-adapter.md)).
+Add `pdf-writer` when an export needs embedded fonts, images, or annotations.
+
 ## Selected approach
 
 | Format | Container | Parser | Export | New crates |
@@ -136,11 +172,10 @@ independent validator either way.
 | DOCX | BRAN-owned ZIP reader | `quick-xml` | BRAN-ordered XML + shared ZIP writer | `quick-xml` |
 | PPTX | BRAN-owned ZIP reader | `quick-xml` | BRAN-ordered XML + shared ZIP writer | `quick-xml` |
 | XLSX | BRAN-owned ZIP reader | `quick-xml` | BRAN-ordered XML + shared ZIP writer | `quick-xml` |
-| PDF | n/a | `hayro-syntax` (#23 to confirm licence closure) | `pdf-writer` | `hayro-syntax`, `pdf-writer` (added by #23) |
+| PDF | n/a | BRAN-owned reader (`hayro-syntax` failed the nesting and expansion checks) | BRAN-written tagged PDF | none |
 
 This issue adds only `quick-xml` 0.42.0. `flate2`, `crc32fast`, and `memchr`
-are already locked in the workspace. PDF crates are added by #23 when its
-fixtures exist, so no unused parser ships early.
+are already locked in the workspace. #23 adds no crate.
 
 ## Re-review triggers
 
