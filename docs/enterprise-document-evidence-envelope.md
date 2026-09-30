@@ -5,7 +5,7 @@ okf_status: active
 tags:
   - public
   - developer
-freshness: "2026-09-15"
+freshness: "2026-09-30"
 resource: https://github.com/alphazede/bran
 public_boundary: public
 ---
@@ -178,11 +178,78 @@ packet. `admitted` does not authorize export: ingest must still honor
 `policy.classification` and `policy.public_boundary` separately, and must
 not treat `unavailable` parser or revision claims as attested.
 
-Today `bran query` and `bran packet` still rank repository files. They do not
-read this envelope. That ingest is follow-up work, not this issue. The owner
-has approved native local Office/PDF adapters (#21, #22, #23, #26). They
-build on the shared conformance suite from #25, described in
+Issue #46 implements the ingest. `bran document inspect <root> <path>`
+prints this envelope for one supported document without writing anything.
+`bran query` and `bran packet` append a `document_evidence` member (sources,
+ranked anchor matches, typed refusals, unsupported formats) when document
+files exist, and byte-identical output otherwise.
+
+Admission design (why, for the record):
+
+- Discovery is by filename extension (`.docx`, `.xlsx`, `.pptx`, `.pdf`,
+  ASCII case-insensitive) under the requested root, not by policy
+  `document_coverage` roots: coverage classifies Markdown knowledge
+  documents, while enterprise files are found where the author left them.
+  The walk mirrors the repository scanner (sorted entries, `.branignore` /
+  `.okfignore` / `.gitignore`, no symlinks, depth 64, root containment) and
+  caps at 64 files with an `omitted_files` count.
+- Routing is by registered adapter, not by file: all four adapters (#21,
+  #22, #23, #26) have landed, so `unsupported` is empty and retained for
+  forward compatibility. Each format adds only a projection reader; envelope
+  assembly is shared. DOCX projections carry the adapter's hyphenated
+  fidelity vocabulary, so admission validates it and emits the static
+  envelope `flow` map (formatting `normalized`, headers/footers and macros
+  `unsupported`); the other three projections already carry envelope keys.
+- Document anchors never rank as Markdown sources. `score_source_candidates`
+  skips document paths, so a refused file cannot be selected by a path
+  match; admitted anchors rank in the appended member only, by matched-term
+  count then bundle, path, and anchor id, capped at 32 matches. Those matches
+  contribute to overall query coverage and outcome, including multi-root
+  queries and evidence replay. Markdown rankings and selection are unchanged.
+- Admission checks source locators and all decoded envelope strings with
+  the shared DLP/public-boundary validator and the oracle's secret markers.
+  Unsafe paths are omitted from refusals and document scanner warnings.
+  The complete constructed envelope is checked before admission; an
+  unrepresentable truncation receipt returns `oversized` rather than an
+  admitted, schema-invalid envelope.
+- Packet document excerpts consume the remaining byte/token budget after
+  the existing payload, and respect `--excerpt-bytes` per excerpt. Default
+  document excerpts retain the envelope's 8192-byte per-anchor limit.
+  `excerpt_bytes`, `raw_bytes`, `encoded_packet_bytes`, `estimated_tokens`
+  and `truncated` include document excerpts. SQZ still applies to the
+  existing payload; document excerpts are emitted as bounded plain text.
+- Derivation is per anchor. Native parse output is `embedded`; a projection
+  block marked OCR-derived is `ocr`, sorts after every embedded match, and
+  carries no byte rank. No OCR engine ships, so `ocr` anchors cannot occur
+  yet; the branch is pinned by unit tests.
+- The envelope's `language` is the adapter-declared default `en`, not a
+  detected language: the schema requires a two-letter tag and the adapters
+  are byte decoders, not language detectors. Consumers must not treat it as
+  detected. Classification and public-boundary stay `unavailable` (never
+  invented); only DLP gates admission.
+- Fixed-layout bounding boxes are clamped to the envelope's non-negative
+  range, matching the adapter's `approximated` fidelity for geometry, rather
+  than refusing citable text over coordinates.
+
+The owner has approved native local Office/PDF adapters (#21, #22, #23,
+#26). They build on the shared conformance suite from #25, described in
 [`enterprise-document-conformance.md`](enterprise-document-conformance.md).
+
+### Review repair evidence for #46
+
+`fixtures/enterprise-documents/admission-review/` preserves the reviewer's
+exact native packages as raw-deflate hex, preceded by the original SHA-256
+and byte length. CLI tests decode them and verify both before use; the
+100-token settings file is also preserved. No paths from the review
+workspace are embedded in the fixtures or tests.
+
+| Finding | Regression in `crates/bran-cli/tests/document_admission.rs` |
+|---|---|
+| Locator DLP bypass | `document_review_locator_dlp_refuses_admission` |
+| Unsafe refusal paths | `document_review_refusals_do_not_echo_unsafe_paths` |
+| Unbudgeted document text | `document_review_packet_excerpts_obey_and_account_for_budgets` |
+| Unrepresentable envelope receipt | `document_review_unrepresentable_envelope_is_refused` |
+| Document matches reported as misses | `document_review_matches_contribute_to_query_coverage` |
 
 ## Fixtures
 

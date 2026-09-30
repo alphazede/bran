@@ -1,3 +1,4 @@
+mod document_evidence;
 mod source_revision;
 
 use source_revision::SourceRevision;
@@ -83,6 +84,7 @@ Commands:
   query <repo-root> --add-dir <repo-root> <request>
   query <repo-root> --add-dir <repo-root> --record <request>
   packet <repo-root> <request>
+  document inspect <repo-root> <path>
   check [--policy-stdin] <repo-root> <profile>
   maintain <propose|apply|revalidate> ...
   evidence <summarize|propose|replay|clear> <repo-root>
@@ -470,6 +472,48 @@ impl CliApp {
                         &[failure.detail],
                         &registered_provenance("{}", revisions.as_deref()),
                         &failure.metrics,
+                    )),
+                }
+            }
+            "document" => {
+                let mut args = vec![];
+                for a in it {
+                    match a.as_ref().to_str() {
+                        Some(s) => args.push(s.to_owned()),
+                        None => return CliResult::usage(make_document_error("invalid_utf8")),
+                    }
+                }
+                let (Some(sub), Some(root), Some(path)) = (args.first(), args.get(1), args.get(2))
+                else {
+                    return CliResult::usage(make_document_error("missing_args"));
+                };
+                if sub != "inspect" || args.len() != 3 {
+                    return CliResult::usage(make_document_error("unknown_document_command"));
+                }
+                // Read-only: `inspect` never writes, and a refusal is a verdict
+                // (exit 0), not an operational failure.
+                match document_evidence::inspect(Path::new(root), path) {
+                    Ok(envelope) => CliResult::success(make_envelope(
+                        "document",
+                        "ok",
+                        &format!("{{\"envelope\":{envelope}}}"),
+                        &[],
+                        &[],
+                        "{\"sources\":[\"bran-document\"]}",
+                        "{}",
+                    )),
+                    Err(code) => CliResult::success(make_envelope(
+                        "document",
+                        "refused",
+                        &format!(
+                            "{{\"refusal\":{{\"code\":\"{}\"{}}}}}",
+                            json_escape(code),
+                            document_evidence::refusal_path_json(path)
+                        ),
+                        &[],
+                        &[],
+                        "{\"sources\":[\"bran-document\"]}",
+                        "{}",
                     )),
                 }
             }
@@ -1296,6 +1340,18 @@ fn make_packet_error(detail: &str) -> String {
     )
 }
 
+fn make_document_error(detail: &str) -> String {
+    make_envelope(
+        "document",
+        "error",
+        "null",
+        &[],
+        &[detail.to_owned()],
+        "{}",
+        "{}",
+    )
+}
+
 fn make_check_error(detail: &str) -> String {
     make_envelope(
         "check",
@@ -1808,10 +1864,10 @@ fn json_string_list(values: &[String]) -> String {
 fn query_semantic_outcome(
     query_text: &str,
     matched_terms: &BTreeSet<String>,
-    rankings: &[SourceRanking],
+    has_ranked_evidence: bool,
 ) -> (&'static str, String, Vec<String>) {
     let (matched, unmatched) = query_term_coverage(query_text, matched_terms);
-    let outcome = if rankings.is_empty() {
+    let outcome = if !has_ranked_evidence {
         "miss"
     } else if unmatched.is_empty() {
         "grounded"
@@ -1867,6 +1923,9 @@ fn score_source_candidates(
         .nodes()
         .iter()
         .filter(|node| node.role() == NodeRole::Document)
+        // Enterprise documents rank only as document evidence (#46), never as
+        // Markdown sources: refused files must not be selectable by path.
+        .filter(|node| !document_evidence::is_document_path(node.provenance().locator()))
         .filter_map(|node| {
             let locator_original = node.provenance().locator();
             let locator = locator_original.to_ascii_lowercase();
@@ -2623,7 +2682,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     let edge_count = graph_input.edges().len().max(1);
     let limits =
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
-    let (rankings, matched_terms) =
+    let (rankings, mut matched_terms) =
         source_rankings(&graph_input, &snapshot, &query_text, QUERY_RESULT_LIMIT);
     let spec = query_view_spec(&rankings, QUERY_RESULT_LIMIT);
     let graph =
@@ -2656,10 +2715,21 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     let mut warns: Vec<String> = snapshot
         .diagnostics
         .iter()
-        .map(|d| format!("{:?}", d))
+        .map(document_evidence::scan_diagnostic)
         .collect();
-    let (query_outcome, query_coverage, unmatched) =
-        query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    let documents =
+        document_evidence::document_evidence_json(&[(root.as_str(), root_path)], &query_text, None);
+    if let Some(documents) = &documents {
+        matched_terms.extend(documents.matched_terms.iter().cloned());
+    }
+    let (query_outcome, query_coverage, unmatched) = query_semantic_outcome(
+        &query_text,
+        &matched_terms,
+        !rankings.is_empty()
+            || documents
+                .as_ref()
+                .is_some_and(|documents| !documents.matched_terms.is_empty()),
+    );
     warns.extend(unmatched_query_warnings(&unmatched));
 
     let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text, &rankings);
@@ -2671,8 +2741,11 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         &selected_ids,
         &navigation.symbols_json(&retained),
     );
+    let documents = documents.map_or_else(String::new, |documents| {
+        format!(",\"document_evidence\":{}", documents.json)
+    });
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}{}}}",
         json_escape(&root),
         json_escape(&query_text),
         query_outcome,
@@ -2684,7 +2757,8 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         selected_bytes,
         context_bytes_avoided,
         estimated,
-        navigation.json(&retained)
+        navigation.json(&retained),
+        documents
     );
     let provenance = if locs_json.is_empty() {
         format!("{{\"sources\":[{sources}]}}")
@@ -2775,7 +2849,7 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
             root.snapshot
                 .diagnostics
                 .iter()
-                .map(|diagnostic| format!("{diagnostic:?}")),
+                .map(document_evidence::scan_diagnostic),
         );
         let root_rankings = rankings
             .iter()
@@ -2833,14 +2907,31 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
     let estimated = selected_bytes / 4 + usize::from(!selected_bytes.is_multiple_of(4));
     let context_bytes_avoided = candidate_bytes.saturating_sub(selected_bytes);
 
-    let (query_outcome, query_coverage, unmatched) =
-        query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    let bundles: Vec<(&str, &Path)> = roots
+        .iter()
+        .map(|root| (root.as_str(), Path::new(root)))
+        .collect();
+    let documents = document_evidence::document_evidence_json(&bundles, &query_text, None);
+    if let Some(documents) = &documents {
+        matched_terms.extend(documents.matched_terms.iter().cloned());
+    }
+    let (query_outcome, query_coverage, unmatched) = query_semantic_outcome(
+        &query_text,
+        &matched_terms,
+        !rankings.is_empty()
+            || documents
+                .as_ref()
+                .is_some_and(|documents| !documents.matched_terms.is_empty()),
+    );
     warns.extend(unmatched_query_warnings(&unmatched));
 
     let (locs_json, why_selected_json) = selected_sources_json_with_bundle(&selected);
     let source_rankings_json = source_rankings_json_with_bundle(&rankings, &selected_keys);
+    let documents = documents.map_or_else(String::new, |documents| {
+        format!(",\"document_evidence\":{}", documents.json)
+    });
     let data = format!(
-        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
+        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}{}}}",
         json_escape(&roots[0]),
         json_string_list(&roots),
         json_escape(&query_text),
@@ -2853,7 +2944,8 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
         selected_bytes,
         context_bytes_avoided,
         estimated,
-        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(&BTreeMap::new())
+        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(&BTreeMap::new()),
+        documents
     );
     let provenance = if locs_json.is_empty() {
         "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
@@ -2900,7 +2992,7 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
     let edge_count = graph_input.edges().len().max(1);
     let limits =
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
-    let (rankings, matched_terms) =
+    let (rankings, mut matched_terms) =
         source_rankings(&graph_input, &snapshot, &query_text, controls.max_sources());
     let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text, &rankings);
     let symbol_lines = navigation.payload_lines();
@@ -3058,20 +3150,57 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
     }
     let pkt = evaluation.packet;
     let encoded_packet_bytes = pkt.payload.len();
+    let remaining_bytes = pkt_limits
+        .max_bytes
+        .saturating_sub(encoded_packet_bytes.max(evaluation.receipt.raw_bytes))
+        .min(token_ceiling.map_or(usize::MAX, |ceiling| {
+            ceiling
+                .saturating_mul(4)
+                .saturating_sub(encoded_packet_bytes)
+        }));
+    let documents = document_evidence::document_evidence_json(
+        &[(root.as_str(), root_path)],
+        &query_text,
+        Some(document_evidence::ExcerptBudget {
+            remaining_bytes,
+            per_excerpt_bytes: controls.excerpt_bytes.unwrap_or(8192),
+        }),
+    );
+    let document_excerpt_bytes = documents
+        .as_ref()
+        .map_or(0, |documents| documents.excerpt_bytes);
+    let excerpt_bytes = excerpt_bytes + document_excerpt_bytes;
+    let raw_bytes = evaluation.receipt.raw_bytes + document_excerpt_bytes;
+    let encoded_packet_bytes = encoded_packet_bytes + document_excerpt_bytes;
     let est = encoded_packet_bytes.div_ceil(4);
-    let tr = pkt.receipt.truncated;
+    let tr = pkt.receipt.truncated
+        || documents
+            .as_ref()
+            .is_some_and(|documents| documents.truncated);
+    if let Some(documents) = &documents {
+        matched_terms.extend(documents.matched_terms.iter().cloned());
+    }
 
     let mut warns: Vec<String> = snapshot
         .diagnostics
         .iter()
-        .map(|d| format!("{:?}", d))
+        .map(document_evidence::scan_diagnostic)
         .collect();
-    let (query_outcome, query_coverage, unmatched) =
-        query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    let (query_outcome, query_coverage, unmatched) = query_semantic_outcome(
+        &query_text,
+        &matched_terms,
+        !rankings.is_empty()
+            || documents
+                .as_ref()
+                .is_some_and(|documents| !documents.matched_terms.is_empty()),
+    );
     warns.extend(unmatched_query_warnings(&unmatched));
 
+    let documents = documents.map_or_else(String::new, |documents| {
+        format!(",\"document_evidence\":{}", documents.json)
+    });
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{},\"symbol_navigation\":{}}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{},\"symbol_navigation\":{}{}}}",
         json_escape(&root),
         json_escape(&query_text),
         query_outcome,
@@ -3088,13 +3217,14 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         selected_source_bytes,
         context_bytes_avoided,
         excerpt_bytes,
-        evaluation.receipt.raw_bytes,
+        raw_bytes,
         encoded_packet_bytes,
         est,
         token_ceiling.map_or_else(|| "null".to_owned(), |value| value.to_string()),
         tr,
         sqz_json,
-        navigation.json(&retained)
+        navigation.json(&retained),
+        documents
     );
     let sources = provenance_sources(&retained);
     let provenance = if selected_locators_json.is_empty() {
@@ -4541,13 +4671,28 @@ fn query_evidence_from_live(
 ) -> Result<QueryEvidenceRecord, String> {
     if !multi {
         let scanned = scan_policy_query_root(&roots[0])?;
-        let (rankings, matched_terms) = source_rankings(
+        let (rankings, mut matched_terms) = source_rankings(
             &scanned.graph_input,
             &scanned.snapshot,
             &query_text,
             QUERY_RESULT_LIMIT,
         );
-        let (outcome, _, _) = query_semantic_outcome(&query_text, &matched_terms, &rankings);
+        let documents = document_evidence::document_evidence_json(
+            &[(roots[0].as_str(), Path::new(&roots[0]))],
+            &query_text,
+            None,
+        );
+        if let Some(documents) = &documents {
+            matched_terms.extend(documents.matched_terms.iter().cloned());
+        }
+        let (outcome, _, _) = query_semantic_outcome(
+            &query_text,
+            &matched_terms,
+            !rankings.is_empty()
+                || documents
+                    .as_ref()
+                    .is_some_and(|documents| !documents.matched_terms.is_empty()),
+        );
         return Ok(query_evidence_record(
             query_text,
             roots,
@@ -4579,7 +4724,22 @@ fn query_evidence_from_live(
     }
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     let rankings = finalize_source_rankings(matches, QUERY_RESULT_LIMIT, true);
-    let (outcome, _, _) = query_semantic_outcome(&query_text, &matched_terms, &rankings);
+    let bundles = roots
+        .iter()
+        .map(|root| (root.as_str(), Path::new(root)))
+        .collect::<Vec<_>>();
+    let documents = document_evidence::document_evidence_json(&bundles, &query_text, None);
+    if let Some(documents) = &documents {
+        matched_terms.extend(documents.matched_terms.iter().cloned());
+    }
+    let (outcome, _, _) = query_semantic_outcome(
+        &query_text,
+        &matched_terms,
+        !rankings.is_empty()
+            || documents
+                .as_ref()
+                .is_some_and(|documents| !documents.matched_terms.is_empty()),
+    );
     Ok(query_evidence_record(
         query_text,
         roots,
