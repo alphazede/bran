@@ -522,6 +522,94 @@
       "support_fixtures": []
     },
     {
+      "stable_id": "P8-DOCUMENT-DLP",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_packet_refuses_dlp_findings_without_reflecting_them",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-INSPECTION",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_inspection_is_read_only_and_schema_valid",
+      "category": "contract",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-PACKET",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_packet_selects_native_xlsx_anchors_deterministically",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-PDF",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_packet_selects_native_pdf_anchors",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-QUERY",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_query_returns_native_xlsx_anchors_deterministically",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-REFUSAL",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_packet_refuses_malformed_documents_with_typed_reason",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-UNCHANGED",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_outputs_unchanged_without_document_evidence",
+      "category": "contract",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DOCUMENT-UNSUPPORTED",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "document_query_reports_unsupported_formats",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/document_admission.rs",
+      "support_fixtures": []
+    },
+    {
       "stable_id": "P8-SCIP-BASELINE",
       "phase": 8,
       "slice": "8.7",
