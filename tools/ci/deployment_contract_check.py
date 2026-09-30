@@ -60,6 +60,9 @@ GUARDED_BINARY = b"\x7fELF synthetic stand-in BRAN_REGISTERED_ROOTS unavailable_
 UNGUARDED_BINARY = b"\x7fELF synthetic stand-in for bran 0.1.1\n"
 
 
+STRING_LITERAL = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -68,7 +71,8 @@ def network_surface_errors() -> list[str]:
     errors = []
     for path in sorted((ROOT / "crates").rglob("*.rs")):
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if SOCKET_API.search(line):
+            # String literals only name APIs (e.g. a forbidden-list audit); code is what counts.
+            if SOCKET_API.search(STRING_LITERAL.sub('""', line)):
                 errors.append(f"socket API in {path.relative_to(ROOT)}:{number}")
     lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
     crates = {package["name"] for package in lock.get("package", [])}
