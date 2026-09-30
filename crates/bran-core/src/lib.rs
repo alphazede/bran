@@ -4,6 +4,7 @@ pub mod adapters;
 pub mod agent;
 pub mod boundary;
 pub mod bundle;
+pub mod database;
 pub mod derived_state;
 pub mod export;
 pub mod frontmatter;

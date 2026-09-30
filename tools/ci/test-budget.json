@@ -388,6 +388,64 @@
       "classification": "new",
       "source": "crates/bran-core/src/adapters/connected.rs",
       "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DATABASE-BOUNDARY",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_database_boundary_config",
+      "category": "contract",
+      "classification": "new",
+      "source": "crates/bran-core/src/database/mod.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DATABASE-CONTRACT",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "python",
+      "name": "tools/ci/database_contract_check.py",
+      "category": "security",
+      "classification": "new",
+      "source": "tools/ci/database_contract_check.py",
+      "support_fixtures": [
+        "fixtures/database/queries.tsv",
+        "fixtures/database/synthetic.sql"
+      ]
+    },
+    {
+      "stable_id": "P8-DATABASE-EVIDENCE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_database_evidence_packet",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-core/src/database/evidence.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DATABASE-SQL-GATE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_database_sql_gate",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-core/src/database/sql.rs",
+      "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-STATE-STORE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_state_store_failures",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-core/src/database/state.rs",
+      "support_fixtures": []
     }
   ]
 }
