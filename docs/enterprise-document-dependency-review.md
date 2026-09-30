@@ -34,7 +34,9 @@ XLSX ([#26](https://github.com/alphazede/bran/issues/26)).
 ## Method
 
 Candidates were resolved with default features into a scratch manifest on
-2026-09-29 and inspected from the downloaded sources. "Transitive" counts
+2026-09-29 and inspected from the downloaded sources. The two XML finalists
+were also run against a nesting-depth probe, a DTD with an internal entity,
+an undeclared entity, a mismatched end tag, and a truncated document. "Transitive" counts
 normal dependencies with default features. "Unsafe" counts `unsafe` tokens in
 `src/`, including comments. "Blocked licences" lists transitive licences that
 `deny.toml` would reject with default features. Release dates come from each
@@ -45,7 +47,7 @@ crate's changelog where one ships in the package.
 | Candidate | Version | Licence | Finding |
 |---|---|---|---|
 | `zip` | 8.6.0 | MIT | Already in the workspace (`xtask`). `SharedBuilder::build` inserts central-directory entries into an `IndexMap` keyed by raw name, so a duplicate entry silently replaces the earlier one. The duplicate-part fixture row cannot be enforced through it. Default features add AES, bzip2, deflate64, LZMA, PPMd, XZ, and zstd. `unsafe` in `spec.rs` block reads. |
-| BRAN-owned central-directory reader | n/a | MIT OR Apache-2.0 | About 250 lines. Stored and deflate only. Inflate uses `flate2` 1.1.9 with `rust_backend` (`miniz_oxide`, already in the workspace). CRC through `crc32fast` 1.5.0 (already in the workspace). |
+| BRAN-owned central-directory reader | n/a | MIT OR Apache-2.0 | About 210 lines, plus a 60-line deterministic writer (`crates/bran-document/src/zip.rs`). Stored and deflate only. Inflate uses `flate2` 1.1.9 with `rust_backend` (`miniz_oxide`, already in the workspace). CRC through `crc32fast` 1.5.0 (already in the workspace). |
 
 Decision: the BRAN-owned reader. It sees every central-directory record, so
 it can refuse duplicate names, overlapping entry data, local/central name
@@ -57,17 +59,28 @@ for release packaging.
 
 | Candidate | Version | Licence | Transitive | Unsafe | Released | Finding |
 |---|---|---|---|---|---|---|
-| `roxmltree` | 0.21.1 | MIT OR Apache-2.0 | 1 (`memchr`, already in the workspace) | 0, `forbid(unsafe_code)` | 2025-10-09 | Read-only tree. `allow_dtd` defaults to `false`: any DTD fails with `DtdDetected`. Entity reference depth is capped at 10. `nodes_limit` bounds node count. About 5,400 lines. |
+| `roxmltree` | 0.21.1 | MIT OR Apache-2.0 | 1 (`memchr`, already in the workspace) | 0, `forbid(unsafe_code)` | 2025-10-09 | Read-only tree. `allow_dtd` defaults to `false`: any DTD fails with `DtdDetected`. Entity reference depth is capped at 10. `nodes_limit` bounds node count. About 5,400 lines. Recursive descent: deep nesting aborts the process (measured below). Rejected. |
 | `quick-xml` | 0.42.0 | MIT | 1 (`memchr`) | `forbid(unsafe_code)` | no changelog shipped | Streaming reader and writer. Does not expand custom entities; the caller must refuse `DocType` itself. About 35,000 lines including serde support. |
 | `xml-rs` | 1.0.0 | MIT | 1 (`xml`) | 0 | no changelog shipped | 1.0.0 is a re-export shim over the `xml` crate. Slower; entity handling must be audited through the second crate. |
 
-Decision: `roxmltree` 0.21.1 for import. It refuses DTDs by default, which
-removes internal-entity expansion (billion-laughs) and external entities
-before BRAN code runs. BRAN adds its own depth limit and passes its node
-budget as `nodes_limit`. OOXML never needs a DTD, so refusing one loses no
-supported content. Export does not need an XML dependency: adapters emit
-BRAN-ordered XML through one shared escape routine. Revisit `quick-xml` only
-if an adapter needs streaming import of parts larger than the part budget.
+Measured on 2026-09-29 with the probe described under Method: `roxmltree`
+0.21.1 recurses once per nested element. A document of `<a>` repeated
+5,000 times inside itself parsed in a release build; 20,000 levels aborted
+the process with a stack overflow, and a debug build aborted at 1,000. A
+stack overflow is an abort, not a typed error, so no BRAN limit applied
+after parsing can catch it. `quick-xml` 0.42.0 read 1,000,000 nested levels
+without recursion, reported `<!DOCTYPE ...>` as a `DocType` event, reported
+an undeclared `&a;` as a `GeneralRef` event, rejected mismatched end tags,
+and ended a truncated document at `Eof` with open elements still counted.
+
+Decision: `quick-xml` 0.42.0 with default features off (no serde, no
+`encoding_rs`). BRAN's shared reader (`bran-document::xml`) refuses any
+`DocType` event, so neither internal-entity expansion (billion-laughs) nor
+external entities are reachable. It refuses every entity reference except
+the five predefined ones and character references, counts depth and nodes
+itself, and treats `Eof` with open elements as malformed. OOXML never needs
+a DTD, so refusing one loses no supported content. The same crate's writer
+is available to adapters for export; no second XML dependency is needed.
 
 ## Format-level OOXML crates (rejected)
 
@@ -79,7 +92,7 @@ if an adapter needs streaming import of parts larger than the part budget.
 
 No maintained PPTX crate was found worth evaluating. Decision: DOCX, PPTX,
 and XLSX adapters map OOXML parts themselves on top of the shared intake
-(`bran-document::opc`) and the shared XML reader. Each adapter owns only its
+(`bran-document::opc`) and the shared XML reader (`bran-document::xml`). Each adapter owns only its
 content model, not package safety.
 
 ## PDF import ([#23](https://github.com/alphazede/bran/issues/23))
@@ -93,9 +106,11 @@ content model, not package safety.
 | MuPDF, Poppler bindings | not fetched | AGPL / GPL | n/a | FFI | licence | Rejected by `deny.toml`. |
 
 Decision: `hayro-syntax` without the `unsafe` feature is the selected PDF
-import parser, subject to one check #23 must record before adding it: the
+import parser, subject to two checks #23 must record before adding it: the
 dependency closure with the features #23 enables passes `cargo deny check
-licenses bans sources`. BRAN wraps it with its own object-count, recursion,
+licenses bans sources`, and the nesting probe that rejected `roxmltree`
+(deeply nested arrays and dictionaries) ends in a typed error, not an
+abort. BRAN wraps it with its own object-count, recursion,
 stream-expansion, and page limits; the parser's repair of damaged
 cross-reference tables must surface as a fidelity diagnostic, never as
 silent success.
@@ -118,12 +133,12 @@ independent validator either way.
 
 | Format | Container | Parser | Export | New crates |
 |---|---|---|---|---|
-| DOCX | BRAN-owned ZIP reader | `roxmltree` | BRAN-ordered XML + shared ZIP writer | `roxmltree` |
-| PPTX | BRAN-owned ZIP reader | `roxmltree` | BRAN-ordered XML + shared ZIP writer | `roxmltree` |
-| XLSX | BRAN-owned ZIP reader | `roxmltree` | BRAN-ordered XML + shared ZIP writer | `roxmltree` |
+| DOCX | BRAN-owned ZIP reader | `quick-xml` | BRAN-ordered XML + shared ZIP writer | `quick-xml` |
+| PPTX | BRAN-owned ZIP reader | `quick-xml` | BRAN-ordered XML + shared ZIP writer | `quick-xml` |
+| XLSX | BRAN-owned ZIP reader | `quick-xml` | BRAN-ordered XML + shared ZIP writer | `quick-xml` |
 | PDF | n/a | `hayro-syntax` (#23 to confirm licence closure) | `pdf-writer` | `hayro-syntax`, `pdf-writer` (added by #23) |
 
-This issue adds only `roxmltree` 0.21.1. `flate2`, `crc32fast`, and `memchr`
+This issue adds only `quick-xml` 0.42.0. `flate2`, `crc32fast`, and `memchr`
 are already locked in the workspace. PDF crates are added by #23 when its
 fixtures exist, so no unused parser ships early.
 
