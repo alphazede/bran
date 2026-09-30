@@ -10,6 +10,7 @@ pub mod canonical;
 pub mod conformance;
 pub mod export;
 pub mod opc;
+pub mod xlsx;
 pub mod xml;
 pub mod zip;
 
