@@ -317,7 +317,10 @@ fn p8_deployment_profile() {
         let (actual, output) = run(&state, registry, args);
         // Fixed messages only: every value here derives from arguments that carry the
         // synthetic secret, and a failing assertion must not print it.
-        assert!(actual == code, "rejected command returned an unexpected exit code");
+        assert!(
+            actual == code,
+            "rejected command returned an unexpected exit code"
+        );
         assert!(
             output.contains(&format!("\"{failure}\"")),
             "rejected command output lacks the expected failure code"
