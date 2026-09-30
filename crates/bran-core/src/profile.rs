@@ -432,13 +432,13 @@ impl ProfileValidator {
                 });
             } else if let Some(ref allowed) = allowed_tags {
                 if let Some(YamlValue::Sequence(ref seq)) = map.get("tags") {
-                    for v in seq {
+                    for (index, v) in seq.iter().enumerate() {
                         let tag_val = yaml_value_to_string(v);
                         if !allowed.contains(&tag_val.as_str()) {
                             diagnostics.push(Diagnostic {
                                 path: path.clone(),
                                 code: "tag-value".to_owned(),
-                                message: format!("tag value not in policy-allowed set: {tag_val}"),
+                                message: format!("tags[{index}] not in policy-allowed set"),
                             });
                         }
                     }
@@ -502,9 +502,7 @@ impl ProfileValidator {
                         diagnostics.push(Diagnostic {
                             path: path.clone(),
                             code: "boundary-value".to_owned(),
-                            message: format!(
-                                "public_boundary value not in policy-allowed set: {val}"
-                            ),
+                            message: "public_boundary value not in policy-allowed set".to_owned(),
                         });
                     }
                 }
@@ -862,18 +860,13 @@ fn okf_diagnostic(
     map: Option<&BTreeMap<String, YamlValue>>,
 ) -> Option<Diagnostic> {
     if !status.is_ok() {
-        let reason = match status {
-            ParseStatus::Malformed { reason } => reason,
-            ParseStatus::Ok => unreachable!("successful status already returned"),
-        };
+        // The reason is producer-supplied and can embed raw document text
+        // (the scanner's malformed-metadata reason carries the offending
+        // line), so it is never forwarded into the diagnostic message.
         return Some(Diagnostic {
             path: path.to_owned(),
             code: "malformed-frontmatter".to_owned(),
-            message: if reason.is_empty() {
-                "malformed concept frontmatter".to_owned()
-            } else {
-                format!("malformed concept frontmatter: {reason}")
-            },
+            message: "malformed concept frontmatter".to_owned(),
         });
     }
 
@@ -2309,6 +2302,178 @@ mod tests {
             "expected tag-value in {:?}",
             codes
         );
+    }
+
+    #[test]
+    fn strict_tag_value_diagnostic_names_position_not_value() {
+        let policy = valid_v1_policy();
+        let mut fields = BTreeMap::new();
+        fields.insert("type".to_owned(), YamlValue::String("Concept".to_owned()));
+        fields.insert(
+            "okf_status".to_owned(),
+            YamlValue::String("active".to_owned()),
+        );
+        fields.insert(
+            "tags".to_owned(),
+            YamlValue::Sequence(vec![
+                YamlValue::String("internal".to_owned()),
+                YamlValue::String("public".to_owned()),
+                YamlValue::String("super-secret-token".to_owned()),
+            ]),
+        );
+        fields.insert(
+            "public_boundary".to_owned(),
+            YamlValue::String("private".to_owned()),
+        );
+        fields.insert(
+            "title".to_owned(),
+            YamlValue::String("Secret Tag".to_owned()),
+        );
+        fields.insert(
+            "resource".to_owned(),
+            YamlValue::String("https://github.com/alphazede/r".to_owned()),
+        );
+        fields.insert(
+            "timestamp".to_owned(),
+            YamlValue::String("2026-01-01".to_owned()),
+        );
+        let doc = Doc::new(
+            "concepts/secret-tag.md",
+            "---\ntype: Concept\n---\nBody with [link](https://github.com/alphazede/r).\n# Citations\n".to_owned(),
+            "Body with [link](https://github.com/alphazede/r).\n# Citations\n",
+            Frontmatter::from_parsed("---\ntype: Concept\n---\n", fields),
+        );
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        let tag: Vec<_> = result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "tag-value")
+            .collect();
+        assert_eq!(tag.len(), 1, "expected one tag-value diagnostic");
+        assert_eq!(tag[0].message, "tags[2] not in policy-allowed set");
+        for d in &result.bran_strict.diagnostics {
+            assert!(
+                !d.message.contains("super-secret-token"),
+                "diagnostic echoes raw value: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn strict_boundary_value_diagnostic_omits_value() {
+        let policy = valid_v1_policy();
+        let mut fields = BTreeMap::new();
+        fields.insert("type".to_owned(), YamlValue::String("Concept".to_owned()));
+        fields.insert(
+            "okf_status".to_owned(),
+            YamlValue::String("active".to_owned()),
+        );
+        fields.insert(
+            "tags".to_owned(),
+            YamlValue::Sequence(vec![YamlValue::String("internal".to_owned())]),
+        );
+        fields.insert(
+            "public_boundary".to_owned(),
+            YamlValue::String("super-secret-boundary".to_owned()),
+        );
+        fields.insert(
+            "title".to_owned(),
+            YamlValue::String("Secret Boundary".to_owned()),
+        );
+        fields.insert(
+            "resource".to_owned(),
+            YamlValue::String("https://github.com/alphazede/r".to_owned()),
+        );
+        fields.insert(
+            "timestamp".to_owned(),
+            YamlValue::String("2026-01-01".to_owned()),
+        );
+        let doc = Doc::new(
+            "concepts/secret-boundary.md",
+            "---\ntype: Concept\n---\nBody with [link](https://github.com/alphazede/r).\n"
+                .to_owned(),
+            "Body with [link](https://github.com/alphazede/r).\n",
+            Frontmatter::from_parsed("---\ntype: Concept\n---\n", fields),
+        );
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        let boundary: Vec<_> = result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "boundary-value")
+            .collect();
+        assert_eq!(boundary.len(), 1, "expected one boundary-value diagnostic");
+        assert_eq!(
+            boundary[0].message,
+            "public_boundary value not in policy-allowed set"
+        );
+        for d in &result.bran_strict.diagnostics {
+            assert!(
+                !d.message.contains("super-secret-boundary"),
+                "diagnostic echoes raw value: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
+    fn strict_malformed_frontmatter_diagnostic_omits_reason() {
+        // The scanner's malformed-metadata reason embeds the raw offending
+        // line (see MetadataParserRegistry::parse); bran-strict must not
+        // forward it into the diagnostic message.
+        let registry = crate::metadata::MetadataParserRegistry::default();
+        let source =
+            "---\ntype: Concept\nnotes line with super-secret-token-zz9 and no colon\n---\nBody.\n";
+        let report = registry.parse(
+            "concepts/evil.md",
+            source,
+            &crate::metadata::PackageDefaults::default(),
+        );
+        let reason = report
+            .warnings
+            .iter()
+            .find_map(|w| w.strip_prefix("malformed-metadata: "))
+            .expect("scanner warns on colon-less line");
+        assert!(
+            reason.contains("super-secret-token-zz9"),
+            "probe assumption broken: scanner reason must carry the raw line"
+        );
+        let raw = "---\ntype: Concept\nnotes line with super-secret-token-zz9 and no colon\n---\n";
+        assert!(
+            crate::frontmatter::parse_frontmatter(raw).is_err(),
+            "probe assumption broken: structural parse must also fail"
+        );
+        let doc = Doc::new(
+            "concepts/evil.md",
+            source,
+            "Body.\n",
+            Frontmatter::malformed(raw, reason),
+        );
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate(&bundle, BRAN_STRICT);
+        let malformed: Vec<_> = result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "malformed-frontmatter")
+            .collect();
+        assert_eq!(
+            malformed.len(),
+            1,
+            "expected one malformed-frontmatter diagnostic"
+        );
+        assert_eq!(malformed[0].message, "malformed concept frontmatter");
+        for d in &result.bran_strict.diagnostics {
+            assert!(
+                !d.message.contains("super-secret-token-zz9"),
+                "diagnostic echoes raw input: {}",
+                d.message
+            );
+        }
     }
 
     /// Deterministic diagnostics: repeated validation yields identical ordered output.
