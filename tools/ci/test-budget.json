@@ -264,6 +264,32 @@
       "support_fixtures": []
     },
     {
+      "stable_id": "P3-ENTERPRISE-CONFORMANCE",
+      "phase": 3,
+      "slice": "3.4",
+      "runner": "rust",
+      "name": "enterprise_conformance_fast",
+      "category": "conformance",
+      "classification": "new",
+      "source": "crates/bran-document/tests/conformance.rs",
+      "support_fixtures": [
+        "fixtures/enterprise-documents/conformance/docx-base.parts",
+        "fixtures/enterprise-documents/conformance/pptx-base.parts",
+        "fixtures/enterprise-documents/conformance/xlsx-base.parts"
+      ]
+    },
+    {
+      "stable_id": "P3-ENTERPRISE-CONFORMANCE-FULL",
+      "phase": 3,
+      "slice": "3.4",
+      "runner": "rust",
+      "name": "enterprise_conformance_full",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-document/tests/conformance.rs",
+      "support_fixtures": []
+    },
+    {
       "stable_id": "P3-ENTERPRISE-DOCUMENT",
       "phase": 3,
       "slice": "3.4",
@@ -446,6 +472,33 @@
       "classification": "new",
       "source": "crates/bran-core/src/database/state.rs",
       "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-SCIP-BASELINE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "scip_absent_index_keeps_existing_output",
+      "category": "regression",
+      "classification": "new",
+      "source": "crates/bran-cli/src/scip_tests.rs",
+      "support_fixtures": [
+        "fixtures/symbols/baseline-packet-v1.json",
+        "fixtures/symbols/baseline-query-v1.json"
+      ]
+    },
+    {
+      "stable_id": "P8-SCIP-SYMBOLS",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_scip_symbols",
+      "category": "contract",
+      "classification": "new",
+      "source": "crates/bran-cli/src/scip_tests.rs",
+      "support_fixtures": [
+        "fixtures/symbols/symbol-navigation-v1.json"
+      ]
     }
   ]
 }

@@ -135,10 +135,11 @@ run_fast() {
 }
 
 run_security() {
-    printf '%s\n' 'SECURITY: exercising bounded repository scanning and the public boundary.'
+    printf '%s\n' 'SECURITY: exercising bounded repository scanning, enterprise-document parser limits, and the public boundary.'
 
     run_budget
     cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-core p2_scanner
+    cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-document --test conformance enterprise_conformance_full -- --ignored
     run_public_boundary
 
     printf '%s\n' 'PASS Slice 2.1 security gate'
