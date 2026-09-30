@@ -247,7 +247,7 @@ def seal(tag: str, dist: Path, dry_run: bool, required_identity: str | None,
     except ValueError as error:
         print(f"FAIL {error}")
         return 1
-    head, tagged, dirty, tagged_lock_digest = _git(bran_root().parent, tag)
+    head, tagged, dirty, tagged_lock_digest = _git(bran_root(), tag)
     if not contract.is_git_sha(head):
         print("FAIL git evidence unavailable: cannot determine HEAD")
         return 1
@@ -396,7 +396,9 @@ def test_p4_sealed_release() -> None:
     head = "a" * 40
     signed_at = "2026-01-02T03:04:05Z"
     lock_digest = digest(bran_root() / "Cargo.lock")
-    good_git = lambda _root, _tag: (head, head, False, lock_digest)
+    def good_git(root: Path, _tag: str) -> tuple[str, str | None, bool | None, str | None]:
+        assert root == bran_root(), f"git root {root} != repository root {bran_root()}"
+        return (head, head, False, lock_digest)
     good_proof = lambda _sums, _signature: (identity, issuer, signed_at)
 
     def expect_rejection(label: str, action: Callable[[], int]) -> None:
