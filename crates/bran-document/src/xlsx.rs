@@ -299,11 +299,12 @@ impl<'a> Reader<'a> {
         let mut entries: Vec<[String; 4]> = Vec::new();
         let mut defined: Vec<(Vec<(String, String)>, String)> = Vec::new();
         let mut stack: Vec<String> = Vec::new();
+        let mut scope: Vec<Vec<(String, String)>> = Vec::new();
         let events = self.events(workbook)?;
-        let prefixes = relationship_prefixes(&events);
         for event in events {
             match event {
                 Event::Open { name, attributes } => {
+                    scope.push(xmlns_frame(&attributes));
                     match (stack.len(), name.as_str()) {
                         (1, "sheets" | "definedNames") => {}
                         (1, other) if SETTINGS.contains(&other) => {
@@ -318,7 +319,7 @@ impl<'a> Reader<'a> {
                             required(&attributes, "name")?.to_owned(),
                             required(&attributes, "sheetId")?.to_owned(),
                             attr(&attributes, "state").unwrap_or("visible").to_owned(),
-                            relationship_id(&attributes, &prefixes)
+                            relationship_id(&attributes, &scope)
                                 .ok_or(Refusal::MalformedContainer)?
                                 .to_owned(),
                         ]),
@@ -338,6 +339,7 @@ impl<'a> Reader<'a> {
                 }
                 Event::Close => {
                     stack.pop();
+                    scope.pop();
                 }
             }
         }
@@ -574,11 +576,12 @@ impl<'a> Reader<'a> {
         let mut cell: Option<RawCell> = None;
         let (mut row, mut column) = (0u32, 0u32);
         let mut stack: Vec<String> = Vec::new();
+        let mut scope: Vec<Vec<(String, String)>> = Vec::new();
         let events = self.events(part)?;
-        let prefixes = relationship_prefixes(&events);
         for event in events {
             match event {
                 Event::Open { name, attributes } => {
+                    scope.push(xmlns_frame(&attributes));
                     let parent = stack.last().map(String::as_str).unwrap_or_default();
                     match (stack.len(), name.as_str()) {
                         (1, "dimension") => {
@@ -664,7 +667,7 @@ impl<'a> Reader<'a> {
                             merged.push(s(reference));
                         }
                         (2, "hyperlink") if parent == "hyperlinks" => {
-                            let id = relationship_id(&attributes, &prefixes);
+                            let id = relationship_id(&attributes, &scope);
                             let link = self.hyperlink(&attributes, id, &links)?;
                             hyperlinks.push(link);
                         }
@@ -715,6 +718,7 @@ impl<'a> Reader<'a> {
                     }
                 }
                 Event::Close => {
+                    scope.pop();
                     if stack.pop().as_deref() == Some("c") && stack.len() == 3 {
                         if let Some(raw) = cell.take() {
                             let key = (raw.row, raw.column);
@@ -2104,32 +2108,43 @@ fn kebab(name: &str) -> String {
     out
 }
 
-/// Prefixes a part binds to the relationships namespace. Attribute keys keep
-/// their prefix as written, so a relationship id is found through the
-/// namespace binding, never by assuming the conventional `r:` or by a local
-/// name that a foreign namespace could also use.
-fn relationship_prefixes(events: &[Event]) -> BTreeSet<String> {
-    events
+/// The `xmlns:prefix` bindings declared on one element: namespace scope for
+/// its own attributes and its descendants. Attribute keys keep their prefix
+/// as written, so a relationship id is found through the binding in scope,
+/// never by assuming the conventional `r:` or by a local name that a foreign
+/// namespace could also use.
+fn xmlns_frame(attributes: &[(String, String)]) -> Vec<(String, String)> {
+    attributes
         .iter()
-        .filter_map(|event| match event {
-            Event::Open { attributes, .. } => Some(attributes),
-            _ => None,
+        .filter_map(|(key, value)| {
+            key.strip_prefix("xmlns:")
+                .map(|prefix| (prefix.to_owned(), value.clone()))
         })
-        .flatten()
-        .filter(|(_, value)| value == OFFICE_REL || value == STRICT_OFFICE_REL)
-        .filter_map(|(key, _)| key.strip_prefix("xmlns:").map(str::to_owned))
         .collect()
+}
+
+/// The namespace a prefix names in scope: the innermost binding wins, so a
+/// local rebinding shadows the outer one for its element and descendants.
+fn in_scope<'s>(stack: &'s [Vec<(String, String)>], prefix: &str) -> Option<&'s str> {
+    stack
+        .iter()
+        .rev()
+        .flat_map(|frame| frame.iter().rev())
+        .find(|(name, _)| name == prefix)
+        .map(|(_, uri)| uri.as_str())
 }
 
 fn relationship_id<'b>(
     attributes: &'b [(String, String)],
-    prefixes: &BTreeSet<String>,
+    scope: &[Vec<(String, String)>],
 ) -> Option<&'b str> {
     attributes
         .iter()
         .find(|(key, _)| {
-            key.split_once(':')
-                .is_some_and(|(prefix, local)| local == "id" && prefixes.contains(prefix))
+            key.split_once(':').is_some_and(|(prefix, local)| {
+                local == "id"
+                    && matches!(in_scope(scope, prefix), Some(uri) if uri == OFFICE_REL || uri == STRICT_OFFICE_REL)
+            })
         })
         .map(|(_, value)| value.as_str())
 }

@@ -863,6 +863,58 @@ fn xlsx_reversed_table_range_is_refused() {
     );
 }
 
+/// A relationship id resolves through the namespace binding in scope at
+/// its own element: a sheet that locally rebinds `r` to a foreign namespace
+/// still resolves through the correctly bound prefix, never the shadowed one.
+#[test]
+fn xlsx_relationship_ids_resolve_in_scope() {
+    let bytes = Parts::parse(FEATURES)
+        .edit(
+            WORKBOOK,
+            r#"<sheet name="Metrics" sheetId="1" r:id="rId1"/>"#,
+            &format!(
+                r#"<sheet name="Metrics" sheetId="1" xmlns:r="urn:foreign" xmlns:rel="{REL}" r:id="rId2" rel:id="rId1"/>"#
+            ),
+        )
+        .zip();
+    let imported = import(&bytes).expect("imports");
+    let json = xlsx::parse_canonical(&imported.canonical).expect("canonical parses");
+    let Json::Arr(sheets) = field(&json, "sheets") else {
+        panic!("sheets is not an array")
+    };
+    let metrics = sheets
+        .iter()
+        .find(|sheet| field(sheet, "name") == &Json::Str("Metrics".to_owned()))
+        .expect("Metrics sheet");
+    let Json::Arr(cells) = field(metrics, "cells") else {
+        panic!("cells is not an array")
+    };
+    let a1 = cells
+        .iter()
+        .find(|cell| field(cell, "ref") == &Json::Str("A1".to_owned()))
+        .expect("Metrics A1");
+    assert_eq!(
+        field(field(a1, "value"), "value"),
+        &Json::Str("Metric".to_owned()),
+        "shadowed r:id picked the wrong worksheet"
+    );
+
+    let bytes = Parts::parse(FEATURES)
+        .edit(
+            SHEET1,
+            r#"<hyperlink ref="A2" r:id="rId1"/>"#,
+            &format!(
+                r#"<hyperlink ref="A2" xmlns:r="urn:foreign" xmlns:rel="{REL}" r:id="rId2" rel:id="rId1"/>"#
+            ),
+        )
+        .zip();
+    let canonical = text(&import(&bytes).expect("imports"));
+    assert!(
+        canonical.contains(r#""hyperlinks":[{"ref":"A2","target":"https://example.invalid/alpha"}"#),
+        "{canonical}"
+    );
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the
