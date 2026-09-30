@@ -39,6 +39,7 @@ ranked, with the reason attached.
 
 - [Exact symbol navigation from existing SCIP indexes](docs/integrations/agent-setup.md#exact-symbol-navigation), with definitions, references, and implementations.
 - Enterprise-document intake adapters for [DOCX](docs/enterprise-document-docx-adapter.md), [XLSX](docs/enterprise-document-xlsx.md), [PPTX](docs/enterprise-document-pptx-adapter.md), and [PDF](docs/enterprise-document-pdf-adapter.md), with citation anchors and explicit fidelity limits.
+- [Document evidence in `bran query` and `bran packet`](docs/enterprise-document-evidence-envelope.md#admission-into-query-and-packet): admitted DOCX, XLSX, PPTX, and PDF anchors come back with source type, native locator, source digest, fidelity, and derivation, and `bran document inspect` prints an envelope without writing anything. Documents that fail DLP or the public boundary are refused and never enter a packet. There is no OCR engine, so OCR stays unavailable.
 - A [database evidence and state-store boundary](docs/database-boundary.md) that separates read-only evidence from derived state. Real database adapters and CLI wiring remain deferred; only the local file state backend is available.
 - A [staged deployment profile](docs/deployment-profile.md) with registered-root mode for read-only remote CLI use. A service and an OCI image verified on a real base remain future work.
 
