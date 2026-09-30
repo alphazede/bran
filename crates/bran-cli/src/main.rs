@@ -133,20 +133,68 @@ impl TypedExit {
     }
 }
 
+/// Deployment configuration for registered-root mode
+/// (docs/deployment-profile.md). Set by the operator, never by a request.
+const REGISTERED_ROOTS_ENV: &str = "BRAN_REGISTERED_ROOTS";
+/// Largest `query`/`packet` request text admitted in registered-root mode.
+const MAX_REGISTERED_REQUEST_BYTES: usize = 8 * 1024;
+const UNAVAILABLE_IN_REGISTERED_ROOT_MODE: &str = "unavailable_in_registered_root_mode";
+
+/// Registered-root mode: every entry is an absolute directory spelled exactly
+/// as its canonical path, and a request root must equal one byte for byte.
+struct RegisteredRoots(Vec<PathBuf>);
+
+impl RegisteredRoots {
+    fn parse(value: &OsStr) -> Result<Self, &'static str> {
+        let roots: Vec<PathBuf> = std::env::split_paths(value).collect();
+        let exact = |root: &PathBuf| {
+            root.is_absolute()
+                && fs::canonicalize(root)
+                    .is_ok_and(|real| real.as_os_str() == root.as_os_str() && real.is_dir())
+        };
+        if roots.iter().all(exact) {
+            Ok(Self(roots))
+        } else {
+            Err("registered_roots_invalid")
+        }
+    }
+
+    fn admit_root(&self, root: &str) -> Result<(), &'static str> {
+        if self
+            .0
+            .iter()
+            .any(|entry| entry.as_os_str() == OsStr::new(root))
+        {
+            Ok(())
+        } else {
+            Err("root_not_registered")
+        }
+    }
+}
+
+fn admit_registered_request(text: &str) -> Result<(), &'static str> {
+    if text.len() > MAX_REGISTERED_REQUEST_BYTES {
+        Err("request_oversized")
+    } else if !is_public_dlp_safe(text) {
+        Err("request_dlp_rejected")
+    } else {
+        Ok(())
+    }
+}
+
+/// Registered-root rejections never echo the command, root, or request.
+fn make_registered_mode_error(detail: &str) -> String {
+    make_envelope("", "error", "null", &[], &[detail.to_owned()], "{}", "{}")
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() == 1
-        && arguments[0] == "tui"
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-    {
+    let registry = std::env::var_os(REGISTERED_ROOTS_ENV);
+    let is_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if registry.is_none() && arguments.len() == 1 && arguments[0] == "tui" && is_terminal {
         return run_tui();
     }
-    CliApp::run_for_terminal(
-        arguments,
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-    )
-    .write_to_stdio()
+    CliApp::run_inner(arguments, is_terminal, None, registry).write_to_stdio()
 }
 
 struct CliApp;
@@ -158,7 +206,7 @@ impl CliApp {
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
     {
-        Self::run_inner(arguments, false, None)
+        Self::run_inner(arguments, false, None, None)
     }
 
     #[cfg(test)]
@@ -167,18 +215,24 @@ impl CliApp {
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
     {
-        Self::run_inner(arguments, false, Some(stdin))
+        Self::run_inner(arguments, false, Some(stdin), None)
     }
 
+    #[cfg(test)]
     fn run_for_terminal<I>(arguments: I, is_terminal: bool) -> CliResult
     where
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
     {
-        Self::run_inner(arguments, is_terminal, None)
+        Self::run_inner(arguments, is_terminal, None, None)
     }
 
-    fn run_inner<I>(arguments: I, is_terminal: bool, stdin_bytes: Option<&[u8]>) -> CliResult
+    fn run_inner<I>(
+        arguments: I,
+        is_terminal: bool,
+        stdin_bytes: Option<&[u8]>,
+        registry: Option<OsString>,
+    ) -> CliResult
     where
         I: IntoIterator,
         I::Item: AsRef<OsStr>,
@@ -192,6 +246,22 @@ impl CliApp {
             },
             None => return CliResult::usage(MISSING_COMMAND_ERROR.to_owned()),
         };
+
+        let registered = match registry {
+            Some(_) if matches!(cmd, "-h" | "--help" | "help" | "-V" | "--version" | "smoke") => {
+                None
+            }
+            Some(value) => match RegisteredRoots::parse(&value) {
+                Ok(roots) => Some(roots),
+                Err(detail) => return CliResult::operation(make_registered_mode_error(detail)),
+            },
+            None => None,
+        };
+        if registered.is_some() && !matches!(cmd, "check" | "query" | "packet") {
+            return CliResult::usage(make_registered_mode_error(
+                UNAVAILABLE_IN_REGISTERED_ROOT_MODE,
+            ));
+        }
 
         match cmd {
             "-h" | "--help" | "help" => {
@@ -259,6 +329,19 @@ impl CliApp {
                 if qtext.trim().is_empty() {
                     return CliResult::usage(make_query_error("missing_query"));
                 }
+                if let Some(roots) = &registered {
+                    let admitted = if record {
+                        Err(UNAVAILABLE_IN_REGISTERED_ROOT_MODE)
+                    } else {
+                        std::iter::once(&root)
+                            .chain(&added)
+                            .try_for_each(|candidate| roots.admit_root(candidate))
+                            .and_then(|()| admit_registered_request(&qtext))
+                    };
+                    if let Err(detail) = admitted {
+                        return CliResult::usage(make_query_error(detail));
+                    }
+                }
                 let result = if added.is_empty() {
                     do_query(root, qtext, record)
                 } else {
@@ -308,6 +391,14 @@ impl CliApp {
                 if qtext.trim().is_empty() {
                     return CliResult::usage(make_packet_error("missing_query"));
                 }
+                if let Some(roots) = &registered {
+                    if let Err(detail) = roots
+                        .admit_root(&root)
+                        .and_then(|()| admit_registered_request(&qtext))
+                    {
+                        return CliResult::usage(make_packet_error(detail));
+                    }
+                }
                 match do_packet(root, qtext, &controls) {
                     Ok((data, warns, fails, provenance, metrics)) => CliResult::success(
                         make_envelope("packet", "ok", &data, &warns, &fails, &provenance, &metrics),
@@ -337,6 +428,12 @@ impl CliApp {
                     return CliResult::usage(make_check_error("invalid_policy_stdin_flag"));
                 }
                 let (policy_source, root, profile) = match args.first().map(String::as_str) {
+                    // A request must not replace repository policy in registered-root mode.
+                    Some("--policy-stdin") if registered.is_some() => {
+                        return CliResult::usage(make_check_error(
+                            UNAVAILABLE_IN_REGISTERED_ROOT_MODE,
+                        ));
+                    }
                     Some("--policy-stdin") => {
                         let root = match args.get(1) {
                             Some(r) => r.clone(),
@@ -415,6 +512,11 @@ impl CliApp {
                         };
                         if args.len() > 2 {
                             return CliResult::usage(make_check_error("too_many_args"));
+                        }
+                        if let Some(Err(detail)) =
+                            registered.as_ref().map(|roots| roots.admit_root(r))
+                        {
+                            return CliResult::usage(make_check_error(detail));
                         }
                         let p = match RepositoryPolicy::load(Path::new(r)) {
                             Ok(p) => p,

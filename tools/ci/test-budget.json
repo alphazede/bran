@@ -388,6 +388,17 @@
       "classification": "new",
       "source": "crates/bran-core/src/adapters/connected.rs",
       "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-DEPLOYMENT-PROFILE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_deployment_profile",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/deployment_profile.rs",
+      "support_fixtures": []
     }
   ]
 }
