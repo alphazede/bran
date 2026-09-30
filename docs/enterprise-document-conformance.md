@@ -48,7 +48,11 @@ then on the corpus runs every package row of its format through the adapter
 as well as through the shared intake. The adapter must give the same outcome
 the row expects. An adapter that registers for a format also fails the corpus
 test until it replaces that format's unavailable adapter rows with executable
-ones, so a registered format cannot keep rows in the unavailable state.
+ones, so a registered format cannot keep rows in the unavailable state. The
+adapter's test module supplies those rows through `adapter_row` in
+`tests/conformance.rs` (input bytes and expected outcome); the corpus adds the
+re-encodings in the fast tier and requires a successful round trip for every
+`*-round-trip-anchors` row.
 
 For each row, `conformance::check` verifies:
 
@@ -109,8 +113,18 @@ issue; it never counts them as passing.
 |---|---|
 | `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 |
 | `xlsx-ordinary-projection`, `xlsx-unsupported-benign-fidelity`, `xlsx-round-trip-anchors` | #26 |
-| `pptx-ordinary-projection`, `pptx-unsupported-benign-fidelity`, `pptx-round-trip-anchors` | #22 |
 | `pdf-ordinary-projection`, `pdf-malformed-object-graph`, `pdf-recursive-structure`, `pdf-active-action`, `pdf-embedded-file`, `pdf-encrypted`, `pdf-signed`, `pdf-dlp-canary`, `pdf-oversized-stream`, `pdf-round-trip-anchors` | #23 |
+
+The PPTX adapter (#22) is registered, so its rows are executable. They are
+built from `pptx-ordinary.parts`, `pptx-slides.parts`, and `pptx-design.parts`
+plus one generated PNG; see
+[`enterprise-document-pptx-adapter.md`](enterprise-document-pptx-adapter.md).
+
+| Row | Expected outcome |
+|---|---|
+| `pptx-ordinary-projection` | admitted with `hyperlink-not-fetched` and `field-as-text`; identical across re-encodings |
+| `pptx-unsupported-benign-fidelity` | admitted with `unsupported-transition`, `unsupported-animation`, `unsupported-chart`, `unsupported-smartart`, `unsupported-media`, `alternate-content-fallback` |
+| `pptx-round-trip-anchors` | admitted; export succeeds and re-import keeps every anchor |
 
 PDF fixtures are not written yet. A hand-written PDF with no parser to check
 it would be an untested fixture; #23 adds them with the parser.
@@ -171,8 +185,8 @@ cancelled result is never admitted as evidence.
 |---|---|---|
 | Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule` | done for packages; adapter envelopes when adapters register |
 | Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages |
-| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes; content fidelity needs #21, #22, #23, #26 |
-| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift` | harness done; not exercised until an adapter exports |
+| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes and PPTX content; content fidelity needs #21, #23, #26 |
+| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift`; `pptx-round-trip-anchors` | done for PPTX; other formats when their adapters export |
 | No network requests, no active content executed | `importers_have_no_network_or_process_access`; active-content and external rows | done |
 | Containment, DLP, classification, byte budgets on import and export | budget rows; `dlp-canary`; `export_gate_*` tests | done for the shared gates; classification is the envelope's `policy` block |
 | Typed, bounded failures; no panic; no partial output | check step 1; `parser_limit_property`; refusal rows; export gate tests | done |
@@ -207,6 +221,7 @@ not use.
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
 | Measured on 2026-09-30 (debug build) | 0.8 s, 120 checks | 23.7 s, 120 checks |
+| Measured on 2026-09-30 (debug build, PPTX adapter registered) | 0.7 s, 126 checks | 28.7 s, 126 checks |
 | Fixture file size | 8 KiB each | same files |
 
 The budgets are constants at the top of the test file. A tier that runs
@@ -229,22 +244,22 @@ Status values: exact, normalized, approximated, unsupported, refused.
 | External relationships, remote media, external workbooks | refused | refused | refused | pending #23 |
 | External hyperlinks | recorded, never fetched | recorded, never fetched | recorded, never fetched | pending #23 |
 | DTDs and custom entities | refused | refused | refused | n/a |
-| Text, structure, tables, lists | pending #21 | pending #26 | pending #22 | pending #23 |
-| Comments, tracked changes, notes | pending #21 | pending #26 | pending #22 | pending #23 |
+| Text, structure, tables, lists | pending #21 | pending #26 | normalized (text, levels, breaks, table cells; formatting dropped) | pending #23 |
+| Comments, tracked changes, notes | pending #21 | pending #26 | normalized (notes text and links; comment author, initials, text) | pending #23 |
 | Formulas and cached values | n/a | pending #26 | n/a | n/a |
-| Images and media | pending #21 | pending #26 | pending #22 | pending #23 |
-| Charts, SmartArt, animations | pending #21 | pending #26 | pending #22 | n/a |
+| Images and media | pending #21 | pending #26 | images exact (content-addressed); audio and video unsupported | pending #23 |
+| Charts, SmartArt, animations | pending #21 | pending #26 | unsupported (receipted) | n/a |
 | OCR text | n/a | n/a | n/a | pending #23 |
-| Export | pending #21 | pending #26 | pending #22 | pending #23 |
+| Export | pending #21 | pending #26 | normalized (generic master, layouts, theme; fidelity receipt part) | pending #23 |
 
 ## Acceptance status for #25
 
 | Item | Status | Evidence or owner |
 |---|---|---|
 | Fixture matrix, package classes | done | package rows above |
-| Fixture matrix, PDF classes and unsupported-benign fidelity | not done | adapter rows; #21, #22, #23, #26 |
+| Fixture matrix, PDF classes and unsupported-benign fidelity | partial | PPTX rows done; #21, #23, #26 |
 | Required properties | see table above | |
-| CLI read-only inspection before export | not done | needs adapter output to inspect; #21, #22, #23, #26 |
+| CLI read-only inspection before export | not done | PPTX output exists (`pptx::import`); CLI wiring not built; #21, #23, #26 |
 | Query and packet select document evidence | not done | needs admitted envelopes from adapters, then an ingest path |
 | Export needs explicit format and destination, never overwrites | done for the shared gate (`export::write_new`) | CLI wiring with the first adapter export |
 | Adapter tests and shared corpus in the fast/full split with budgets | done | budget table above |
