@@ -5,7 +5,7 @@ okf_status: active
 tags:
   - public
   - developer
-freshness: "2026-09-29"
+freshness: "2026-09-30"
 resource: https://github.com/alphazede/bran
 public_boundary: public
 ---
@@ -110,10 +110,15 @@ issue; it never counts them as passing.
 | `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 |
 | `xlsx-ordinary-projection`, `xlsx-unsupported-benign-fidelity`, `xlsx-round-trip-anchors` | #26 |
 | `pptx-ordinary-projection`, `pptx-unsupported-benign-fidelity`, `pptx-round-trip-anchors` | #22 |
-| `pdf-ordinary-projection`, `pdf-malformed-object-graph`, `pdf-recursive-structure`, `pdf-active-action`, `pdf-embedded-file`, `pdf-encrypted`, `pdf-signed`, `pdf-dlp-canary`, `pdf-oversized-stream`, `pdf-round-trip-anchors` | #23 |
 
-PDF fixtures are not written yet. A hand-written PDF with no parser to check
-it would be an untested fixture; #23 adds them with the parser.
+The PDF adapter (#23) is registered, so its rows are executable: 27 rows,
+including `pdf-ordinary-projection`, `pdf-malformed-object-graph`,
+`pdf-recursive-structure`, `pdf-active-action`, `pdf-embedded-file`,
+`pdf-encrypted`, `pdf-signed`, `pdf-dlp-canary`, `pdf-oversized-stream`, and
+`pdf-round-trip-anchors`. They run in `crates/bran-document/tests/pdf.rs`
+through `conformance::check`, from the synthetic `pdf-base.objects` fixture,
+with their own fast and full budgets. See
+[`enterprise-document-pdf-adapter.md`](enterprise-document-pdf-adapter.md).
 
 ## Timeouts are deterministic budgets
 
@@ -171,8 +176,8 @@ cancelled result is never admitted as evidence.
 |---|---|---|
 | Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule` | done for packages; adapter envelopes when adapters register |
 | Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages |
-| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes; content fidelity needs #21, #22, #23, #26 |
-| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift` | harness done; not exercised until an adapter exports |
+| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes and PDF; content fidelity needs #21, #22, #26 |
+| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift`; `pdf-round-trip-anchors` | done for PDF; DOCX, XLSX, PPTX when they export |
 | No network requests, no active content executed | `importers_have_no_network_or_process_access`; active-content and external rows | done |
 | Containment, DLP, classification, byte budgets on import and export | budget rows; `dlp-canary`; `export_gate_*` tests | done for the shared gates; classification is the envelope's `policy` block |
 | Typed, bounded failures; no panic; no partial output | check step 1; `parser_limit_property`; refusal rows; export gate tests | done |
@@ -220,29 +225,30 @@ Status values: exact, normalized, approximated, unsupported, refused.
 
 | Feature | DOCX | XLSX | PPTX | PDF |
 |---|---|---|---|---|
-| Package container | normalized (canonical inventory) | normalized | normalized | pending #23 |
+| Package container | normalized (canonical inventory) | normalized | normalized | normalized (object order, object streams, cross-reference form, compression, incremental updates) |
 | ZIP entry order, timestamps, compression | normalized away | normalized away | normalized away | n/a |
-| Encrypted or legacy binary container | refused | refused | refused | pending #23 |
-| Digital signature parts | preserved as evidence, trust not verified | same | same | pending #23 |
+| Encrypted or legacy binary container | refused | refused | refused | refused (any `/Encrypt`) |
+| Digital signature parts | preserved as evidence, trust not verified | same | same | same |
 | Macros, VBA, XLM, ActiveX, OLE objects | refused | refused | refused | n/a |
-| JavaScript, launch and other PDF actions | n/a | n/a | n/a | pending #23 |
-| External relationships, remote media, external workbooks | refused | refused | refused | pending #23 |
-| External hyperlinks | recorded, never fetched | recorded, never fetched | recorded, never fetched | pending #23 |
+| JavaScript, launch and other PDF actions | n/a | n/a | n/a | refused |
+| External relationships, remote media, external workbooks | refused | refused | refused | refused (remote go-to, URL file specifications, external streams) |
+| External hyperlinks | recorded, never fetched | recorded, never fetched | recorded, never fetched | recorded, never fetched |
 | DTDs and custom entities | refused | refused | refused | n/a |
-| Text, structure, tables, lists | pending #21 | pending #26 | pending #22 | pending #23 |
-| Comments, tracked changes, notes | pending #21 | pending #26 | pending #22 | pending #23 |
+| Text, structure, tables, lists | pending #21 | pending #26 | pending #22 | text normalized; tables unsupported |
+| Comments, tracked changes, notes | pending #21 | pending #26 | pending #22 | annotations normalized |
 | Formulas and cached values | n/a | pending #26 | n/a | n/a |
-| Images and media | pending #21 | pending #26 | pending #22 | pending #23 |
+| Images and media | pending #21 | pending #26 | pending #22 | image locators approximated; pixels not decoded |
 | Charts, SmartArt, animations | pending #21 | pending #26 | pending #22 | n/a |
-| OCR text | n/a | n/a | n/a | pending #23 |
-| Export | pending #21 | pending #26 | pending #22 | pending #23 |
+| OCR text | n/a | n/a | n/a | unsupported (no engine; requests reported unavailable) |
+| Export | pending #21 | pending #26 | pending #22 | tagged PDF; active content removed; no PDF/A or PDF/UA claim |
 
 ## Acceptance status for #25
 
 | Item | Status | Evidence or owner |
 |---|---|---|
 | Fixture matrix, package classes | done | package rows above |
-| Fixture matrix, PDF classes and unsupported-benign fidelity | not done | adapter rows; #21, #22, #23, #26 |
+| Fixture matrix, PDF classes | done | PDF rows in `tests/pdf.rs` (#23) |
+| Fixture matrix, unsupported-benign fidelity | not done | adapter rows; #21, #22, #26 |
 | Required properties | see table above | |
 | CLI read-only inspection before export | not done | needs adapter output to inspect; #21, #22, #23, #26 |
 | Query and packet select document evidence | not done | needs admitted envelopes from adapters, then an ingest path |

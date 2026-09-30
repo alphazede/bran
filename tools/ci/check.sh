@@ -135,6 +135,7 @@ run_security() {
     run_budget
     cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-core p2_scanner
     cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-document --test conformance enterprise_conformance_full -- --ignored
+    cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-document --test pdf pdf_conformance_full -- --ignored
     run_public_boundary
 
     printf '%s\n' 'PASS Slice 2.1 security gate'

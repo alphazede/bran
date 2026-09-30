@@ -10,6 +10,9 @@ pub mod canonical;
 pub mod conformance;
 pub mod export;
 pub mod opc;
+pub mod pdf;
+mod pdf_syntax;
+mod pdf_text;
 pub mod xml;
 pub mod zip;
 
@@ -45,6 +48,10 @@ pub enum Refusal {
     ExportExists,
     ExportIo,
     ExportUnsupported,
+    PdfMalformed,
+    PdfDepthLimit,
+    PdfObjectLimit,
+    PdfPageLimit,
 }
 
 impl Refusal {
@@ -72,6 +79,10 @@ impl Refusal {
             Self::ExportExists => "export-exists",
             Self::ExportIo => "export-io",
             Self::ExportUnsupported => "export-unsupported",
+            Self::PdfMalformed => "malformed-pdf",
+            Self::PdfDepthLimit => "pdf-depth-limit",
+            Self::PdfObjectLimit => "pdf-object-limit",
+            Self::PdfPageLimit => "pdf-page-limit",
         }
     }
 }
