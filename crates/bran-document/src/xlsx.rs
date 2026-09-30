@@ -1273,17 +1273,20 @@ pub fn export(imported: &Imported) -> Result<Exported, Refusal> {
     }
     let sheets = list(&projection, "sheets")?;
     let names = list(&projection, "defined_names")?;
+    // The whole projection is emitted: sheets and names as workbook parts,
+    // `unsupported` and `fidelity` inside the receipt. Every string is
+    // checked, plus the receipt codes the receipt repeats as `import_receipt`.
     let mut strings = Vec::new();
-    collect_strings(
-        get(&projection, "sheets").unwrap_or(&Json::Null),
-        &mut strings,
-    );
-    collect_strings(
-        get(&projection, "defined_names").unwrap_or(&Json::Null),
-        &mut strings,
-    );
+    collect_strings(&projection, &mut strings);
     for text in strings {
         match validate_emitted_string(text) {
+            Err(ExportError::DlpViolation(_)) => return Err(Refusal::DlpFindings),
+            Err(_) => return Err(Refusal::PublicBoundary),
+            Ok(()) => {}
+        }
+    }
+    for code in &imported.receipt {
+        match validate_emitted_string(code) {
             Err(ExportError::DlpViolation(_)) => return Err(Refusal::DlpFindings),
             Err(_) => return Err(Refusal::PublicBoundary),
             Ok(()) => {}

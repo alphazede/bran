@@ -818,6 +818,26 @@ fn xlsx_export_refuses_foreign_projections() {
     }
 }
 
+/// A projection edited after import is re-checked whole, including the
+/// `unsupported` entries the export receipt embeds as `omitted`: a canary or
+/// boundary marker there refuses the export instead of leaking into it.
+#[test]
+fn xlsx_export_checks_receipt_content_for_dlp_and_boundary() {
+    let mut tampered = features();
+    let canonical = text(&tampered).replace("xl/charts/chart1.xml", canary());
+    assert_ne!(text(&tampered), canonical, "tamper anchor moved");
+    tampered.canonical = canonical.into_bytes();
+    assert_eq!(xlsx::export(&tampered).err(), Some(Refusal::DlpFindings));
+
+    let mut tampered = features();
+    let canonical = text(&tampered).replace("xl/charts/chart1.xml", "important_boundary");
+    tampered.canonical = canonical.into_bytes();
+    assert_eq!(
+        xlsx::export(&tampered).err(),
+        Some(Refusal::PublicBoundary)
+    );
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the
