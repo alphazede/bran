@@ -248,6 +248,7 @@ struct RawCell {
 struct Table {
     json: Json,
     top: u32,
+    bottom: u32,
     left: u32,
     right: u32,
     header: bool,
@@ -1023,6 +1024,7 @@ impl<'a> Reader<'a> {
                 ("totals_row", Json::Bool(totals)),
             ]),
             top,
+            bottom,
             left,
             right,
             header,
@@ -1082,9 +1084,11 @@ fn label_and_anchor(
         .collect();
     let mut anchors = Vec::new();
     for (&(row, column), cell) in cells.iter_mut() {
-        let table = tables
-            .iter()
-            .find(|t| t.header && (t.left..=t.right).contains(&column) && row >= t.top);
+        let table = tables.iter().find(|t| {
+            t.header
+                && (t.left..=t.right).contains(&column)
+                && (t.top..=t.bottom).contains(&row)
+        });
         let header_row = table.map_or(1, |t| t.top);
         let mut labels = BTreeMap::new();
         if row > header_row {

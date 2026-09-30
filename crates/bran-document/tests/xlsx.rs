@@ -964,6 +964,37 @@ fn xlsx_style_zero_uses_first_cell_format() {
     );
 }
 
+/// A table header only labels cells inside the table: a cell below the
+/// table's bottom row falls back to row 1, while a cell inside still takes
+/// the table header.
+#[test]
+fn xlsx_table_headers_do_not_label_cells_below() {
+    let bytes = Parts::parse(FEATURES)
+        .edit("xl/tables/table1.xml", r#"ref="A1:B3""#, r#"ref="A3:B4""#)
+        .edit(
+            "xl/sharedStrings.xml",
+            "</sst>",
+            r#"<si><t>Table value</t></si></sst>"#,
+        )
+        .edit(
+            SHEET1,
+            r#"<c r="B3"><v>2</v></c>"#,
+            r#"<c r="B3" t="s"><v>5</v></c>"#,
+        )
+        .zip();
+    let canonical = text(&import(&bytes).expect("imports"));
+    assert!(
+        canonical.contains(
+            r#""labels":{"column":"Value","row":"=1+1 stays text"},"ref":"B5""#
+        ),
+        "cell below the table took the table header: {canonical}"
+    );
+    assert!(
+        canonical.contains(r#""labels":{"column":"Table value","row":"Total"},"ref":"B4""#),
+        "cell inside the table lost the table header: {canonical}"
+    );
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the
