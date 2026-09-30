@@ -197,7 +197,7 @@
     },
     {
       "stable_id": "P3-HEADLESS-CLI",
-      "phase" : 3,
+      "phase": 3,
       "slice": "3.1",
       "runner": "rust",
       "name": "p3_headless_cli_and_maintain_lifecycle",
@@ -463,17 +463,6 @@
       "support_fixtures": []
     },
     {
-      "stable_id": "P8-STATE-STORE",
-      "phase": 8,
-      "slice": "8.7",
-      "runner": "rust",
-      "name": "p8_state_store_failures",
-      "category": "integration",
-      "classification": "new",
-      "source": "crates/bran-core/src/database/state.rs",
-      "support_fixtures": []
-    },
-    {
       "stable_id": "P8-SCIP-BASELINE",
       "phase": 8,
       "slice": "8.7",
@@ -499,6 +488,17 @@
       "support_fixtures": [
         "fixtures/symbols/symbol-navigation-v1.json"
       ]
+    },
+    {
+      "stable_id": "P8-STATE-STORE",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_state_store_failures",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-core/src/database/state.rs",
+      "support_fixtures": []
     }
   ]
 }
