@@ -92,6 +92,16 @@ const PACKAGE_ROWS: &[&str] = &[
     "missing-content-types",
     "not-a-zip",
     "cancelled",
+    // Review repair round (findings 2-6).
+    "foreign-attribute-macro",
+    "canary-part-name",
+    "canary-content-types",
+    "truncated-deflate",
+    "empty-deflate-stream",
+    "local-header-method",
+    "local-header-encryption",
+    "xml-invalid-character",
+    "xml-invalid-name",
 ];
 
 /// Adapter rows need a content model. Each stays unavailable until an adapter
@@ -144,6 +154,13 @@ fn expect(row: &str) -> Expect {
         "deep-nesting" => Expect::Refuse(XmlDepthLimit),
         "excessive-nodes" => Expect::Refuse(XmlNodeLimit),
         "cancelled" => Expect::Refuse(Cancelled),
+        "foreign-attribute-macro" => Expect::Refuse(ActiveContent),
+        "canary-part-name" | "canary-content-types" => Expect::Admit(vec!["dlp-findings"]),
+        "truncated-deflate" | "empty-deflate-stream" | "local-header-method" => {
+            Expect::Refuse(MalformedContainer)
+        }
+        "local-header-encryption" => Expect::Refuse(Encrypted),
+        "xml-invalid-character" | "xml-invalid-name" => Expect::Refuse(MalformedXml),
         other => panic!("row without expectation: {other}"),
     }
 }
@@ -292,6 +309,24 @@ fn relationship(id: &str, kind: &str, target: &str, external: bool) -> String {
 }
 
 /// Rewrites one field of the named entry in both its central and local header.
+/// Offsets of the named entry's central record and local header.
+fn entry_offsets(bytes: &[u8], name: &str) -> (usize, usize) {
+    let signature = [0x50, 0x4b, 0x01, 0x02];
+    let mut at = 0;
+    while at + 46 <= bytes.len() {
+        if bytes[at..at + 4] == signature {
+            let name_len = u16::from_le_bytes([bytes[at + 28], bytes[at + 29]]) as usize;
+            if &bytes[at + 46..at + 46 + name_len] == name.as_bytes() {
+                let local = u32::from_le_bytes(bytes[at + 42..at + 46].try_into().unwrap());
+                return (at, local as usize);
+            }
+        }
+        at += 1;
+    }
+    panic!("entry {name} not found");
+}
+
+/// Rewrites one field of the named entry in both its central and local header.
 fn patch_entry(
     bytes: &mut [u8],
     name: &str,
@@ -299,23 +334,31 @@ fn patch_entry(
     local_field: usize,
     value: &[u8],
 ) {
-    let signature = [0x50, 0x4b, 0x01, 0x02];
-    let mut at = 0;
-    while at + 46 <= bytes.len() {
-        if bytes[at..at + 4] == signature {
-            let name_len = u16::from_le_bytes([bytes[at + 28], bytes[at + 29]]) as usize;
-            if &bytes[at + 46..at + 46 + name_len] == name.as_bytes() {
-                let local =
-                    u32::from_le_bytes(bytes[at + 42..at + 46].try_into().unwrap()) as usize;
-                bytes[at + central_field..at + central_field + value.len()].copy_from_slice(value);
-                bytes[local + local_field..local + local_field + value.len()]
-                    .copy_from_slice(value);
-                return;
-            }
-        }
-        at += 1;
-    }
-    panic!("entry {name} not found");
+    let (central, local) = entry_offsets(bytes, name);
+    bytes[central + central_field..central + central_field + value.len()].copy_from_slice(value);
+    bytes[local + local_field..local + local_field + value.len()].copy_from_slice(value);
+}
+
+/// Rewrites one field of the named entry's local header only.
+fn patch_local(bytes: &mut [u8], name: &str, local_field: usize, value: &[u8]) {
+    let (_, local) = entry_offsets(bytes, name);
+    bytes[local + local_field..local + local_field + value.len()].copy_from_slice(value);
+}
+
+/// Drops the last compressed byte of the named entry, which must be the last
+/// entry before the central directory, and fixes every size and offset.
+/// Output size and CRC keep their original values.
+fn truncate_last_entry(bytes: &mut Vec<u8>, name: &str) {
+    let (central, local) = entry_offsets(bytes, name);
+    let field = |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let compressed = field(bytes, central + 20) - 1;
+    bytes[central + 20..central + 24].copy_from_slice(&compressed.to_le_bytes());
+    bytes[local + 18..local + 22].copy_from_slice(&compressed.to_le_bytes());
+    let end = bytes.len() - 22;
+    let cd_offset = field(bytes, end + 16);
+    bytes.remove(cd_offset as usize - 1);
+    let end = bytes.len() - 22;
+    bytes[end + 16..end + 20].copy_from_slice(&(cd_offset - 1).to_le_bytes());
 }
 
 fn canary() -> &'static str {
@@ -436,6 +479,44 @@ fn build(row: &str, format: Format, tier: Tier, limits: &Limits) -> Vec<u8> {
         }
         "missing-content-types" => base.remove("[Content_Types].xml").zip(),
         "not-a-zip" => b"Synthetic plain text that is not a ZIP container.".to_vec(),
+        "foreign-attribute-macro" => base
+            .edit("[Content_Types].xml", "<Types xmlns=", "<Types xmlns:x=\"urn:synthetic\" xmlns=")
+            .edit(
+                "[Content_Types].xml",
+                &format!("ContentType=\"{}\"", l.main_type),
+                &format!("x:ContentType=\"application/xml\" ContentType=\"{}\"", l.macro_type),
+            )
+            .zip(),
+        "canary-part-name" => base.add(&format!("{}/{}.xml", l.dir, canary()), "<a/>").zip(),
+        "canary-content-types" => base
+            .edit("[Content_Types].xml", "<Default", &format!("<!-- {} --><Default", canary()))
+            .zip(),
+        "truncated-deflate" => {
+            let part = format!("{}/extra.xml", l.dir);
+            let mut bytes = base.add(&part, "<a>Hello</a>").zip();
+            truncate_last_entry(&mut bytes, &part);
+            bytes
+        }
+        "empty-deflate-stream" => {
+            let part = format!("{}/empty.xml", l.dir);
+            let mut bytes = base.add(&part, "").zip_with(false, false, 0x5921);
+            patch_entry(&mut bytes, &part, 10, 8, &8u16.to_le_bytes());
+            bytes
+        }
+        "local-header-method" => {
+            let mut bytes = base.zip_with(false, false, 0x5921);
+            patch_local(&mut bytes, l.main, 8, &99u16.to_le_bytes());
+            bytes
+        }
+        "local-header-encryption" => {
+            let mut bytes = base.zip_with(false, false, 0x5921);
+            patch_local(&mut bytes, l.main, 6, &1u16.to_le_bytes());
+            bytes
+        }
+        "xml-invalid-character" => base.edit("[Content_Types].xml", "</Types>", "\0</Types>").zip(),
+        "xml-invalid-name" => base
+            .edit(l.main_rels, "</Relationships>", "<1/></Relationships>")
+            .zip(),
         other => panic!("row without builder: {other}"),
     }
 }
@@ -1081,6 +1162,259 @@ fn export_gate_requires_contained_destination_and_matching_format() {
         std::fs::remove_dir_all(outside).unwrap();
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+// ---- Review repair round: the reviewer's exact reproducers. ----
+
+const REVIEW_TYPES: &[u8] = b"<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'><Default Extension='xml' ContentType='application/xml'/></Types>";
+
+fn review_entry<'a>(name: &'a str, data: &'a [u8], deflate: bool) -> WriteEntry<'a> {
+    WriteEntry {
+        name,
+        data,
+        deflate,
+        dos_time: 0,
+        dos_date: 0,
+    }
+}
+
+fn review_package(types: &[u8], name: &str) -> Vec<u8> {
+    zip::write(&[
+        review_entry("[Content_Types].xml", types, false),
+        review_entry(name, b"<a/>", false),
+    ])
+}
+
+fn review_u32(bytes: &[u8], at: usize) -> usize {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+}
+
+fn review_patch32(bytes: &mut [u8], at: usize, value: usize) {
+    bytes[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
+}
+
+#[test]
+fn review_failed_export_preserves_preexisting_file() {
+    let root = export_root();
+    let path = root.join(".out.docx.bran-export");
+    std::fs::write(&path, b"pre-existing user data").unwrap();
+    let result = export::write_new(&root, "out.docx", Format::Docx, b"new bytes", &["safe"]);
+    let kept = std::fs::read(&path);
+    let written = std::fs::read(root.join("out.docx"));
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(
+        kept.ok().as_deref(),
+        Some(b"pre-existing user data".as_slice()),
+        "export removed an unowned file"
+    );
+    // A stale temporary name must not block the export either.
+    assert_eq!(
+        result.map(|path| path.file_name().unwrap().to_owned()),
+        Ok("out.docx".into())
+    );
+    assert_eq!(written.ok().as_deref(), Some(b"new bytes".as_slice()));
+}
+
+#[test]
+fn review_foreign_attribute_cannot_mask_macro_content_type() {
+    let types = b"<Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types' xmlns:x='urn:synthetic'><Default Extension='xml' ContentType='application/xml'/><Override PartName='/a.xml' x:ContentType='application/xml' ContentType='application/vnd.ms-word.document.macroEnabled.main+xml'/></Types>";
+    let opened = opc::open(
+        &review_package(types, "a.xml"),
+        &Limits::default(),
+        &Cancel::default(),
+    );
+    assert_eq!(opened, Err(Refusal::ActiveContent));
+}
+
+#[test]
+fn review_dlp_scans_part_names() {
+    let name = format!("{}.xml", canary());
+    let package = opc::open(
+        &review_package(REVIEW_TYPES, &name),
+        &Limits::default(),
+        &Cancel::default(),
+    )
+    .unwrap();
+    assert!(
+        package.diagnostics.contains("dlp-findings"),
+        "{:?}",
+        package.diagnostics
+    );
+}
+
+#[test]
+fn review_dlp_scans_content_types() {
+    let types = format!(
+        "<Types><!-- {} --><Default Extension='xml' ContentType='application/xml'/></Types>",
+        canary()
+    );
+    let package = opc::open(
+        &review_package(types.as_bytes(), "a.xml"),
+        &Limits::default(),
+        &Cancel::default(),
+    )
+    .unwrap();
+    assert!(
+        package.diagnostics.contains("dlp-findings"),
+        "{:?}",
+        package.diagnostics
+    );
+}
+
+#[test]
+fn review_dlp_scans_normalized_metadata() {
+    // A character reference hides the canary from a raw byte scan, but the
+    // normalized content type is emitted in the canonical bytes.
+    let hidden = canary().replacen('A', "&#65;", 1);
+    let types =
+        format!("<Types><Default Extension='xml' ContentType='application/{hidden}'/></Types>");
+    let package = opc::open(
+        &review_package(types.as_bytes(), "a.xml"),
+        &Limits::default(),
+        &Cancel::default(),
+    )
+    .unwrap();
+    assert!(
+        package.diagnostics.contains("dlp-findings"),
+        "{:?}",
+        package.diagnostics
+    );
+}
+
+#[test]
+fn review_deflate_requires_stream_end() {
+    let mut bytes = zip::write(&[review_entry("a.xml", b"<a>Hello</a>", true)]);
+    let cd = review_u32(&bytes, bytes.len() - 6);
+    let compressed = review_u32(&bytes, 18);
+    bytes.remove(cd - 1);
+    review_patch32(&mut bytes, 18, compressed - 1);
+    review_patch32(&mut bytes, cd - 1 + 20, compressed - 1);
+    let end = bytes.len() - 6;
+    review_patch32(&mut bytes, end, cd - 1);
+    assert_eq!(
+        zip::read(&bytes, &Limits::default(), &Cancel::default()),
+        Err(Refusal::MalformedContainer)
+    );
+}
+
+#[test]
+fn review_empty_deflate_stream_is_refused() {
+    let mut bytes = zip::write(&[review_entry("a.xml", b"", false)]);
+    patch_entry(&mut bytes, "a.xml", 10, 8, &8u16.to_le_bytes());
+    assert_eq!(
+        zip::read(&bytes, &Limits::default(), &Cancel::default()),
+        Err(Refusal::MalformedContainer)
+    );
+}
+
+#[test]
+fn review_deflate_rejects_trailing_compressed_bytes() {
+    let mut bytes = zip::write(&[review_entry("a.xml", b"<a>Hello</a>", true)]);
+    let cd = review_u32(&bytes, bytes.len() - 6);
+    let compressed = review_u32(&bytes, 18);
+    bytes.insert(cd, 0);
+    review_patch32(&mut bytes, 18, compressed + 1);
+    review_patch32(&mut bytes, cd + 1 + 20, compressed + 1);
+    let end = bytes.len() - 6;
+    review_patch32(&mut bytes, end, cd + 1);
+    assert_eq!(
+        zip::read(&bytes, &Limits::default(), &Cancel::default()),
+        Err(Refusal::MalformedContainer)
+    );
+}
+
+#[test]
+fn review_local_header_must_match_central_method() {
+    let mut bytes = zip::write(&[review_entry("a.xml", b"<a/>", false)]);
+    bytes[8..10].copy_from_slice(&99u16.to_le_bytes());
+    assert_eq!(
+        zip::read(&bytes, &Limits::default(), &Cancel::default()),
+        Err(Refusal::MalformedContainer)
+    );
+}
+
+#[test]
+fn review_local_encryption_flag_is_refused() {
+    let mut bytes = zip::write(&[review_entry("a.xml", b"<a/>", false)]);
+    bytes[6..8].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(
+        zip::read(&bytes, &Limits::default(), &Cancel::default()),
+        Err(Refusal::Encrypted)
+    );
+}
+
+#[test]
+fn review_local_sizes_must_match_central() {
+    let mut bytes = zip::write(&[review_entry("a.xml", b"<a/>", false)]);
+    bytes[22..26].copy_from_slice(&3u32.to_le_bytes());
+    assert_eq!(
+        zip::read(&bytes, &Limits::default(), &Cancel::default()),
+        Err(Refusal::MalformedContainer)
+    );
+}
+
+#[test]
+fn review_xml_invalid_characters_refuse() {
+    let types = b"<Types><Default Extension='xml' ContentType='application/xml'/>\0</Types>";
+    let opened = opc::open(
+        &review_package(types, "a.xml"),
+        &Limits::default(),
+        &Cancel::default(),
+    );
+    assert_eq!(opened, Err(Refusal::MalformedXml));
+    for text in [
+        "<a>&#0;</a>",
+        "<a b='&#1;'/>",
+        "<a>\u{FFFE}</a>",
+        "<a><!-- x -- y --></a>",
+        "<a>]]></a>",
+        "<a b='<'/>",
+    ] {
+        assert_eq!(
+            xml::parse(text.as_bytes(), &Limits::default(), &Cancel::default()),
+            Err(Refusal::MalformedXml),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn review_xml_invalid_names_refuse() {
+    assert_eq!(
+        xml::parse(b"<1/>", &Limits::default(), &Cancel::default()),
+        Err(Refusal::MalformedXml)
+    );
+    for text in ["<a 1b='x'/>", "<:a/>", "<a:/>", "<a:b:c/>", "<\u{B7}a/>"] {
+        assert_eq!(
+            xml::parse(text.as_bytes(), &Limits::default(), &Cancel::default()),
+            Err(Refusal::MalformedXml),
+            "{text:?}"
+        );
+    }
+    let accepted = "<w:p xmlns:w='urn:w' a.b-c='1' _x='2'>\u{e9}\u{B7}</w:p>";
+    assert!(xml::parse(accepted.as_bytes(), &Limits::default(), &Cancel::default()).is_ok());
+}
+
+#[test]
+fn review_attribute_keys_keep_their_prefix() {
+    let events = xml::parse(
+        b"<p:sldId xmlns:p='urn:p' xmlns:r='urn:r' id='256' r:id='rId1'/>",
+        &Limits::default(),
+        &Cancel::default(),
+    )
+    .unwrap();
+    let xml::Event::Open { name, attributes } = &events[0] else {
+        panic!("open event")
+    };
+    assert_eq!(name, "sldId");
+    assert!(
+        attributes.contains(&("id".to_owned(), "256".to_owned())),
+        "{attributes:?}"
+    );
+    assert!(
+        attributes.contains(&("r:id".to_owned(), "rId1".to_owned())),
+        "{attributes:?}"
+    );
 }
 
 // ---- Static audit: importers have no network or process access. ----

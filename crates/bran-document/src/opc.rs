@@ -87,9 +87,17 @@ impl Package {
 /// Opens an untrusted OPC package. Nothing is fetched or executed; every
 /// refusal is typed and nothing partial is returned.
 pub fn open(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Package, Refusal> {
+    let entries = zip::read(bytes, limits, cancel)?;
+    // DLP covers every original entry name and byte, including the
+    // content-types part and directory entries.
+    let mut findings = BTreeSet::new();
+    for entry in &entries {
+        dlp_scan(entry.name.as_bytes(), &mut findings);
+        dlp_scan(&entry.data, &mut findings);
+    }
     let mut lowered = BTreeSet::new();
     let mut raw = BTreeMap::new();
-    for entry in zip::read(bytes, limits, cancel)? {
+    for entry in entries {
         // A ZIP directory entry is a name ending in '/' with no data.
         let (name, directory) = match entry.name.strip_suffix('/') {
             Some(directory) if entry.data.is_empty() => (directory.to_owned(), true),
@@ -155,18 +163,26 @@ pub fn open(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Package, R
         if part.content_type == SIGNATURE {
             diagnostics.insert("signature-not-verified");
         }
-        match validate_emitted_string(&String::from_utf8_lossy(&part.data)) {
-            Err(ExportError::DlpViolation(_)) => diagnostics.insert("dlp-findings"),
-            Err(_) => diagnostics.insert("public-boundary-violation"),
-            Ok(()) => false,
-        };
     }
     relationships.sort();
-    Ok(Package {
+    let mut package = Package {
         parts,
         relationships,
         diagnostics,
-    })
+    };
+    // Every emitted string is in the canonical bytes, including metadata that
+    // character references hid from the raw scan.
+    dlp_scan(&package.canonical_bytes(), &mut findings);
+    package.diagnostics.extend(findings);
+    Ok(package)
+}
+
+fn dlp_scan(bytes: &[u8], findings: &mut BTreeSet<&'static str>) {
+    match validate_emitted_string(&String::from_utf8_lossy(bytes)) {
+        Err(ExportError::DlpViolation(_)) => findings.insert("dlp-findings"),
+        Err(_) => findings.insert("public-boundary-violation"),
+        Ok(()) => false,
+    };
 }
 
 type ContentTypes = (BTreeMap<String, String>, BTreeMap<String, String>);

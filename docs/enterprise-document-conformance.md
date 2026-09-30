@@ -30,7 +30,7 @@ The crate `crates/bran-document` holds everything shared:
 | Module | Owns |
 |---|---|
 | `zip` | Bounded ZIP reader and deterministic writer. Stored and deflate only. |
-| `xml` | Shared XML reader. Refuses DTDs and custom entities; bounds depth and nodes. |
+| `xml` | Shared XML reader. Refuses DTDs, custom entities, and characters or names outside XML 1.0; bounds depth and nodes. Element names are local names; attribute keys keep their prefix (`r:id`, `ContentType`). |
 | `opc` | OPC package intake: part names, content types, relationships, active content, external references, signatures, DLP markers, canonical inventory. |
 | `canonical` | Canonical JSON bytes and SHA-256, matching the envelope rule. |
 | `export` | Export gate: explicit format and destination, DLP first, never overwrite. |
@@ -94,6 +94,12 @@ private enterprise data.
 | Deep nesting | `deep-nesting` | `xml-depth-limit` |
 | Timeout and cancellation | `cancelled` | `cancelled` |
 | Not an OPC package | `missing-content-types`, `not-a-zip` | `malformed-container` |
+| Foreign-namespace attribute shadowing a policy attribute | `foreign-attribute-macro` | `active-content` |
+| DLP canary in a part name or the content-types part | `canary-part-name`, `canary-content-types` | admitted with `dlp-findings` |
+| Truncated or empty deflate stream | `truncated-deflate`, `empty-deflate-stream` | `malformed-container` |
+| Local header that contradicts the central directory | `local-header-method` | `malformed-container` |
+| | `local-header-encryption` | `encrypted-or-legacy-container` |
+| XML characters and names outside XML 1.0 | `xml-invalid-character`, `xml-invalid-name` | `malformed-xml` |
 
 Adapter rows need a content model, so they stay unavailable until the owning
 adapter registers. The corpus test prints each one as `unavailable` with its
@@ -120,9 +126,18 @@ cancelled result is never admitted as evidence.
 
 ## Policy the intake applies
 
-- ZIP: stored and deflate only; ZIP64, multi-disk, encryption flags,
-  duplicate raw names, local/central name mismatch, overlapping entry data,
-  declared-size mismatch, CRC mismatch, and trailing bytes are refused.
+- ZIP: stored and deflate only; ZIP64, multi-disk, encryption flags in the
+  central or local header, duplicate raw names, a local header whose name,
+  method, data-descriptor flag, CRC, or sizes contradict the central record,
+  overlapping entry data, declared-size mismatch, CRC mismatch, and trailing
+  bytes are refused. A deflate stream must reach its end marker exactly at
+  its last compressed byte; truncated, empty, or over-long streams are
+  `malformed-container`.
+- XML: characters and names must be XML 1.0 (`Char`, `Name`, at most one
+  colon), comments must not contain `--`, text must not contain `]]>`, and
+  attribute values must not contain `<`. Policy attributes are read by their
+  exact unprefixed name, so `x:ContentType` in a foreign namespace cannot
+  shadow `ContentType`.
 - Part names: relative, no `.` or `..` segment, no empty segment, no
   backslash, no control character, no encoded `/` or `\`. Duplicates are
   compared ASCII case-insensitively, as OPC requires.
@@ -142,10 +157,13 @@ cancelled result is never admitted as evidence.
   caller can pass larger limits.
 - Signatures: signature parts are kept as evidence with
   `signature-not-verified`; BRAN makes no trust claim.
-- DLP: every part is scanned for the synthetic canaries and the
-  `important_boundary` marker with `bran-core`'s shared check. This byte scan
-  cannot see a canary split across XML runs; each adapter must re-run the
-  same check on its extracted text.
+- DLP: every original ZIP entry name and byte (the content-types part and
+  directory entries included) and the canonical package bytes, which hold
+  every emitted metadata string after entity normalization, are scanned for
+  the synthetic canaries and the `important_boundary` marker with
+  `bran-core`'s shared check. The raw byte scan cannot see a canary split
+  across XML runs; each adapter must re-run the same check on its extracted
+  text.
 
 ## Required properties
 
@@ -188,7 +206,7 @@ not use.
 | Property iterations | 2,000 | 50,000 |
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
-| Measured on 2026-09-30 (debug build) | 0.5 s, 93 checks | 20.8 s, 93 checks |
+| Measured on 2026-09-30 (debug build) | 0.8 s, 120 checks | 23.7 s, 120 checks |
 | Fixture file size | 8 KiB each | same files |
 
 The budgets are constants at the top of the test file. A tier that runs
