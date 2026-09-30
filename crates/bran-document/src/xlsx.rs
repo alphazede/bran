@@ -852,13 +852,16 @@ impl<'a> Reader<'a> {
             ("row".to_owned(), Json::Int(raw.row.into())),
             ("column".to_owned(), Json::Int(raw.column.into())),
         ]);
-        match raw.style {
-            None | Some(0) => {}
-            Some(index) => {
-                if let Some(format) = styles.get(index).ok_or(Refusal::MalformedContainer)? {
-                    cell.insert("number_format".to_owned(), format.clone());
-                }
+        // An explicit `s="0"` and a missing style both mean the default
+        // format, `cellXfs[0]`; only a missing higher index is malformed.
+        let index = raw.style.unwrap_or(0);
+        match styles.get(index) {
+            Some(Some(format)) => {
+                cell.insert("number_format".to_owned(), format.clone());
             }
+            Some(None) => {}
+            None if index == 0 => {}
+            None => return Err(Refusal::MalformedContainer),
         }
         match (raw.formula, typed) {
             (Some(mut formula), cached) => {

@@ -944,6 +944,26 @@ fn xlsx_1904_epoch_round_trips() {
     assert_eq!(second.anchors, imported.anchors);
 }
 
+/// An explicit `s="0"` and a missing style both mean the default format,
+/// `cellXfs[0]`: when it carries a number format, cells using it keep that
+/// format instead of degrading to General.
+#[test]
+fn xlsx_style_zero_uses_first_cell_format() {
+    let bytes = Parts::parse(FEATURES)
+        .edit("xl/styles.xml", r#"<xf numFmtId="0"/>"#, r#"<xf numFmtId="14"/>"#)
+        .edit(SHEET1, r#"<c r="C3" s="2">"#, r#"<c r="C3" s="0">"#)
+        .zip();
+    let canonical = text(&import(&bytes).expect("imports"));
+    assert!(
+        canonical.contains(r#""number_format":14,"ref":"C3""#),
+        "explicit style zero lost its format: {canonical}"
+    );
+    assert!(
+        canonical.contains(r#""number_format":14,"ref":"B2""#),
+        "implicit style zero lost its format: {canonical}"
+    );
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the
