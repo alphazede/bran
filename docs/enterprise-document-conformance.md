@@ -22,6 +22,8 @@ invent a safety or fidelity policy. Parser selection is recorded in
 [`enterprise-document-dependency-review.md`](enterprise-document-dependency-review.md).
 The envelope the adapters emit is
 [`enterprise-document-evidence-envelope.md`](enterprise-document-evidence-envelope.md).
+The DOCX adapter is described in
+[`enterprise-document-docx-adapter.md`](enterprise-document-docx-adapter.md).
 
 ## Layout
 
@@ -47,8 +49,9 @@ optionally `export`) and adds itself to `conformance::registered()`. From
 then on the corpus runs every package row of its format through the adapter
 as well as through the shared intake. The adapter must give the same outcome
 the row expects. An adapter that registers for a format also fails the corpus
-test until it replaces that format's unavailable adapter rows with executable
-ones, so a registered format cannot keep rows in the unavailable state.
+test until each of that format's adapter rows has an executable arm in
+`adapter_row` in `crates/bran-document/tests/conformance.rs`, so a registered
+format cannot keep rows in the unavailable state.
 
 For each row, `conformance::check` verifies:
 
@@ -103,11 +106,16 @@ private enterprise data.
 
 Adapter rows need a content model, so they stay unavailable until the owning
 adapter registers. The corpus test prints each one as `unavailable` with its
-issue; it never counts them as passing.
+issue; it never counts them as passing. The DOCX rows are executable:
+`docx-ordinary-projection` checks the representative fixture and its recorded
+canonical digest, `docx-unsupported-benign-fidelity` requires the
+`feature:unsupported` and `feature:normalized` receipt codes, and
+`docx-round-trip-anchors` requires an export whose re-import keeps every
+anchor.
 
 | Row | Needs |
 |---|---|
-| `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 |
+| `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 (executable) |
 | `xlsx-ordinary-projection`, `xlsx-unsupported-benign-fidelity`, `xlsx-round-trip-anchors` | #26 |
 | `pptx-ordinary-projection`, `pptx-unsupported-benign-fidelity`, `pptx-round-trip-anchors` | #22 |
 | `pdf-ordinary-projection`, `pdf-malformed-object-graph`, `pdf-recursive-structure`, `pdf-active-action`, `pdf-embedded-file`, `pdf-encrypted`, `pdf-signed`, `pdf-dlp-canary`, `pdf-oversized-stream`, `pdf-round-trip-anchors` | #23 |
@@ -169,10 +177,10 @@ cancelled result is never admitted as evidence.
 
 | Property | Evidence | Status |
 |---|---|---|
-| Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule` | done for packages; adapter envelopes when adapters register |
-| Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages |
-| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes; content fidelity needs #21, #22, #23, #26 |
-| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift` | harness done; not exercised until an adapter exports |
+| Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule`; `docx-ordinary-projection` recorded digest | done for packages and DOCX; other adapters when they register |
+| Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages and DOCX |
+| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3; DOCX `feature:status` codes (`docx::MODEL_VERSION` 1) | done for package outcomes and DOCX content; #22, #23, #26 pending |
+| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift`; `docx-round-trip-anchors` | done for DOCX; other formats when their adapters export |
 | No network requests, no active content executed | `importers_have_no_network_or_process_access`; active-content and external rows | done |
 | Containment, DLP, classification, byte budgets on import and export | budget rows; `dlp-canary`; `export_gate_*` tests | done for the shared gates; classification is the envelope's `policy` block |
 | Typed, bounded failures; no panic; no partial output | check step 1; `parser_limit_property`; refusal rows; export gate tests | done |
@@ -206,7 +214,7 @@ not use.
 | Property iterations | 2,000 | 50,000 |
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
-| Measured on 2026-09-30 (debug build) | 0.8 s, 120 checks | 23.7 s, 120 checks |
+| Measured on 2026-09-30 (debug build, with the DOCX adapter) | 0.9 s, 126 checks | 25.6 s, 126 checks |
 | Fixture file size | 8 KiB each | same files |
 
 The budgets are constants at the top of the test file. A tier that runs
@@ -229,24 +237,27 @@ Status values: exact, normalized, approximated, unsupported, refused.
 | External relationships, remote media, external workbooks | refused | refused | refused | pending #23 |
 | External hyperlinks | recorded, never fetched | recorded, never fetched | recorded, never fetched | pending #23 |
 | DTDs and custom entities | refused | refused | refused | n/a |
-| Text, structure, tables, lists | pending #21 | pending #26 | pending #22 | pending #23 |
-| Comments, tracked changes, notes | pending #21 | pending #26 | pending #22 | pending #23 |
+| Text, structure, tables, lists | exact text; normalized headings, lists, tables, sections | pending #26 | pending #22 | pending #23 |
+| Comments, tracked changes, notes | exact tracked run changes; normalized comments and notes; unsupported formatting changes | pending #26 | pending #22 | pending #23 |
+| Hyperlinks and bookmarks | exact (external targets recorded, never fetched) | pending #26 | pending #22 | pending #23 |
+| Fields and content controls | normalized (cached result kept, code dropped, never evaluated) | pending #26 | pending #22 | pending #23 |
+| Headers and footers | unsupported | pending #26 | pending #22 | pending #23 |
 | Formulas and cached values | n/a | pending #26 | n/a | n/a |
-| Images and media | pending #21 | pending #26 | pending #22 | pending #23 |
-| Charts, SmartArt, animations | pending #21 | pending #26 | pending #22 | n/a |
+| Images and media | exact bytes, content-addressed; floating images normalized to inline | pending #26 | pending #22 | pending #23 |
+| Charts, SmartArt, animations | unsupported | pending #26 | pending #22 | n/a |
 | OCR text | n/a | n/a | n/a | pending #23 |
-| Export | pending #21 | pending #26 | pending #22 | pending #23 |
+| Export | deterministic DOCX with fidelity receipt | pending #26 | pending #22 | pending #23 |
 
 ## Acceptance status for #25
 
 | Item | Status | Evidence or owner |
 |---|---|---|
 | Fixture matrix, package classes | done | package rows above |
-| Fixture matrix, PDF classes and unsupported-benign fidelity | not done | adapter rows; #21, #22, #23, #26 |
+| Fixture matrix, PDF classes and unsupported-benign fidelity | DOCX done; others not done | adapter rows; #22, #23, #26 |
 | Required properties | see table above | |
 | CLI read-only inspection before export | not done | needs adapter output to inspect; #21, #22, #23, #26 |
 | Query and packet select document evidence | not done | needs admitted envelopes from adapters, then an ingest path |
 | Export needs explicit format and destination, never overwrites | done for the shared gate (`export::write_new`) | CLI wiring with the first adapter export |
 | Adapter tests and shared corpus in the fast/full split with budgets | done | budget table above |
 | Fuzz/property targets | done as seeded property targets | no coverage-guided fuzzing |
-| Compatibility table | done for package features | content rows pending the adapters |
+| Compatibility table | done for package features and DOCX | content rows pending #22, #23, #26 |
