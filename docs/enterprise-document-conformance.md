@@ -22,6 +22,8 @@ invent a safety or fidelity policy. Parser selection is recorded in
 [`enterprise-document-dependency-review.md`](enterprise-document-dependency-review.md).
 The envelope the adapters emit is
 [`enterprise-document-evidence-envelope.md`](enterprise-document-evidence-envelope.md).
+The DOCX adapter is described in
+[`enterprise-document-docx-adapter.md`](enterprise-document-docx-adapter.md).
 
 ## Layout
 
@@ -49,8 +51,10 @@ as well as through the shared intake. The adapter must give the same outcome
 the row expects. An adapter that registers for a format also fails the corpus
 test until `adapter_row` in `crates/bran-document/tests/conformance.rs`
 implements every row of that format, so a registered format cannot keep rows
-in the unavailable state. The XLSX adapter (#26,
-[`enterprise-document-xlsx.md`](enterprise-document-xlsx.md)) is registered.
+in the unavailable state. The DOCX adapter (#21,
+[`enterprise-document-docx-adapter.md`](enterprise-document-docx-adapter.md))
+and the XLSX adapter (#26,
+[`enterprise-document-xlsx.md`](enterprise-document-xlsx.md)) are registered.
 
 For each row, `conformance::check` verifies:
 
@@ -105,11 +109,16 @@ private enterprise data.
 
 Adapter rows need a content model, so they stay unavailable until the owning
 adapter registers. The corpus test prints each one as `unavailable` with its
-issue; it never counts them as passing.
+issue; it never counts them as passing. The DOCX rows are executable:
+`docx-ordinary-projection` checks the representative fixture and its recorded
+canonical digest, `docx-unsupported-benign-fidelity` requires the
+`feature:unsupported` and `feature:normalized` receipt codes, and
+`docx-round-trip-anchors` requires an export whose re-import keeps every
+anchor.
 
 | Row | Needs |
 |---|---|
-| `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 |
+| `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 (executable) |
 | `pptx-ordinary-projection`, `pptx-unsupported-benign-fidelity`, `pptx-round-trip-anchors` | #22 |
 
 XLSX adapter rows run now against the registered adapter:
@@ -183,10 +192,10 @@ cancelled result is never admitted as evidence.
 
 | Property | Evidence | Status |
 |---|---|---|
-| Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule`; `xlsx-ordinary-projection` | done for packages and XLSX; other adapters when they register |
-| Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages |
-| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes, XLSX and PDF content; DOCX and PPTX content fidelity needs #21, #22 |
-| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift`; `xlsx-round-trip-anchors`; `pdf-round-trip-anchors` | done for XLSX and PDF; DOCX, PPTX when their adapters export |
+| Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule`; `docx-ordinary-projection` recorded digest; `xlsx-ordinary-projection` | done for packages, DOCX, and XLSX; other adapters when they register |
+| Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages and DOCX |
+| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3; DOCX `feature:status` codes (`docx::MODEL_VERSION` 1) | done for package outcomes and DOCX, XLSX, PDF content; PPTX content fidelity needs #22 |
+| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift`; `docx-round-trip-anchors`; `xlsx-round-trip-anchors`; `pdf-round-trip-anchors` | done for DOCX, XLSX, and PDF; PPTX when its adapter exports |
 | No network requests, no active content executed | `importers_have_no_network_or_process_access`; active-content and external rows | done |
 | Containment, DLP, classification, byte budgets on import and export | budget rows; `dlp-canary`; `export_gate_*` tests | done for the shared gates; classification is the envelope's `policy` block |
 | Typed, bounded failures; no panic; no partial output | check step 1; `parser_limit_property`; refusal rows; export gate tests | done |
@@ -221,6 +230,7 @@ not use.
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
 | Measured on 2026-09-30 (debug build, shared intake only) | 0.8 s, 120 checks | 23.7 s, 120 checks |
+| Measured on 2026-09-30 (debug build, with the DOCX adapter) | 0.9 s, 162 checks | 29.8 s, 162 checks |
 | Measured on 2026-09-30 (debug build, XLSX adapter registered) | 0.8 s, 162 checks | 28.6 s, 162 checks |
 | Fixture file size | 8 KiB each | same files |
 
@@ -244,14 +254,17 @@ Status values: exact, normalized, approximated, unsupported, refused.
 | External relationships, remote media, external workbooks | refused | refused | refused | refused (remote go-to, URL file specifications, external streams) |
 | External hyperlinks | recorded, never fetched | recorded, never fetched | recorded, never fetched | recorded, never fetched |
 | DTDs and custom entities | refused | refused | refused | n/a |
-| Text, structure, tables, lists | pending #21 | exact values and tables; rich text and styles normalized | pending #22 | text normalized; tables unsupported |
-| Comments, tracked changes, notes | pending #21 | legacy comments exact; threaded comments unsupported | pending #22 | annotations normalized |
+| Text, structure, tables, lists | exact text; normalized headings, lists, tables, sections | exact values and tables; rich text and styles normalized | pending #22 | text normalized; tables unsupported |
+| Comments, tracked changes, notes | exact tracked run changes; normalized comments and notes; unsupported formatting changes | legacy comments exact; threaded comments unsupported | pending #22 | annotations normalized |
+| Hyperlinks and bookmarks | exact (external targets recorded, never fetched) | exact (external targets recorded, never fetched; unsafe targets quarantined) | pending #22 | outline exact; hyperlinks recorded, never fetched |
+| Fields and content controls | normalized (cached result kept, code dropped, never evaluated) | n/a | pending #22 | n/a |
+| Headers and footers | unsupported | unsupported (`layout-not-imported`) | pending #22 | n/a |
 | Formulas and cached values | n/a | text exact, kept apart, never recalculated; active formulas quarantined | n/a | n/a |
-| Images and media | pending #21 | unsupported, typed relationship with digest | pending #22 | image locators approximated; pixels not decoded |
-| Charts, SmartArt, animations | pending #21 | unsupported, typed relationship with digest | pending #22 | n/a |
+| Images and media | exact bytes, content-addressed; floating images normalized to inline | unsupported, typed relationship with digest | pending #22 | image locators approximated; pixels not decoded |
+| Charts, SmartArt, animations | unsupported | unsupported, typed relationship with digest | pending #22 | n/a |
 | Power Query, external workbook links, query tables | n/a | refused | n/a | n/a |
 | OCR text | n/a | n/a | n/a | unsupported (no engine; requests reported unavailable) |
-| Export | pending #21 | deterministic, with fidelity receipt; DLP first | pending #22 | tagged PDF; active content removed; no PDF/A or PDF/UA claim |
+| Export | deterministic DOCX with fidelity receipt | deterministic, with fidelity receipt; DLP first | pending #22 | tagged PDF; active content removed; no PDF/A or PDF/UA claim |
 
 ## Acceptance status for #25
 
@@ -259,11 +272,11 @@ Status values: exact, normalized, approximated, unsupported, refused.
 |---|---|---|
 | Fixture matrix, package classes | done | package rows above |
 | Fixture matrix, PDF classes | done | PDF rows in `tests/pdf.rs` (#23) |
-| Fixture matrix, unsupported-benign fidelity | not done | adapter rows; #21, #22, #26 |
+| Fixture matrix, unsupported-benign fidelity | DOCX and XLSX done; PPTX not done | adapter rows; #22 |
 | Required properties | see table above | |
 | CLI read-only inspection before export | not done | needs adapter output to inspect; #21, #22, #23, #26 |
 | Query and packet select document evidence | not done | needs admitted envelopes from adapters, then an ingest path |
 | Export needs explicit format and destination, never overwrites | done for the shared gate (`export::write_new`) | CLI wiring with the first adapter export |
 | Adapter tests and shared corpus in the fast/full split with budgets | done | budget table above |
 | Fuzz/property targets | done as seeded property targets | no coverage-guided fuzzing |
-| Compatibility table | done for package features | content rows pending the adapters |
+| Compatibility table | done for package features, DOCX, XLSX, and PDF | content rows pending #22 |

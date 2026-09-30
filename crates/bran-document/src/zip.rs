@@ -259,19 +259,29 @@ fn inflate_counted(raw: &[u8], size: u64) -> (Result<Vec<u8>, Refusal>, u64) {
 /// Writes entries in the given order with exactly the given names and
 /// timestamps. Export callers pass sorted names and one fixed timestamp.
 pub fn write(entries: &[WriteEntry<'_>]) -> Vec<u8> {
+    write_with_ratio(entries, u64::MAX)
+}
+
+/// Stores entries whose compressed representation would exceed intake's ratio.
+/// The unrestricted writer remains available for adversarial intake fixtures.
+pub(crate) fn write_with_ratio(entries: &[WriteEntry<'_>], max_ratio: u64) -> Vec<u8> {
     use std::io::Write;
     let mut out = Vec::new();
     let mut central = Vec::new();
     for entry in entries {
-        let data = if entry.deflate {
+        let (data, method) = if entry.deflate {
             let mut encoder =
                 flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
             encoder.write_all(entry.data).expect("in-memory write");
-            encoder.finish().expect("in-memory write")
+            let compressed = encoder.finish().expect("in-memory write");
+            if entry.data.len() as u64 > max_ratio.saturating_mul(compressed.len().max(1) as u64) {
+                (entry.data.to_vec(), 0u16)
+            } else {
+                (compressed, 8u16)
+            }
         } else {
-            entry.data.to_vec()
+            (entry.data.to_vec(), 0u16)
         };
-        let method: u16 = if entry.deflate { 8 } else { 0 };
         let crc = crc32fast::hash(entry.data);
         let local = out.len() as u32;
         let name = entry.name.as_bytes();
