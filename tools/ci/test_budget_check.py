@@ -40,6 +40,11 @@ SCHEMA_BINDINGS = {
         "schemas/structural-graph-snapshot.schema.json",
         "",
     ),
+    "P8-SCIP-SYMBOLS": (
+        "fixtures/symbols/symbol-navigation-v1.json",
+        "schemas/symbol-navigation.schema.json",
+        "",
+    ),
 }
 SCHEMA_KEYWORDS = {
     "$ref", "type", "properties", "required", "additionalProperties", "enum", "const",
