@@ -203,8 +203,21 @@ Admission design (why, for the record):
 - Document anchors never rank as Markdown sources. `score_source_candidates`
   skips document paths, so a refused file cannot be selected by a path
   match; admitted anchors rank in the appended member only, by matched-term
-  count then bundle, path, and anchor id, capped at 32 matches. Markdown
-  rankings, selection, and byte accounting are untouched.
+  count then bundle, path, and anchor id, capped at 32 matches. Those matches
+  contribute to overall query coverage and outcome, including multi-root
+  queries and evidence replay. Markdown rankings and selection are unchanged.
+- Admission checks source locators and all decoded envelope strings with
+  the shared DLP/public-boundary validator and the oracle's secret markers.
+  Unsafe paths are omitted from refusals and document scanner warnings.
+  The complete constructed envelope is checked before admission; an
+  unrepresentable truncation receipt returns `oversized` rather than an
+  admitted, schema-invalid envelope.
+- Packet document excerpts consume the remaining byte/token budget after
+  the existing payload, and respect `--excerpt-bytes` per excerpt. Default
+  document excerpts retain the envelope's 8192-byte per-anchor limit.
+  `excerpt_bytes`, `raw_bytes`, `encoded_packet_bytes`, `estimated_tokens`
+  and `truncated` include document excerpts. SQZ still applies to the
+  existing payload; document excerpts are emitted as bounded plain text.
 - Derivation is per anchor. Native parse output is `embedded`; a projection
   block marked OCR-derived is `ocr`, sorts after every embedded match, and
   carries no byte rank. No OCR engine ships, so `ocr` anchors cannot occur
@@ -221,6 +234,22 @@ Admission design (why, for the record):
 The owner has approved native local Office/PDF adapters (#21, #22, #23,
 #26). They build on the shared conformance suite from #25, described in
 [`enterprise-document-conformance.md`](enterprise-document-conformance.md).
+
+### Review repair evidence for #46
+
+`fixtures/enterprise-documents/admission-review/` preserves the reviewer's
+exact native packages as raw-deflate hex, preceded by the original SHA-256
+and byte length. CLI tests decode them and verify both before use; the
+100-token settings file is also preserved. No paths from the review
+workspace are embedded in the fixtures or tests.
+
+| Finding | Regression in `crates/bran-cli/tests/document_admission.rs` |
+|---|---|
+| Locator DLP bypass | `document_review_locator_dlp_refuses_admission` |
+| Unsafe refusal paths | `document_review_refusals_do_not_echo_unsafe_paths` |
+| Unbudgeted document text | `document_review_packet_excerpts_obey_and_account_for_budgets` |
+| Unrepresentable envelope receipt | `document_review_unrepresentable_envelope_is_refused` |
+| Document matches reported as misses | `document_review_matches_contribute_to_query_coverage` |
 
 ## Fixtures
 

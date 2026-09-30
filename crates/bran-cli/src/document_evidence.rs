@@ -7,7 +7,7 @@
 //! Markdown source, and roots without document files produce byte-identical
 //! output. Everything here is read-only and offline.
 
-use bran_core::scan::{IgnoreMatcher, MAX_BRANIGNORE_BYTES};
+use bran_core::scan::{IgnoreMatcher, ScanDiagnostic, MAX_BRANIGNORE_BYTES};
 use bran_document::admit::{self, Admitted, Derivation, EvidenceAnchor};
 use bran_document::canonical::sha256_hex;
 use bran_document::{Format, Limits};
@@ -164,6 +164,7 @@ fn contained(root: &Path, relative: &str) -> Option<PathBuf> {
 /// Reads one document for inspection. `Ok` is the envelope JSON; `Err` is a
 /// typed code that never reflects input bytes.
 pub fn inspect(root: &Path, relative: &str) -> Result<String, &'static str> {
+    admit::validate_locator(relative).map_err(|refusal| refusal.code())?;
     let canonical_root = fs::canonicalize(root).map_err(|_| "unreadable")?;
     let Some(format) = format_for_path(relative) else {
         return Err("unsupported-format");
@@ -176,6 +177,32 @@ pub fn inspect(root: &Path, relative: &str) -> Result<String, &'static str> {
     admit::admit(&bytes, format, relative)
         .map(|admitted| String::from_utf8_lossy(&admitted.envelope.to_bytes()).into_owned())
         .map_err(|refusal| refusal.code())
+}
+
+/// Unsafe input paths never appear in any refusal, including read failures.
+pub fn refusal_path_json(path: &str) -> String {
+    if admit::validate_locator(path).is_ok() {
+        format!(",\"path\":\"{}\"", json_escape(path))
+    } else {
+        String::new()
+    }
+}
+
+pub fn scan_diagnostic(diagnostic: &ScanDiagnostic) -> String {
+    let path = match diagnostic {
+        ScanDiagnostic::Symlink { path }
+        | ScanDiagnostic::Unreadable { path, .. }
+        | ScanDiagnostic::NonUtf8Path { path }
+        | ScanDiagnostic::UnsupportedInput { path }
+        | ScanDiagnostic::OversizedInput { path, .. }
+        | ScanDiagnostic::WeakIdentityMismatch { path } => path,
+    };
+    if is_document_path(path) {
+        if let Err(refusal) = admit::validate_locator(path) {
+            return format!("document-input-refused: {}", refusal.code());
+        }
+    }
+    format!("{diagnostic:?}")
 }
 
 fn column_letters(mut column: i64) -> String {
@@ -309,14 +336,26 @@ struct Source<'a> {
     admitted: Admitted,
 }
 
+pub struct ExcerptBudget {
+    pub remaining_bytes: usize,
+    pub per_excerpt_bytes: usize,
+}
+
+pub struct DocumentEvidence {
+    pub json: String,
+    pub matched_terms: BTreeSet<String>,
+    pub excerpt_bytes: usize,
+    pub truncated: bool,
+}
+
 /// The appended `document_evidence` member for `bundles` (one root, or every
 /// root of a multi-root query). `None` when no document file was discovered,
 /// which keeps output byte-identical for repositories without evidence.
 pub fn document_evidence_json(
     bundles: &[(&str, &Path)],
     query_text: &str,
-    excerpts: bool,
-) -> Option<String> {
+    mut excerpts: Option<ExcerptBudget>,
+) -> Option<DocumentEvidence> {
     let (terms, entities) = query_terms_and_entities(query_text);
     let mut query_terms = terms;
     query_terms.extend(entities);
@@ -338,8 +377,9 @@ pub fn document_evidence_json(
                 ));
                 continue;
             }
-            let outcome = contained(&canonical_root, relative)
-                .ok_or("unreadable")
+            let outcome = admit::validate_locator(relative)
+                .map_err(|refusal| refusal.code())
+                .and_then(|()| contained(&canonical_root, relative).ok_or("unreadable"))
                 .and_then(|path| read_document(&path))
                 .map_err(|code| code.to_owned())
                 .and_then(|bytes| {
@@ -395,8 +435,18 @@ pub fn document_evidence_json(
         ));
     }
     let mut matches_json = Vec::new();
+    let mut matched_terms = BTreeSet::new();
+    let mut excerpt_bytes = 0;
+    let mut truncated = false;
     for (index, rank) in &ordered {
         let candidate = &candidates[*index];
+        let lowered = candidate.anchor.text.to_ascii_lowercase();
+        matched_terms.extend(
+            query_terms
+                .iter()
+                .filter(|term| lowered.contains(term.as_str()))
+                .cloned(),
+        );
         let source = sources
             .iter()
             .find(|source| source.bundle == candidate.bundle && source.path == candidate.path)
@@ -408,8 +458,19 @@ pub fn document_evidence_json(
         } else {
             String::new()
         };
-        let excerpt = if excerpts {
-            format!(",\"excerpt\":\"{}\"", json_escape(&candidate.anchor.text))
+        let excerpt = if let Some(budget) = &mut excerpts {
+            let text = &candidate.anchor.text;
+            let mut end = text
+                .len()
+                .min(budget.remaining_bytes)
+                .min(budget.per_excerpt_bytes);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            budget.remaining_bytes -= end;
+            excerpt_bytes += end;
+            truncated |= end < text.len();
+            format!(",\"excerpt\":\"{}\"", json_escape(&text[..end]))
         } else {
             String::new()
         };
@@ -434,8 +495,12 @@ pub fn document_evidence_json(
             String::new()
         };
         refusals_json.push(format!(
-            "{{{bundle}\"path\":\"{}\",\"code\":\"{}\"}}",
-            json_escape(path),
+            "{{{bundle}{}\"code\":\"{}\"}}",
+            if admit::validate_locator(path).is_ok() {
+                format!("\"path\":\"{}\",", json_escape(path))
+            } else {
+                String::new()
+            },
             json_escape(code)
         ));
     }
@@ -452,7 +517,7 @@ pub fn document_evidence_json(
             json_escape(source_type)
         ));
     }
-    Some(format!(
+    Some(DocumentEvidence { json: format!(
         "{{\"sources\":[{}],\"matches\":[{}],\"refusals\":[{}],\"unsupported\":[{}],\"omitted_files\":{},\"omitted_matches\":{}}}",
         sources_json.join(","),
         matches_json.join(","),
@@ -460,7 +525,7 @@ pub fn document_evidence_json(
         unsupported_json.join(","),
         omitted_files,
         omitted_matches
-    ))
+    ), matched_terms, excerpt_bytes, truncated })
 }
 
 #[cfg(test)]

@@ -64,12 +64,238 @@ impl Repository {
             ),
         )
     }
+
+    fn review_input(&self, name: &str, filename: &str) {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../fixtures/enterprise-documents/admission-review/{name}.fixture"
+        ));
+        let fixture = fs::read_to_string(fixture).unwrap();
+        let mut lines = fixture.lines();
+        let digest = lines.next().unwrap();
+        let length: usize = lines.next().unwrap().parse().unwrap();
+        let output = Command::new("python3")
+            .args([
+                "-c",
+                "import sys,zlib;sys.stdout.buffer.write(zlib.decompress(bytes.fromhex(sys.argv[1]),-15))",
+            ])
+            .arg(lines.collect::<String>())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), length);
+        assert_eq!(sha256_hex(&output.stdout), digest);
+        fs::write(self.0.join(filename), output.stdout).unwrap();
+    }
 }
 
 impl Drop for Repository {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+fn review_canary() -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/public-boundary/rejected/synthetic-canaries.txt"),
+    )
+    .unwrap()
+    .lines()
+    .next()
+    .unwrap()
+    .to_owned()
+}
+
+#[test]
+fn document_review_locator_dlp_refuses_admission() {
+    let repo = Repository::new("review-locator");
+    let filename = format!("{}.docx", review_canary());
+    repo.review_input("filename", &filename);
+    for args in [
+        vec!["query", ".", "Synthetic"],
+        vec!["packet", ".", "Synthetic"],
+        vec!["document", "inspect", ".", &filename],
+    ] {
+        let (code, output) = repo.run(&args);
+        assert_eq!(code, 0);
+        assert!(
+            output.contains("\"code\":\"dlp-findings\""),
+            "unsafe locator admitted"
+        );
+        assert!(!output.contains("\"envelope\":"));
+        if args[0] != "document" {
+            assert!(output.contains("\"sources\":[],\"matches\":[]"));
+        }
+    }
+}
+
+#[test]
+fn document_review_refusals_do_not_echo_unsafe_paths() {
+    let canary = review_canary();
+    for (name, filename, prohibited, refusal) in [
+        ("both", format!("{canary}.docx"), canary, "dlp-findings"),
+        (
+            "boundary",
+            "private_key_SYNTHETIC.docx".to_owned(),
+            "private_key".to_owned(),
+            "public-boundary-violation",
+        ),
+    ] {
+        let repo = Repository::new(&format!("review-refusal-{name}"));
+        repo.review_input(name, &filename);
+        for args in [
+            vec!["query", ".", "Synthetic"],
+            vec!["packet", ".", "Synthetic"],
+            vec!["document", "inspect", ".", &filename],
+        ] {
+            let (code, output) = repo.run(&args);
+            assert_eq!(code, 0);
+            assert!(output.contains(&format!("\"code\":\"{refusal}\"")));
+            assert!(
+                !output.contains(&prohibited),
+                "refusal echoed prohibited path"
+            );
+        }
+    }
+}
+
+#[test]
+fn document_review_packet_excerpts_obey_and_account_for_budgets() {
+    let repo = Repository::new("review-budget");
+    repo.review_input("budget", "memo.docx");
+    fs::write(
+        repo.0.join(".bran/settings.conf"),
+        include_str!("../../../fixtures/enterprise-documents/admission-review/settings.conf"),
+    )
+    .unwrap();
+    for args in [
+        vec!["packet", "--excerpt-bytes", "1", ".", "Synthetic"],
+        vec!["packet", ".", "Synthetic"],
+        vec![
+            "packet",
+            "--excerpt-bytes",
+            "1",
+            ".",
+            "Synthetic",
+            "missingterm",
+        ],
+    ] {
+        let (code, output) = repo.run(&args);
+        assert_eq!(code, 0, "{output}");
+        let result = Json::parse(output.as_bytes()).unwrap();
+        let data = result.get("data").unwrap();
+        let Some(Json::Arr(matches)) = data.get("document_evidence").unwrap().get("matches") else {
+            panic!("missing matches")
+        };
+        let mut bytes = 0;
+        for matched in matches {
+            let Some(Json::Str(excerpt)) = matched.get("excerpt") else {
+                panic!("missing excerpt")
+            };
+            bytes += excerpt.len();
+            if args.contains(&"--excerpt-bytes") {
+                assert!(
+                    excerpt.len() <= 1,
+                    "document excerpt bypassed byte limit: {}",
+                    excerpt.len()
+                );
+            }
+        }
+        let Some(Json::Int(estimated)) = data.get("estimated_tokens") else {
+            panic!("missing estimate")
+        };
+        assert!(
+            *estimated <= 100,
+            "document excerpts bypassed token ceiling"
+        );
+        assert_eq!(
+            data.get("excerpt_bytes"),
+            Some(&Json::Int(bytes as i64)),
+            "document excerpts absent from accounting"
+        );
+        assert_eq!(
+            data.get("encoded_packet_bytes"),
+            Some(&Json::Int(bytes as i64))
+        );
+        assert_eq!(data.get("raw_bytes"), Some(&Json::Int(bytes as i64)));
+        assert_eq!(*estimated, bytes.div_ceil(4) as i64);
+        assert_eq!(
+            result.get("metrics").unwrap().get("estimated_tokens"),
+            Some(&Json::Int(*estimated))
+        );
+        assert_eq!(data.get("truncated"), Some(&Json::Bool(true)));
+    }
+}
+
+#[test]
+fn document_review_unrepresentable_envelope_is_refused() {
+    let repo = Repository::new("review-envelope");
+    repo.review_input("many", "many.docx");
+    for args in [
+        vec!["document", "inspect", ".", "many.docx"],
+        vec!["query", ".", "needle"],
+        vec!["packet", ".", "needle"],
+    ] {
+        let (code, output) = repo.run(&args);
+        assert_eq!(code, 0);
+        assert!(
+            output.contains("\"code\":\"oversized\""),
+            "schema-invalid envelope admitted"
+        );
+        assert!(!output.contains("\"envelope\":"));
+        if args[0] != "document" {
+            assert!(output.contains("\"sources\":[],\"matches\":[]"));
+        }
+    }
+}
+
+#[test]
+fn document_review_matches_contribute_to_query_coverage() {
+    let repo = Repository::new("review-coverage");
+    for format in ["docx", "xlsx", "pptx"] {
+        repo.review_input(&format!("positive-{format}"), &format!("memo.{format}"));
+    }
+    let second = Repository::new("review-coverage-second");
+    for args in [
+        vec!["query", ".", "Synthetic"],
+        vec!["packet", ".", "Synthetic"],
+        vec![
+            "query",
+            ".",
+            "--add-dir",
+            second.0.to_str().unwrap(),
+            "Synthetic",
+        ],
+    ] {
+        let (code, output) = repo.run(&args);
+        assert_eq!(code, 0, "{output}");
+        assert!(
+            output.contains("\"query_outcome\":\"grounded\""),
+            "document matches reported as miss"
+        );
+        assert!(output.contains(
+            "\"query_coverage\":{\"matched_terms\":[\"synthetic\"],\"unmatched_terms\":[]}"
+        ));
+        assert!(!output.contains("unmatched_query_terms"));
+        let result = Json::parse(output.as_bytes()).unwrap();
+        let Some(Json::Arr(matches)) = result
+            .get("data")
+            .unwrap()
+            .get("document_evidence")
+            .unwrap()
+            .get("matches")
+        else {
+            panic!("missing matches")
+        };
+        assert_eq!(matches.len(), 5);
+    }
+    let (_, partial) = repo.run(&["query", ".", "Synthetic missingterm"]);
+    assert!(partial.contains("\"query_outcome\":\"partial_unanchored\""));
+    assert!(
+        partial.contains("\"matched_terms\":[\"synthetic\"],\"unmatched_terms\":[\"missingterm\"]")
+    );
+    let (_, miss) = repo.run(&["query", ".", "missingterm"]);
+    assert!(miss.contains("\"query_outcome\":\"miss\""));
 }
 
 /// Minimal classic-layout PDF writer over the shared `.objects` fixture (the

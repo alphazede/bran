@@ -9,6 +9,7 @@
 use crate::canonical::{sha256_hex, Json};
 use crate::conformance::Adapter;
 use crate::{Cancel, Format, Limits, Refusal};
+use bran_core::export::{validate_emitted_string, ExportError};
 use std::collections::BTreeMap;
 
 /// Envelope `schema_version` this module writes.
@@ -32,6 +33,20 @@ const SECRET_MARKERS: [&str; 8] = [
     "refresh_token=",
     "ya29.",
 ];
+
+/// Validate a locator before admission or reflection in a refusal. The
+/// envelope oracle's secret markers supplement the shared export validator.
+pub fn validate_locator(locator: &str) -> Result<(), Refusal> {
+    match validate_emitted_string(locator) {
+        Err(ExportError::DlpViolation(_)) => return Err(Refusal::DlpFindings),
+        Err(_) => return Err(Refusal::PublicBoundary),
+        Ok(()) => {}
+    }
+    if SECRET_MARKERS.iter().any(|marker| locator.contains(marker)) {
+        return Err(Refusal::PublicBoundary);
+    }
+    Ok(())
+}
 
 /// Where one anchor's text comes from. Native parse output is `Embedded`; a
 /// projection that marks text OCR-derived is `Ocr`, and query/packet paths
@@ -387,6 +402,148 @@ fn truncate_bytes(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+fn keys_are(value: &Json, keys: &[&str]) -> bool {
+    matches!(value, Json::Obj(map) if map.len() == keys.len() && keys.iter().all(|key| map.contains_key(*key)))
+}
+
+fn valid_native_locator(format: Format, locator: &Json) -> bool {
+    let bounded =
+        |key, min, max| int_field(locator, key).is_some_and(|value| (min..=max).contains(&value));
+    let named = |key| {
+        str_field(locator, key)
+            .is_some_and(|value| !value.trim().is_empty() && value.chars().count() <= 256)
+    };
+    if str_field(locator, "family") != Some(family(format)) {
+        return false;
+    }
+    match format {
+        Format::Docx => {
+            keys_are(locator, &["family", "section", "ordinal"])
+                && named("section")
+                && bounded("ordinal", 1, 1_000_000)
+        }
+        Format::Xlsx => {
+            keys_are(locator, &["family", "sheet", "row", "column"])
+                && named("sheet")
+                && bounded("row", 1, 1_048_576)
+                && bounded("column", 1, 16_384)
+        }
+        Format::Pptx => {
+            keys_are(locator, &["family", "slide", "shape", "z_index"])
+                && bounded("slide", 1, 1_000_000)
+                && bounded("shape", 1, 1_000_000)
+                && bounded("z_index", 0, 1_000_000)
+        }
+        Format::Pdf => {
+            let Some(bbox) = locator.get("bbox") else {
+                return false;
+            };
+            keys_are(locator, &["family", "page", "block", "bbox"])
+                && bounded("page", 1, 1_000_000)
+                && bounded("block", 1, 1_000_000)
+                && keys_are(bbox, &["x0", "y0", "x1", "y1"])
+                && ["x0", "y0", "x1", "y1"].iter().all(|key| {
+                    int_field(bbox, key).is_some_and(|value| (0..=1_000_000).contains(&value))
+                })
+                && int_field(bbox, "x0") <= int_field(bbox, "x1")
+                && int_field(bbox, "y0") <= int_field(bbox, "y1")
+        }
+    }
+}
+
+/// Check every variable field of the complete, locally constructed envelope
+/// against the V1 schema and semantic oracle. Its closed object shapes, fixed
+/// policy/receipt states, family/media pairing and digests are by construction;
+/// projection values and truncation counts still need a final admission gate.
+fn validate_built_envelope(envelope: &Json, format: Format) -> Result<(), Refusal> {
+    let malformed = Refusal::MalformedContainer;
+    if envelope.to_bytes().len() > MAX_ENVELOPE_BYTES {
+        return Err(Refusal::Oversized);
+    }
+    let original = envelope.get("original").ok_or(malformed)?;
+    if !int_field(original, "byte_length").is_some_and(|value| (1..=20_971_520).contains(&value)) {
+        return Err(Refusal::Oversized);
+    }
+    let truncation = envelope
+        .get("receipts")
+        .and_then(|receipts| receipts.get("truncation"))
+        .ok_or(malformed)?;
+    if !int_field(truncation, "omitted_anchor_count")
+        .is_some_and(|value| (0..=MAX_ANCHORS as i64).contains(&value))
+        || !int_field(truncation, "omitted_bytes")
+            .is_some_and(|value| (0..=20_971_520).contains(&value))
+    {
+        return Err(Refusal::Oversized);
+    }
+    let Some(Json::Arr(anchors)) = envelope.get("anchors") else {
+        return Err(malformed);
+    };
+    let mut previous = "";
+    for anchor in anchors {
+        let id = str_field(anchor, "id").ok_or(malformed)?;
+        if !valid_id(id)
+            || id <= previous
+            || !valid_role(format, str_field(anchor, "role").ok_or(malformed)?)
+            || !valid_native_locator(format, anchor.get("locator").ok_or(malformed)?)
+        {
+            return Err(malformed);
+        }
+        previous = id;
+    }
+    let features: &[&str] = match format {
+        Format::Docx => &[
+            "text",
+            "paragraphs",
+            "headings",
+            "lists",
+            "tables",
+            "headers_footers",
+            "macros",
+        ],
+        Format::Xlsx => &["text", "sheets", "cells", "formulas", "charts", "macros"],
+        Format::Pptx => &[
+            "text",
+            "slides",
+            "shapes",
+            "speaker_notes",
+            "z_order",
+            "macros",
+            "animations",
+        ],
+        Format::Pdf => &[
+            "text",
+            "reading_order",
+            "bounding_boxes",
+            "tables",
+            "figures",
+            "ocr",
+            "javascript",
+        ],
+    };
+    let fidelity = envelope.get("fidelity").ok_or(malformed)?;
+    if !keys_are(fidelity, features) || !valid_fidelity(fidelity) {
+        return Err(malformed);
+    }
+    if ["macros", "formulas", "javascript", "animations"]
+        .iter()
+        .any(|key| str_field(fidelity, key) == Some("exact"))
+    {
+        return Err(Refusal::UnsupportedContainer);
+    }
+    // Validate decoded strings, so JSON escaping cannot conceal a forbidden
+    // locator or other field from the common DLP/public-boundary validator.
+    let mut pending = vec![envelope];
+    while let Some(value) = pending.pop() {
+        match value {
+            Json::Str(text) => validate_locator(text)?,
+            Json::Arr(values) => pending.extend(values),
+            Json::Obj(values) => pending.extend(values.values()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Drops blank anchors silently and over-long or over-count anchors with
 /// truncation accounting. Pure so tests pin the rule without a workbook.
 fn apply_anchor_budgets(mut anchors: Vec<EvidenceAnchor>) -> (Vec<EvidenceAnchor>, usize, usize) {
@@ -421,6 +578,7 @@ pub fn admit(bytes: &[u8], format: Format, locator: &str) -> Result<Admitted, Re
     if locator.is_empty() || locator.len() > MAX_LOCATOR_BYTES || locator.trim().is_empty() {
         return Err(Refusal::MalformedContainer);
     }
+    validate_locator(locator)?;
     let adapter = adapter(format).ok_or(Refusal::UnsupportedContainer)?;
     let imported = adapter.import(bytes, &Limits::default(), &Cancel::default())?;
     if imported.receipt.iter().any(|code| code == "dlp-findings") {
@@ -453,11 +611,8 @@ pub fn admit(bytes: &[u8], format: Format, locator: &str) -> Result<Admitted, Re
     let mut emitted: Vec<&str> = anchors.iter().map(|anchor| anchor.text.as_str()).collect();
     emitted.push(locator);
     emitted.push(normalized_text);
-    if emitted
-        .iter()
-        .any(|text| SECRET_MARKERS.iter().any(|marker| text.contains(marker)))
-    {
-        return Err(Refusal::PublicBoundary);
+    for text in emitted {
+        validate_locator(text)?;
     }
     let source_digest = sha256_hex(bytes);
     let content = Json::Obj(BTreeMap::from([
@@ -659,9 +814,7 @@ pub fn admit(bytes: &[u8], format: Format, locator: &str) -> Result<Admitted, Re
     let digest = sha256_hex(&Json::Obj(envelope.clone()).to_bytes());
     envelope.insert("envelope_digest".to_owned(), Json::Str(digest));
     let envelope = Json::Obj(envelope);
-    if envelope.to_bytes().len() > MAX_ENVELOPE_BYTES {
-        return Err(Refusal::Oversized);
-    }
+    validate_built_envelope(&envelope, format)?;
     Ok(Admitted {
         envelope,
         anchors,
