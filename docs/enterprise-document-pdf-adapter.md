@@ -84,7 +84,7 @@ exact, normalized, approximated, unsupported, refused.
 | Damaged cross-reference tables | normalized with receipt | table rebuilt from object headers, receipt `xref-repaired`; never silent | `pdf-damaged-xref` |
 | Wrong stream lengths | normalized with receipt | end found from `endstream`, receipt `stream-length-repaired` | `pdf-stream-length-mismatch` |
 | Missing referenced objects | normalized with receipt | treated as null (PDF rule), receipt `dangling-reference` | `pdf-dangling-reference` |
-| Malformed page tree or object graph | refused | `malformed-pdf` | `pdf-malformed-object-graph`, `pdf-recursive-structure`, `pdf-not-a-pdf` |
+| Malformed page tree, object graph, or destination cycle | refused | `malformed-pdf` (`pdf-depth-limit` for an over-deep destination chain) | `pdf-malformed-object-graph`, `pdf-recursive-structure`, `pdf-not-a-pdf`, `repair_r1_cyclic_destination_refused` |
 | JavaScript, launch, submit, import, media, 3D, embedded-document actions and annotations | refused | `active-content`, wherever the object sits in the file, reachable or not | `pdf-active-action`, `pdf-launch-action` |
 | Remote go-to actions, URL file specifications, external streams, reference XObjects | refused | `external-reference` | `pdf-remote-goto` |
 | Fonts without a Unicode mapping | approximated | U+FFFD for each unmapped glyph, receipt `text-unmapped-glyphs`; glyphs are not guessed | `pdf-unmapped-glyphs` |
@@ -103,7 +103,7 @@ nesting, never time.
 | `max_parts` | page count | `pdf-page-limit` |
 | `max_part_bytes` | one stream, raw or decoded | `oversized` / `decompression-limit` |
 | `max_ratio` | decoded/raw ratio per Flate stream | `decompression-limit` |
-| `max_total_bytes` | all decoded bytes plus all executed content bytes, so repeated form XObjects cannot amplify work | `decompression-limit` |
+| `max_total_bytes` | all decoded bytes plus all executed content bytes and mapped glyph text, so repeated form XObjects and hostile ToUnicode maps cannot amplify work | `decompression-limit` |
 | `max_xml_depth` | nesting of arrays and dictionaries, page tree, outline, form fields, `q`, marked content, and form XObjects | `pdf-depth-limit` |
 | `max_xml_nodes` | parsed objects and cross-reference entries | `pdf-object-limit` |
 

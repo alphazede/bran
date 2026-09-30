@@ -270,6 +270,9 @@ fn glyph_char(name: &[u8]) -> Option<char> {
         .map(|(_, c)| *c)
 }
 
+/// One decoded glyph: (code length, code, mapped text or None, width).
+type Glyph = (usize, u32, Option<String>, f64);
+
 struct Font {
     composite: bool,
     to_unicode: Option<CMap>,
@@ -368,7 +371,11 @@ impl Font {
     }
 
     /// Splits `bytes` into codes: (code length, code, text or None, width).
-    fn glyphs(&self, bytes: &[u8]) -> Vec<(usize, u32, Option<String>, f64)> {
+    /// R3: each glyph's mapped text counts against the total budget before it
+    /// accumulates, so a hostile ToUnicode map cannot amplify text past it.
+    /// R5: the `/FirstChar` subtraction is checked, so an out-of-range bound
+    /// falls back to the default width instead of panicking.
+    fn glyphs(&self, bytes: &[u8], doc: &Doc<'_>) -> Result<Vec<Glyph>, Refusal> {
         let mut out = Vec::new();
         let mut at = 0;
         while at < bytes.len() {
@@ -381,20 +388,22 @@ impl Font {
                 None if self.composite => None,
                 None => self.encoding[code as usize & 0xFF].map(String::from),
             };
+            doc.spend(text.as_ref().map_or(1, |text| text.len()))?;
             let width = if self.composite {
                 self.cid_widths
                     .get(&code)
                     .copied()
                     .unwrap_or(self.default_width)
             } else {
-                usize::try_from(i64::from(code) - self.first_char)
-                    .ok()
+                i64::from(code)
+                    .checked_sub(self.first_char)
+                    .and_then(|index| usize::try_from(index).ok())
                     .and_then(|index| self.widths.get(index).copied())
                     .unwrap_or(self.default_width)
             };
             out.push((slice.len(), code, text, width));
         }
-        out
+        Ok(out)
     }
 
     fn code_length(&self, bytes: &[u8]) -> usize {
@@ -669,28 +678,28 @@ impl Interpreter<'_, '_> {
                 self.tm = self.tlm;
             }
             b"T*" => self.move_line(0.0, -self.state.leading),
-            b"Tj" => self.show(operands.first(), false),
+            b"Tj" => self.show(operands.first(), false)?,
             b"'" => {
                 self.move_line(0.0, -self.state.leading);
-                self.show(operands.first(), false);
+                self.show(operands.first(), false)?;
             }
             b"\"" => {
                 self.state.word_space = number(0);
                 self.state.char_space = number(1);
                 self.move_line(0.0, -self.state.leading);
-                self.show(operands.get(2), false);
+                self.show(operands.get(2), false)?;
             }
             b"TJ" => {
                 if let Some(Obj::Arr(items)) = operands.first() {
                     for item in items {
                         match item {
-                            Obj::Str(_) => self.show(Some(item), false),
+                            Obj::Str(_) => self.show(Some(item), false)?,
                             other => {
                                 let adjust = other.number().unwrap_or(0.0);
                                 let tx = -adjust / 1000.0 * self.state.size * self.state.scale;
                                 self.tm = multiply(&[1.0, 0.0, 0.0, 1.0, tx, 0.0], &self.tm);
                                 if adjust < -200.0 {
-                                    self.show(None, true);
+                                    self.show(None, true)?;
                                 }
                             }
                         }
@@ -758,20 +767,20 @@ impl Interpreter<'_, '_> {
     /// Shows one string, or marks a word gap when `gap` is set. Line and
     /// word breaks are measured along the run's own baseline, so rotated
     /// text joins the same way as upright text.
-    fn show(&mut self, string: Option<&Obj>, gap: bool) {
+    fn show(&mut self, string: Option<&Obj>, gap: bool) -> Result<(), Refusal> {
         if gap {
             if let Some(open) = &mut self.open {
                 open.gap = true;
             }
-            return;
+            return Ok(());
         }
         let (Some(Obj::Str(bytes)), Some(font)) = (string, self.state.font.clone()) else {
-            return;
+            return Ok(());
         };
         let state = &self.state;
         let mut text = String::new();
         let mut advance = 0.0;
-        for (length, code, glyph, width) in font.glyphs(bytes) {
+        for (length, code, glyph, width) in font.glyphs(bytes, self.doc)? {
             match glyph {
                 Some(glyph) => text.extend(glyph.chars().filter(|c| !c.is_control())),
                 None => {
@@ -800,7 +809,7 @@ impl Interpreter<'_, '_> {
             marked.actual = Some(String::new());
         }
         if text.trim().is_empty() {
-            return;
+            return Ok(());
         }
         let key = self.block_key();
         let offset = |last: &Last| {
@@ -850,6 +859,7 @@ impl Interpreter<'_, '_> {
             uy,
         });
         open.gap = false;
+        Ok(())
     }
 
     fn block_key(&self) -> BlockKey {

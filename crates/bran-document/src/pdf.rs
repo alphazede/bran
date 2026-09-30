@@ -213,7 +213,7 @@ pub fn import(
         page_json.push(object([
             (
                 "annotations",
-                Json::Arr(annotations(&doc, page.dict, number, &numbers)),
+                Json::Arr(annotations(&doc, page.dict, number, &numbers)?),
             ),
             ("blocks", Json::Arr(blocks.clone())),
             ("box", rect(page.media)),
@@ -430,9 +430,11 @@ fn scan(
     {
         return Err(Refusal::ActiveContent);
     }
+    // R7: resolve indirect objects before classifying, so `/S 7 0 R`
+    // classifies exactly like `/S /Launch`.
     let named = |entry: &str, list: &[&str]| {
         key(dict, entry)
-            .and_then(Obj::name)
+            .and_then(|value| doc.get(value).name())
             .is_some_and(|value| list.iter().any(|item| item.as_bytes() == value))
     };
     if named("S", ACTIVE_ACTIONS) || named("Subtype", ACTIVE_ANNOTATIONS) {
@@ -541,23 +543,46 @@ fn walk_pages<'d>(
 }
 
 /// A destination as `target_page` (explicit) or `target_name` (named).
+/// R1: reference cycles refuse as malformed and over-deep chains refuse
+/// against the depth limit, instead of overflowing the stack.
 fn target(
     doc: &Doc<'_>,
     destination: &Obj,
     pages: &BTreeMap<u32, i64>,
-) -> Option<(&'static str, Json)> {
+) -> Result<Option<(&'static str, Json)>, Refusal> {
+    target_bounded(doc, destination, pages, 0, &mut BTreeSet::new())
+}
+
+fn target_bounded(
+    doc: &Doc<'_>,
+    destination: &Obj,
+    pages: &BTreeMap<u32, i64>,
+    depth: usize,
+    seen: &mut BTreeSet<u32>,
+) -> Result<Option<(&'static str, Json)>, Refusal> {
+    if depth > doc.limits.max_xml_depth {
+        return Err(Refusal::PdfDepthLimit);
+    }
     match destination {
-        Obj::Arr(items) => match items.first()? {
-            Obj::Ref(number) => pages
+        Obj::Arr(items) => Ok(match items.first() {
+            Some(Obj::Ref(number)) => pages
                 .get(number)
                 .map(|page| ("target_page", Json::Int(*page))),
             _ => None,
+        }),
+        Obj::Ref(number) => {
+            if !seen.insert(*number) {
+                return Err(Refusal::PdfMalformed);
+            }
+            target_bounded(doc, doc.get(destination), pages, depth + 1, seen)
+        }
+        Obj::Name(value) => Ok(Some(("target_name", text(name(value))))),
+        Obj::Str(value) => Ok(Some(("target_name", text(text_string(value))))),
+        Obj::Dict(dict) => match key(dict, "D") {
+            Some(d) => target_bounded(doc, d, pages, depth + 1, seen),
+            None => Ok(None),
         },
-        Obj::Ref(_) => target(doc, doc.get(destination), pages),
-        Obj::Name(value) => Some(("target_name", text(name(value)))),
-        Obj::Str(value) => Some(("target_name", text(text_string(value)))),
-        Obj::Dict(dict) => target(doc, key(dict, "D")?, pages),
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -566,13 +591,15 @@ fn link_fields(
     dict: &Dict,
     pages: &BTreeMap<u32, i64>,
     fields: &mut BTreeMap<String, Json>,
-) {
+) -> Result<(), Refusal> {
     let destination = key(dict, "Dest").or_else(|| {
         let action = doc.dict(key(dict, "A")?)?;
         is_name(action, "S", "GoTo").then(|| key(action, "D"))?
     });
-    if let Some((field, value)) = destination.and_then(|d| target(doc, d, pages)) {
-        fields.insert(field.to_owned(), value);
+    if let Some(destination) = destination {
+        if let Some((field, value)) = target(doc, destination, pages)? {
+            fields.insert(field.to_owned(), value);
+        }
     }
     if let Some(action) = key(dict, "A").and_then(|a| doc.dict(a)) {
         if is_name(action, "S", "URI") {
@@ -582,11 +609,17 @@ fn link_fields(
             }
         }
     }
+    Ok(())
 }
 
-fn annotations(doc: &Doc<'_>, page: &Dict, number: usize, pages: &BTreeMap<u32, i64>) -> Vec<Json> {
+fn annotations(
+    doc: &Doc<'_>,
+    page: &Dict,
+    number: usize,
+    pages: &BTreeMap<u32, i64>,
+) -> Result<Vec<Json>, Refusal> {
     let Obj::Arr(items) = doc.lookup(page, "Annots") else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for item in items {
@@ -613,10 +646,10 @@ fn annotations(doc: &Doc<'_>, page: &Dict, number: usize, pages: &BTreeMap<u32, 
         if let Obj::Str(contents) = doc.lookup(annotation, "Contents") {
             fields.insert("contents".to_owned(), text(text_string(contents)));
         }
-        link_fields(doc, annotation, pages, &mut fields);
+        link_fields(doc, annotation, pages, &mut fields)?;
         out.push(Json::Obj(fields));
     }
-    out
+    Ok(out)
 }
 
 fn outline(
@@ -645,7 +678,7 @@ fn outline(
         };
         fields.insert("title".to_owned(), text(title));
         fields.insert("level".to_owned(), Json::Int(level as i64));
-        link_fields(doc, item, pages, &mut fields);
+        link_fields(doc, item, pages, &mut fields)?;
         let page = fields.remove("target_page").unwrap_or(Json::Null);
         fields.insert("page".to_owned(), page);
         out.push(Json::Obj(fields));
@@ -730,8 +763,14 @@ fn signature_evidence(doc: &Doc<'_>, signature: &Dict, field: &str) -> Json {
         Obj::Str(bytes) => text(sha256_hex(bytes)),
         _ => Json::Null,
     };
-    let covers =
-        matches!(byte_range[..], [0, _, start, length] if start + length == doc.data.len() as i64);
+    // R6: validate nonnegative, ordered, in-file ranges with checked
+    // arithmetic; anything else is recorded as not covering the file.
+    let covers = match byte_range[..] {
+        [0, gap, start, length] if gap >= 0 && start >= gap && length >= 0 => {
+            start.checked_add(length) == Some(doc.data.len() as i64)
+        }
+        _ => false,
+    };
     let label = |entry: &str| {
         doc.lookup(signature, entry)
             .name()

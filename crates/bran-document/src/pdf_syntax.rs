@@ -521,7 +521,7 @@ impl<'a> Doc<'a> {
             let param = params.get(index).copied().flatten();
             data = match param.map(|p| self.lookup(p, "Predictor").int().unwrap_or(1)) {
                 None | Some(1) => inflated,
-                Some(10..=15) => match png_predictor(&inflated, param.unwrap(), self) {
+                Some(10..=15) => match png_predictor(&inflated, param.unwrap(), self)? {
                     Some(data) => data,
                     None => return Ok(None),
                 },
@@ -797,9 +797,11 @@ impl<'a> Doc<'a> {
                 Entry::At(offset) => {
                     let (found, object) = match self.indirect_at(*offset) {
                         Ok(parsed) => parsed,
-                        Err(refusal @ (Refusal::PdfDepthLimit | Refusal::PdfObjectLimit)) => {
-                            return Err(refusal)
-                        }
+                        Err(
+                            refusal @ (Refusal::PdfDepthLimit
+                            | Refusal::PdfObjectLimit
+                            | Refusal::Oversized),
+                        ) => return Err(refusal),
                         Err(_) => continue,
                     };
                     if found == *number {
@@ -934,6 +936,11 @@ impl<'a> Doc<'a> {
                 end
             }
         };
+        // R4: raw stream bytes count against the part limit before they are
+        // copied, so images, attachments, and unused streams cannot bypass it.
+        if (end - start) as u64 > self.limits.max_part_bytes {
+            return Err(Refusal::Oversized);
+        }
         let raw = self.data[start..end].to_vec();
         Ok((number, Obj::Stream(dict, raw)))
     }
@@ -953,7 +960,7 @@ impl<'a> Doc<'a> {
     }
 }
 
-fn png_predictor(data: &[u8], params: &Dict, doc: &Doc<'_>) -> Option<Vec<u8>> {
+fn png_predictor(data: &[u8], params: &Dict, doc: &Doc<'_>) -> Result<Option<Vec<u8>>, Refusal> {
     let get = |name: &str, default: i64| doc.lookup(params, name).int().unwrap_or(default);
     let (colors, bits, columns) = (
         get("Colors", 1),
@@ -964,14 +971,39 @@ fn png_predictor(data: &[u8], params: &Dict, doc: &Doc<'_>) -> Option<Vec<u8>> {
         || !matches!(bits, 1 | 2 | 4 | 8 | 16)
         || !(1..=1 << 20).contains(&columns)
     {
-        return None;
+        return Ok(None);
     }
     let pixel = ((colors * bits + 7) / 8) as usize;
     let width = ((colors * bits * columns + 7) / 8) as usize;
-    let mut out = Vec::with_capacity(data.len());
+    // R2: budget the expansion before allocating it. A truncated final row is
+    // corrupt, never padded: padding a hostile width is the allocation.
+    let stride = width + 1;
+    if data.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let rows = data.len().div_ceil(stride) as u64;
+    let expanded = rows
+        .checked_mul(width as u64)
+        .ok_or(Refusal::DecompressionLimit)?;
+    let ratio = doc
+        .limits
+        .max_ratio
+        .saturating_mul(data.len().max(1) as u64);
+    if expanded > doc.limits.max_part_bytes
+        || expanded > ratio
+        || doc.spent.get().saturating_add(expanded) > doc.limits.max_total_bytes
+    {
+        return Err(Refusal::DecompressionLimit);
+    }
+    if !data.len().is_multiple_of(stride) {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(expanded as usize);
     let mut previous = vec![0u8; width];
-    for row in data.chunks(width + 1) {
-        let (&kind, bytes) = row.split_first()?;
+    for row in data.chunks(stride) {
+        let Some((&kind, bytes)) = row.split_first() else {
+            return Ok(None);
+        };
         let mut current = bytes.to_vec();
         current.resize(width, 0);
         for index in 0..width {
@@ -992,14 +1024,14 @@ fn png_predictor(data: &[u8], params: &Dict, doc: &Doc<'_>) -> Option<Vec<u8>> {
                 2 => up,
                 3 => ((u16::from(left) + u16::from(up)) / 2) as u8,
                 4 => paeth(left, up, upper_left),
-                _ => return None,
+                _ => return Ok(None),
             };
             current[index] = current[index].wrapping_add(add);
         }
         out.extend_from_slice(&current);
         previous = current;
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 fn paeth(left: u8, up: u8, upper_left: u8) -> u8 {

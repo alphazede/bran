@@ -1098,3 +1098,261 @@ fn rotated_text_and_actual_text_join_like_readers() {
     assert_eq!(at(&doc, "pages.0.blocks.0.text"), &text("Rotated words"));
     assert_eq!(at(&doc, "pages.0.blocks.1.text"), &text("Office"));
 }
+
+// ---- Repair round for the #23 independent review (findings R1-R7). ----
+
+/// R1: a destination that refers to itself, through an annotation and through
+/// a bookmark, is a typed refusal, not a stack overflow.
+#[test]
+fn repair_r1_cyclic_destination_refused() {
+    let limits = limits(Tier::Fast);
+    let annotation = base()
+        .edit(13, "/Dest [4 0 R /Fit]", "/Dest 19 0 R")
+        .add(19, "<< /D 19 0 R >>");
+    assert_eq!(
+        pdf::import(
+            &annotation.pdf(),
+            &limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::PdfMalformed),
+    );
+    let bookmark = base()
+        .edit(11, "/Dest [3 0 R /XYZ 72 740 0]", "/Dest 19 0 R")
+        .add(19, "<< /D 19 0 R >>");
+    assert_eq!(
+        pdf::import(
+            &bookmark.pdf(),
+            &limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::PdfMalformed),
+    );
+    // A finite but over-deep destination chain trips the depth limit.
+    let mut deep = base().edit(13, "/Dest [4 0 R /Fit]", "/Dest 19 0 R");
+    for number in 19..19 + limits.max_xml_depth as u32 + 1 {
+        deep = deep.add(number, &format!("<< /D {} 0 R >>", number + 1));
+    }
+    deep = deep.add(
+        19 + limits.max_xml_depth as u32 + 1,
+        "<< /D [4 0 R /Fit] >>",
+    );
+    assert_eq!(
+        pdf::import(&deep.pdf(), &limits, &Cancel::default(), Options::default()).err(),
+        Some(Refusal::PdfDepthLimit),
+    );
+}
+
+/// R2: predictor expansion is budgeted before its buffers are allocated.
+/// A 256 KiB row expansion with a 1 KiB part limit refuses even when the
+/// total budget could hold it; the reviewer's exact input refuses too.
+#[test]
+fn repair_r2_predictor_budgets_refuse_before_allocating() {
+    let mut row_limits = limits(Tier::Fast);
+    row_limits.max_part_bytes = 1024;
+    row_limits.max_total_bytes = 256 * 1024 * 1024;
+    let mut row = base();
+    *row.body(7) = Body::Stream {
+        dict: "<< /Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 4096 /Colors 32 /BitsPerComponent 16 >> >>"
+            .to_owned(),
+        data: zlib(&[0]),
+    };
+    assert_eq!(
+        pdf::import(
+            &row.pdf(),
+            &row_limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::DecompressionLimit),
+    );
+    let mut review_limits = limits(Tier::Fast);
+    review_limits.max_part_bytes = 1024;
+    review_limits.max_total_bytes = 4096;
+    let mut review = base();
+    *review.body(7) = Body::Stream {
+        dict: "<< /Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 1048576 /Colors 32 /BitsPerComponent 16 >> >>"
+            .to_owned(),
+        data: zlib(&[0]),
+    };
+    assert_eq!(
+        pdf::import(
+            &review.pdf(),
+            &review_limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::DecompressionLimit),
+    );
+}
+
+/// R3: one code mapped to 2,048 characters over 2,048 codes refuses against
+/// a 32 KiB total budget instead of admitting 4 MiB of text.
+#[test]
+fn repair_r3_cmap_expansion_is_budgeted() {
+    let mut limits = limits(Tier::Fast);
+    limits.max_total_bytes = 32 * 1024;
+    let mapping = "0042".repeat(2048);
+    let objects = base()
+        .edit(
+            5,
+            "/Encoding /WinAnsiEncoding",
+            "/Encoding /WinAnsiEncoding /ToUnicode 19 0 R",
+        )
+        .edit(
+            7,
+            "(Synthetic PDF heading)",
+            &format!("({})", "A".repeat(2048)),
+        )
+        .add_stream(
+            19,
+            "<< >>",
+            format!("1 beginbfchar\n<41> <{mapping}>\nendbfchar"),
+        );
+    assert_eq!(
+        pdf::import(
+            &objects.pdf(),
+            &limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::DecompressionLimit),
+    );
+}
+
+/// R4: raw stream bytes count against the part limit even when no decoder
+/// runs: a 17 MiB image under default limits, and an unused oversized
+/// stream under small limits.
+#[test]
+fn repair_r4_raw_streams_enforce_part_limit() {
+    let image = base().add_stream(
+        19,
+        "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 >>",
+        vec![b'Z'; 17 * 1024 * 1024],
+    );
+    assert_eq!(
+        pdf::import(
+            &image.pdf(),
+            &Limits::default(),
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::Oversized),
+    );
+    let limits = limits(Tier::Fast);
+    let unused = base().add_stream(19, "<< >>", vec![b'x'; limits.max_part_bytes as usize + 1]);
+    assert_eq!(
+        pdf::import(
+            &unused.pdf(),
+            &limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::Oversized),
+    );
+}
+
+/// R5: an out-of-range `/FirstChar` falls back to default widths instead of
+/// panicking; the text still extracts.
+#[test]
+fn repair_r5_malformed_font_bounds_do_not_panic() {
+    let limits = limits(Tier::Fast);
+    let objects = base().edit(
+        5,
+        "/Encoding /WinAnsiEncoding",
+        "/Encoding /WinAnsiEncoding /FirstChar -9223372036854775808",
+    );
+    let imported = pdf::import(
+        &objects.pdf(),
+        &limits,
+        &Cancel::default(),
+        Options::default(),
+    )
+    .expect("out-of-range FirstChar imports");
+    let doc = Json::parse(&imported.canonical).unwrap();
+    assert_eq!(
+        at(&doc, "pages.0.blocks.0.text"),
+        &text("Synthetic PDF heading")
+    );
+}
+
+/// R6: an overflowing signature byte range is recorded as not covering the
+/// file instead of panicking.
+#[test]
+fn repair_r6_malformed_signature_ranges_do_not_panic() {
+    let limits = limits(Tier::Fast);
+    let objects = base()
+        .edit(1, "/Type /Catalog", "/Type /Catalog /AcroForm << /Fields [19 0 R] /SigFlags 3 >>")
+        .add(19, "<< /FT /Sig /T (Synthetic signature) /V 20 0 R >>")
+        .add(
+            20,
+            "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 9223372036854775807 1] /Contents <00> >>",
+        );
+    let imported = pdf::import(
+        &objects.pdf(),
+        &limits,
+        &Cancel::default(),
+        Options::default(),
+    )
+    .expect("overflowing ByteRange imports");
+    let doc = Json::parse(&imported.canonical).unwrap();
+    assert_eq!(
+        at(&doc, "signatures.0.covers_whole_file"),
+        &Json::Bool(false)
+    );
+    assert!(imported
+        .receipt
+        .iter()
+        .any(|code| code == "signature-not-verified"));
+}
+
+/// R7: an action or file-spec name stored as an indirect object classifies
+/// exactly like the direct name.
+#[test]
+fn repair_r7_indirect_action_names_classified() {
+    let limits = limits(Tier::Fast);
+    for (name, refusal) in [
+        ("Launch", Refusal::ActiveContent),
+        ("GoToR", Refusal::ExternalReference),
+    ] {
+        let objects = base()
+            .edit(1, "/Type /Catalog", "/Type /Catalog /OpenAction 19 0 R")
+            .add(19, "<< /S 20 0 R /F (other.pdf) >>")
+            .add(20, &format!("/{name}"));
+        assert_eq!(
+            pdf::import(
+                &objects.pdf(),
+                &limits,
+                &Cancel::default(),
+                Options::default()
+            )
+            .err(),
+            Some(refusal),
+            "{name}",
+        );
+    }
+    // `scan` covers every object, so an unwired file specification with an
+    // indirect `/FS` must refuse like the direct name.
+    let remote = base()
+        .add(19, "<< /FS 20 0 R /F (other.pdf) >>")
+        .add(20, "/URL");
+    assert_eq!(
+        pdf::import(
+            &remote.pdf(),
+            &limits,
+            &Cancel::default(),
+            Options::default()
+        )
+        .err(),
+        Some(Refusal::ExternalReference),
+    );
+}
