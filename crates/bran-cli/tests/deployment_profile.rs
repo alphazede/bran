@@ -315,10 +315,12 @@ fn p8_deployment_profile() {
 
     let rejected = |registry: Option<&str>, args: &[&str], code: i32, failure: &str| {
         let (actual, output) = run(&state, registry, args);
-        assert_eq!(actual, code, "{args:?}: {output}");
+        // Name only the command: later arguments can carry the synthetic secret under test.
+        let command = args.first().copied().unwrap_or_default();
+        assert_eq!(actual, code, "{command}: {output}");
         assert!(
             output.contains(&format!("\"{failure}\"")),
-            "{args:?}: {output}"
+            "{command}: {output}"
         );
         output
     };
