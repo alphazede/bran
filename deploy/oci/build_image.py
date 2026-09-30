@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -30,8 +31,11 @@ GZIP_LAYERS = {"application/vnd.oci.image.layer.v1.tar+gzip",
 PLATFORMS = {"x86_64-unknown-linux-gnu": "amd64", "aarch64-unknown-linux-gnu": "arm64"}
 USER = "65532:65532"
 ENTRYPOINT = ["/usr/local/bin/bran"]
-CMD = ["smoke"]
 WORKDIR = "/"
+# bran 0.2.0 is the first release with registered-root mode. Every such binary
+# carries these strings; older releases ignore BRAN_REGISTERED_ROOTS.
+MINIMUM_VERSION = (0, 2, 0)
+GUARD_MARKERS = (b"BRAN_REGISTERED_ROOTS", b"unavailable_in_registered_root_mode")
 # Only PATH, plus an empty registry so the image fails closed until the
 # operator registers a root.
 ENV = ["PATH=/usr/local/bin:/usr/bin:/bin", "BRAN_REGISTERED_ROOTS="]
@@ -103,6 +107,17 @@ def layer_members(media: str, data: bytes) -> tuple[str, list[tarfile.TarInfo], 
         raise ContractError(f"unsupported layer media type {media}")
     archive = tarfile.open(fileobj=io.BytesIO(data), mode="r:")
     return f"sha256:{sha256(data)}", archive.getmembers(), archive
+
+
+def guard_problems(version: str, binary: bytes) -> list[str]:
+    """Why a release cannot enforce registered-root mode; empty when it can."""
+    problems = []
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+    if not match or tuple(int(part) for part in match.groups()) < MINIMUM_VERSION:
+        problems.append(f"release {version!r} predates registered-root mode (needs bran 0.2.0 or later)")
+    if not all(marker in binary for marker in GUARD_MARKERS):
+        problems.append("release binary lacks the registered-root guard")
+    return problems
 
 
 def license_allowed(expression: str) -> bool:
@@ -195,6 +210,9 @@ def build(archive: Path, release_manifest: Path, base_layout: Path, base_digest:
     """Write the image layout to `out` (which must not exist); return its digest."""
     release = json.loads(release_manifest.read_bytes())
     target, archive_sha, binary = release_binary(archive, release)
+    version = release["tag"].removeprefix("bran-v")
+    if problems := guard_problems(version, binary):
+        raise ContractError("; ".join(problems))
     if sha256((ROOT / "Cargo.lock").read_bytes()) != release.get("lockfile_sha256"):
         raise ContractError("Cargo.lock does not match the release lockfile digest")
     digest, base_manifest, base_config = load_image(base_layout)
@@ -208,7 +226,6 @@ def build(archive: Path, release_manifest: Path, base_layout: Path, base_digest:
             zip(base_manifest["layers"], base_layers)] != base_config["rootfs"]["diff_ids"]:
         raise ContractError("base image diff_ids do not match its layers")
     layer = write_layer(expected_layer(binary, inventory or dependency_licenses(target)))
-    version = release["tag"].removeprefix("bran-v")
     labels = dict(zip(LABELS, (
         version, release["source_commit"], f"https://github.com/{release['repository']}",
         "MIT OR Apache-2.0", digest, target, archive_sha, sha256(binary),
@@ -216,7 +233,7 @@ def build(archive: Path, release_manifest: Path, base_layout: Path, base_digest:
     config = canonical({
         **platform,
         "created": EPOCH,
-        "config": {"User": USER, "Env": ENV, "Entrypoint": ENTRYPOINT, "Cmd": CMD,
+        "config": {"User": USER, "Env": ENV, "Entrypoint": ENTRYPOINT,
                    "WorkingDir": WORKDIR, "Labels": labels},
         "rootfs": {"type": "layers",
                    "diff_ids": [*base_config["rootfs"]["diff_ids"], f"sha256:{sha256(layer)}"]},
@@ -262,9 +279,10 @@ def verify(layout: Path) -> list[str]:
         return [f"unreadable image layout: {error}"]
     settings = config.get("config") or {}
     problems = [f"{key} must be {value!r}" for key, value in
-                (("User", USER), ("Entrypoint", ENTRYPOINT), ("Cmd", CMD),
-                 ("WorkingDir", WORKDIR), ("Env", ENV)) if settings.get(key) != value]
-    problems += [f"{key} must be absent" for key in ("ExposedPorts", "Volumes") if settings.get(key)]
+                (("User", USER), ("Entrypoint", ENTRYPOINT), ("WorkingDir", WORKDIR),
+                 ("Env", ENV)) if settings.get(key) != value]
+    problems += [f"{key} must be absent" for key in ("Cmd", "ExposedPorts", "Volumes")
+                 if settings.get(key)]
     labels = settings.get("Labels") or {}
     problems += [f"label {key} is missing" for key in LABELS if not labels.get(key)]
     if len(layers) != len(diff_ids) or not layers:
@@ -298,6 +316,7 @@ def verify(layout: Path) -> list[str]:
         problems.append("BRAN layer entries, modes, owners, or timestamps differ from the contract")
     if labels.get("dev.alphazede.bran.binary.sha256") != sha256(binary):
         problems.append("BRAN binary does not match its digest label")
+    problems += guard_problems(labels.get("org.opencontainers.image.version", ""), binary)
     try:
         dependencies = json.loads(inventory)
         problems += [f"dependency licence not allowed: {entry['name']} {entry['license']}"

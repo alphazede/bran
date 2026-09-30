@@ -53,8 +53,11 @@ UNIT_SETTINGS = {
 }
 UNIT_WRITABLE = {"ReadWritePaths", "StateDirectory", "CacheDirectory", "LogsDirectory",
                  "RuntimeDirectory", "ConfigurationDirectory", "BindPaths"}
-SYNTHETIC_TAG = "bran-v0.0.0"
-SYNTHETIC_ARCHIVE = f"{SYNTHETIC_TAG}-x86_64-unknown-linux-gnu.tar.gz"
+SYNTHETIC_TAG = "bran-v0.2.0"
+TARGET = "x86_64-unknown-linux-gnu"
+# A stand-in for a release binary that carries the registered-root guard.
+GUARDED_BINARY = b"\x7fELF synthetic stand-in BRAN_REGISTERED_ROOTS unavailable_in_registered_root_mode\n"
+UNGUARDED_BINARY = b"\x7fELF synthetic stand-in for bran 0.1.1\n"
 
 
 def sha256(data: bytes) -> str:
@@ -153,17 +156,17 @@ def synthetic_base(layout: Path, extra: list | None = None, architecture: str = 
     })
 
 
-def synthetic_release(directory: Path, members: list | None = None,
-                      lockfile: str | None = None, archive_sha: str | None = None) -> tuple[Path, Path]:
+def synthetic_release(directory: Path, members: list | None = None, lockfile: str | None = None,
+                      archive_sha: str | None = None, tag: str = SYNTHETIC_TAG) -> tuple[Path, Path]:
     """A release archive holding a stand-in `bran` plus its release manifest."""
-    raw = tar_bytes(members or [member("bran", 0o755, b"\x7fELF synthetic bran stand-in\n")])
-    archive = directory / SYNTHETIC_ARCHIVE
+    raw = tar_bytes(members or [member("bran", 0o755, GUARDED_BINARY)])
+    archive = directory / f"{tag}-{TARGET}.tar.gz"
     archive.write_bytes(gzip.compress(raw, mtime=0))
     manifest = directory / "bran-release-manifest.json"
     manifest.write_text(json.dumps({
-        "tag": SYNTHETIC_TAG, "repository": "alphazede/bran", "source_commit": "0" * 40,
+        "tag": tag, "repository": "alphazede/bran", "source_commit": "0" * 40,
         "lockfile_sha256": lockfile or sha256((ROOT / "Cargo.lock").read_bytes()),
-        "assets": [{"name": SYNTHETIC_ARCHIVE, "sha256": archive_sha or sha256(archive.read_bytes())}],
+        "assets": [{"name": archive.name, "sha256": archive_sha or sha256(archive.read_bytes())}],
     }))
     return archive, manifest
 
@@ -235,6 +238,9 @@ def image_errors() -> list[str]:
             ("baked credential", lambda c: c.update(Env=[*env, "AWS_SECRET_ACCESS_KEY=x"]), "Env must be"),
             ("unpinned base", lambda c: c["Labels"].pop("org.opencontainers.image.base.digest"),
              "label org.opencontainers.image.base.digest is missing"),
+            ("default command", lambda c: c.update(Cmd=["smoke"]), "Cmd must be absent"),
+            ("release before 0.2.0", lambda c: c["Labels"].update(
+                {"org.opencontainers.image.version": "0.1.1"}), "predates registered-root mode"),
         ]
         for number, (label, change, expected) in enumerate(config_violations):
             layout = copy_of(f"config-{number}")
@@ -251,6 +257,17 @@ def image_errors() -> list[str]:
             layout = copy_of(label.replace(" ", "-"))
             reseal(layout, layer_entries=layer)
             rejected(label, layout, expected)
+
+        unguarded = bran_layer_entries(work / "first")
+        for info, _ in unguarded:
+            if info.name == builder.BINARY:
+                info.size = len(UNGUARDED_BINARY)
+        unguarded = [(info, UNGUARDED_BINARY if info.name == builder.BINARY else data)
+                     for info, data in unguarded]
+        layout = copy_of("unguarded")
+        reseal(layout, change_config=lambda c: c["Labels"].update(
+            {"dev.alphazede.bran.binary.sha256": sha256(UNGUARDED_BINARY)}), layer_entries=unguarded)
+        rejected("binary without the registered-root guard", layout, "lacks the registered-root guard")
 
         tampered = copy_of("tampered")
         index = json.loads((tampered / "index.json").read_bytes())
@@ -288,6 +305,9 @@ def image_errors() -> list[str]:
             ("two-member archive", lambda d: synthetic_release(d, members=[
                 member("bran", 0o755, b"a"), member("extra", 0o644, b"b")]), base, base_digest),
             ("unpinned base digest", synthetic_release, base, "sha256:" + "0" * 64),
+            ("release before 0.2.0", lambda d: synthetic_release(d, tag="bran-v0.1.1"), base, base_digest),
+            ("binary without the registered-root guard", lambda d: synthetic_release(
+                d, members=[member("bran", 0o755, UNGUARDED_BINARY)]), base, base_digest),
             ("platform mismatch", synthetic_release, arm_base, arm_digest),
         ]
         for number, (label, make_release, base_layout, digest) in enumerate(refusals):

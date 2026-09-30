@@ -191,7 +191,7 @@ fn make_registered_mode_error(detail: &str) -> String {
 }
 
 /// Each root's git HEAD, in request order, as registered-root provenance.
-fn source_revisions_json<'a>(roots: impl IntoIterator<Item = &'a String>) -> String {
+fn source_revisions_json<'a>(roots: impl IntoIterator<Item = &'a str>) -> String {
     let entries = roots
         .into_iter()
         .map(|root| {
@@ -290,10 +290,9 @@ impl CliApp {
             None => return CliResult::usage(MISSING_COMMAND_ERROR.to_owned()),
         };
 
+        // Registered-root mode admits no other command, not even help or smoke,
+        // and an empty or invalid registry refuses every command.
         let registered = match registry {
-            Some(_) if matches!(cmd, "-h" | "--help" | "help" | "-V" | "--version" | "smoke") => {
-                None
-            }
             Some(value) => match RegisteredRoots::parse(&value) {
                 Ok(roots) => Some(roots),
                 Err(detail) => return CliResult::operation(make_registered_mode_error(detail)),
@@ -385,9 +384,11 @@ impl CliApp {
                         return CliResult::usage(make_query_error(detail));
                     }
                 }
-                let revisions = registered
-                    .as_ref()
-                    .map(|_| source_revisions_json(std::iter::once(&root).chain(&added)));
+                let revisions = registered.as_ref().map(|_| {
+                    source_revisions_json(
+                        std::iter::once(root.as_str()).chain(added.iter().map(String::as_str)),
+                    )
+                });
                 let result = if added.is_empty() {
                     do_query(root, qtext, record)
                 } else {
@@ -413,7 +414,7 @@ impl CliApp {
                         "null",
                         &[],
                         &[msg],
-                        "{}",
+                        &registered_provenance("{}", revisions.as_deref()),
                         "{}",
                     )),
                 }
@@ -445,7 +446,9 @@ impl CliApp {
                         return CliResult::usage(make_packet_error(detail));
                     }
                 }
-                let revisions = registered.as_ref().map(|_| source_revisions_json([&root]));
+                let revisions = registered
+                    .as_ref()
+                    .map(|_| source_revisions_json([root.as_str()]));
                 match do_packet(root, qtext, &controls) {
                     Ok((data, warns, fails, provenance, metrics)) => {
                         CliResult::success(make_envelope(
@@ -464,7 +467,7 @@ impl CliApp {
                         &failure.data,
                         &[],
                         &[failure.detail],
-                        "{}",
+                        &registered_provenance("{}", revisions.as_deref()),
                         &failure.metrics,
                     )),
                 }
@@ -576,16 +579,26 @@ impl CliApp {
                         let p = match RepositoryPolicy::load(Path::new(r)) {
                             Ok(p) => p,
                             Err(e) => {
-                                return CliResult::usage(make_check_error(&policy_error_failure(
-                                    &e,
-                                )));
+                                let revisions =
+                                    registered.as_ref().map(|_| source_revisions_json([r]));
+                                return CliResult::usage(make_envelope(
+                                    "check",
+                                    "error",
+                                    "null",
+                                    &[],
+                                    &[policy_error_failure(&e)],
+                                    &registered_provenance("{}", revisions.as_deref()),
+                                    "{}",
+                                ));
                             }
                         };
                         ("repository-file", r.to_owned(), (profile, p))
                     }
                     None => return CliResult::usage(make_check_error("missing_root")),
                 };
-                let revisions = registered.as_ref().map(|_| source_revisions_json([&root]));
+                let revisions = registered
+                    .as_ref()
+                    .map(|_| source_revisions_json([root.as_str()]));
                 match do_check(root, profile.0, &profile.1, policy_source) {
                     Ok((data, warns, fails, exitc, status, provenance, metrics)) => {
                         let mut r = CliResult::success(make_envelope(
@@ -607,7 +620,7 @@ impl CliApp {
                         "null",
                         &[],
                         &[msg],
-                        "{}",
+                        &registered_provenance("{}", revisions.as_deref()),
                         "{}",
                     )),
                 }

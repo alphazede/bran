@@ -1,14 +1,19 @@
 //! Read-only git HEAD for registered-root provenance
 //! (docs/deployment-profile.md). Parses git metadata directly and never runs
-//! git, so no hook, config, or filter executes.
+//! git, so no hook, config, or filter executes. Every file it reads must be a
+//! regular file that resolves inside its git directory: a symlink leading
+//! elsewhere or a FIFO makes the revision unavailable instead of reading
+//! outside data or blocking.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_REF_FILE_BYTES: u64 = 4096;
 const MAX_PACKED_REFS_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SYMREF_DEPTH: usize = 5;
+/// Ref namespaces git keeps per worktree. They are never packed.
+const PER_WORKTREE_REFS: [&str; 3] = ["refs/worktree/", "refs/bisect/", "refs/rewritten/"];
 
 /// The commit a registered root's HEAD names, or why it is unavailable.
 #[derive(Debug, PartialEq, Eq)]
@@ -31,21 +36,64 @@ enum Small {
     Missing,
     Unreadable,
     Invalid,
+    /// Not a regular file inside the expected directory.
+    Unsafe,
     Text(String),
 }
 
-/// A bounded UTF-8 read; a directory counts as missing.
-fn read_small(path: &Path) -> Small {
-    let file = match File::open(path) {
+#[cfg(unix)]
+fn open_no_follow_no_block(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_no_follow_no_block(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+/// Opens `path` only when it resolves, through any symlinks, to a regular
+/// file inside the canonical directory `within`. A directory counts as missing.
+fn open_confined(path: &Path, within: &Path) -> Result<File, Small> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Err(Small::Missing),
+        Err(_) => return Err(Small::Unreadable),
+    }
+    let real = fs::canonicalize(path).map_err(|_| Small::Unreadable)?;
+    if !real.starts_with(within) {
+        return Err(Small::Unsafe);
+    }
+    let kind = fs::symlink_metadata(&real)
+        .map_err(|_| Small::Unreadable)?
+        .file_type();
+    if kind.is_dir() {
+        return Err(Small::Missing);
+    }
+    if !kind.is_file() {
+        return Err(Small::Unsafe);
+    }
+    let file = open_no_follow_no_block(&real).map_err(|_| Small::Unreadable)?;
+    match file.metadata() {
+        Ok(metadata) if metadata.is_file() => Ok(file),
+        Ok(_) => Err(Small::Unsafe),
+        Err(_) => Err(Small::Unreadable),
+    }
+}
+
+/// A bounded UTF-8 read of a confined file.
+fn read_small(path: &Path, within: &Path) -> Small {
+    let file = match open_confined(path, within) {
         Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Small::Missing,
-        Err(_) => return Small::Unreadable,
+        Err(outcome) => return outcome,
     };
     let mut bytes = Vec::new();
     match file.take(MAX_REF_FILE_BYTES + 1).read_to_end(&mut bytes) {
         Ok(_) if bytes.len() as u64 > MAX_REF_FILE_BYTES => Small::Invalid,
         Ok(_) => String::from_utf8(bytes).map_or(Small::Invalid, Small::Text),
-        Err(error) if error.kind() == ErrorKind::IsADirectory => Small::Missing,
         Err(_) => Small::Unreadable,
     }
 }
@@ -56,10 +104,12 @@ fn path_line(text: &str) -> Option<&str> {
     (!line.is_empty() && !line.contains(['\r', '\n', '\0'])).then_some(line)
 }
 
-/// The per-worktree git dir (HEAD) and the common dir (shared refs).
+/// The canonical per-worktree git dir (HEAD, per-worktree refs) and common
+/// dir (shared refs).
 fn git_dirs(root: &Path) -> Result<(PathBuf, PathBuf), &'static str> {
+    let root = fs::canonicalize(root).map_err(|_| "git_metadata_invalid")?;
     let dot_git = root.join(".git");
-    let kind = match std::fs::symlink_metadata(&dot_git) {
+    let kind = match fs::symlink_metadata(&dot_git) {
         Ok(metadata) => metadata.file_type(),
         Err(error) if error.kind() == ErrorKind::NotFound => return Err("not_a_git_checkout"),
         Err(_) => return Err("git_metadata_invalid"),
@@ -67,7 +117,7 @@ fn git_dirs(root: &Path) -> Result<(PathBuf, PathBuf), &'static str> {
     let git_dir = if kind.is_dir() {
         dot_git
     } else if kind.is_file() {
-        let Small::Text(text) = read_small(&dot_git) else {
+        let Small::Text(text) = read_small(&dot_git, &root) else {
             return Err("git_metadata_invalid");
         };
         let target = text
@@ -78,9 +128,17 @@ fn git_dirs(root: &Path) -> Result<(PathBuf, PathBuf), &'static str> {
     } else {
         return Err("git_metadata_invalid");
     };
-    let common_dir = match read_small(&git_dir.join("commondir")) {
+    let git_dir = fs::canonicalize(git_dir)
+        .ok()
+        .filter(|directory| directory.is_dir())
+        .ok_or("git_metadata_invalid")?;
+    let common_dir = match read_small(&git_dir.join("commondir"), &git_dir) {
         Small::Missing => git_dir.clone(),
-        Small::Text(text) => git_dir.join(path_line(&text).ok_or("git_metadata_invalid")?),
+        Small::Text(text) => {
+            fs::canonicalize(git_dir.join(path_line(&text).ok_or("git_metadata_invalid")?))
+                .map_err(|_| "git_metadata_invalid")?
+        }
+        Small::Unsafe => return Err("git_metadata_unsafe"),
         Small::Unreadable | Small::Invalid => return Err("git_metadata_invalid"),
     };
     Ok((git_dir, common_dir))
@@ -108,9 +166,10 @@ fn head(root: &Path) -> Result<(Option<String>, String), &'static str> {
     if common_dir.join("reftable").exists() {
         return Err("reftable_unsupported");
     }
-    let mut content = match read_small(&git_dir.join("HEAD")) {
+    let mut content = match read_small(&git_dir.join("HEAD"), &git_dir) {
         Small::Text(text) => text,
         Small::Invalid => return Err("head_corrupt"),
+        Small::Unsafe => return Err("git_metadata_unsafe"),
         Small::Missing | Small::Unreadable => return Err("head_unreadable"),
     };
     let mut reference = None;
@@ -130,11 +189,18 @@ fn head(root: &Path) -> Result<(Option<String>, String), &'static str> {
         }
         let target = target.to_owned();
         reference.get_or_insert_with(|| target.clone());
-        // A loose ref wins over packed-refs, as in git.
-        content = match read_small(&common_dir.join(&target)) {
+        // Per-worktree refs live in the worktree's git dir and are never
+        // packed. Shared refs: a loose ref wins over packed-refs, as in git.
+        let per_worktree = PER_WORKTREE_REFS
+            .iter()
+            .any(|prefix| target.starts_with(prefix));
+        let store = if per_worktree { &git_dir } else { &common_dir };
+        content = match read_small(&store.join(&target), store) {
             Small::Text(text) => text,
+            Small::Missing if per_worktree => return Err("ref_unresolved"),
             Small::Missing => return packed_ref(&common_dir, &target).map(|id| (reference, id)),
             Small::Invalid => return Err("ref_corrupt"),
+            Small::Unsafe => return Err("ref_unsafe"),
             Small::Unreadable => return Err("ref_unreadable"),
         };
     }
@@ -142,9 +208,10 @@ fn head(root: &Path) -> Result<(Option<String>, String), &'static str> {
 }
 
 fn packed_ref(common_dir: &Path, target: &str) -> Result<String, &'static str> {
-    let file = match File::open(common_dir.join("packed-refs")) {
+    let file = match open_confined(&common_dir.join("packed-refs"), common_dir) {
         Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Err("ref_unresolved"),
+        Err(Small::Missing) => return Err("ref_unresolved"),
+        Err(Small::Unsafe) => return Err("ref_unsafe"),
         Err(_) => return Err("ref_unreadable"),
     };
     let mut reader = BufReader::new(file.take(MAX_PACKED_REFS_BYTES + 1));
@@ -181,7 +248,7 @@ fn packed_ref(common_dir: &Path, target: &str) -> Result<String, &'static str> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::{read, SourceRevision};
     use std::fs;
@@ -411,6 +478,170 @@ mod tests {
             checkout, detached, packed, main, linked, plain, broken, invalid, reftable, real,
             worktree,
         ] {
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    /// `read` on another thread; `None` when it has not returned in time.
+    fn read_within(root: &Path, seconds: u64) -> Option<SourceRevision> {
+        let root = root.to_owned();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(read(&root));
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(seconds))
+            .ok()
+    }
+
+    fn fifo(path: &Path) {
+        let _ = fs::remove_file(path);
+        assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
+    }
+
+    // Review finding 2: a symlink in git metadata must not pull in an outside value.
+    #[test]
+    fn git_metadata_symlinks_stay_confined() {
+        let outside = scratch("symlink-outside");
+        put(&outside.join("value"), &format!("{COMMIT}\n"));
+        put(&outside.join("heads/main"), &format!("{COMMIT}\n"));
+        let root = scratch("symlink-root");
+        put(&root.join(".git/HEAD"), "ref: refs/heads/main\n");
+        put(&root.join(".git/refs/heads/main"), &format!("{OTHER}\n"));
+        assert_eq!(read(&root), attested(Some("refs/heads/main"), OTHER));
+
+        fs::remove_file(root.join(".git/HEAD")).unwrap();
+        std::os::unix::fs::symlink(outside.join("value"), root.join(".git/HEAD")).unwrap();
+        assert_eq!(
+            read(&root),
+            SourceRevision::Unavailable("git_metadata_unsafe")
+        );
+
+        fs::remove_file(root.join(".git/HEAD")).unwrap();
+        put(&root.join(".git/HEAD"), "ref: refs/heads/main\n");
+        fs::remove_file(root.join(".git/refs/heads/main")).unwrap();
+        std::os::unix::fs::symlink(outside.join("value"), root.join(".git/refs/heads/main"))
+            .unwrap();
+        assert_eq!(read(&root), SourceRevision::Unavailable("ref_unsafe"));
+
+        fs::remove_dir_all(root.join(".git/refs")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".git/refs")).unwrap();
+        assert_eq!(read(&root), SourceRevision::Unavailable("ref_unsafe"));
+
+        fs::remove_file(root.join(".git/refs")).unwrap();
+        std::os::unix::fs::symlink(outside.join("value"), root.join(".git/packed-refs")).unwrap();
+        assert_eq!(read(&root), SourceRevision::Unavailable("ref_unsafe"));
+
+        // A symlink that stays inside the git directory is still followed.
+        fs::remove_file(root.join(".git/packed-refs")).unwrap();
+        put(&root.join(".git/refs/heads/main"), &format!("{OTHER}\n"));
+        std::os::unix::fs::symlink("main", root.join(".git/refs/heads/alias")).unwrap();
+        put(&root.join(".git/HEAD"), "ref: refs/heads/alias\n");
+        assert_eq!(read(&root), attested(Some("refs/heads/alias"), OTHER));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    // Review finding 3: FIFOs in git metadata must not block a request.
+    #[test]
+    fn git_metadata_fifos_never_block() {
+        let root = scratch("fifo");
+        put(&root.join(".git/HEAD"), "ref: refs/heads/main\n");
+        put(&root.join(".git/refs/heads/main"), &format!("{COMMIT}\n"));
+        for (file, reason) in [
+            ("HEAD", "git_metadata_unsafe"),
+            ("commondir", "git_metadata_unsafe"),
+            ("refs/heads/main", "ref_unsafe"),
+        ] {
+            let saved = fs::read(root.join(".git").join(file)).ok();
+            fifo(&root.join(".git").join(file));
+            assert_eq!(
+                read_within(&root, 5),
+                Some(SourceRevision::Unavailable(reason)),
+                "{file}"
+            );
+            fs::remove_file(root.join(".git").join(file)).unwrap();
+            if let Some(bytes) = saved {
+                fs::write(root.join(".git").join(file), bytes).unwrap();
+            }
+        }
+        fs::remove_file(root.join(".git/refs/heads/main")).unwrap();
+        fifo(&root.join(".git/packed-refs"));
+        assert_eq!(
+            read_within(&root, 5),
+            Some(SourceRevision::Unavailable("ref_unsafe"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Review finding 4: worktree-local refs resolve in the worktree's git directory.
+    #[test]
+    fn worktree_local_refs_resolve_in_worktree_git_dir() {
+        let main = scratch("local-main");
+        put(&main.join(".git/HEAD"), "ref: refs/heads/main\n");
+        put(
+            &main.join(".git/refs/worktree/topic"),
+            &format!("{COMMIT}\n"),
+        );
+        let worktree_dir = main.join(".git/worktrees/linked");
+        put(&worktree_dir.join("HEAD"), "ref: refs/worktree/topic\n");
+        put(&worktree_dir.join("commondir"), "../..\n");
+        put(
+            &worktree_dir.join("refs/worktree/topic"),
+            &format!("{OTHER}\n"),
+        );
+        let linked = scratch("local-linked");
+        put(
+            &linked.join(".git"),
+            &format!("gitdir: {}\n", worktree_dir.display()),
+        );
+        assert_eq!(read(&linked), attested(Some("refs/worktree/topic"), OTHER));
+        // Per-worktree refs are never packed: no fallback to the shared packed-refs.
+        fs::remove_file(worktree_dir.join("refs/worktree/topic")).unwrap();
+        put(
+            &main.join(".git/packed-refs"),
+            &format!("{COMMIT} refs/worktree/topic\n"),
+        );
+        assert_eq!(read(&linked), SourceRevision::Unavailable("ref_unresolved"));
+
+        // Real git agrees.
+        let real = scratch("local-real");
+        git(&real, &["init", "-q"]);
+        fs::write(real.join("a.txt"), "a\n").unwrap();
+        git(&real, &["add", "a.txt"]);
+        git(&real, &["commit", "-q", "-m", "first"]);
+        let first = git(&real, &["rev-parse", "HEAD"]);
+        fs::write(real.join("b.txt"), "b\n").unwrap();
+        git(&real, &["add", "b.txt"]);
+        git(&real, &["commit", "-q", "-m", "second"]);
+        let second = git(&real, &["rev-parse", "HEAD"]);
+        let worktree = real.with_file_name(format!(
+            "bran-source-revision-{}-local-real-worktree",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&worktree);
+        git(
+            &real,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                worktree.to_str().unwrap(),
+                &first,
+            ],
+        );
+        git(&real, &["update-ref", "refs/worktree/topic", &second]);
+        git(&worktree, &["update-ref", "refs/worktree/topic", &first]);
+        git(&worktree, &["symbolic-ref", "HEAD", "refs/worktree/topic"]);
+        assert_eq!(git(&worktree, &["rev-parse", "HEAD"]), first);
+        assert_eq!(
+            read(&worktree),
+            attested(Some("refs/worktree/topic"), &first)
+        );
+
+        for directory in [main, linked, real, worktree] {
             fs::remove_dir_all(directory).unwrap();
         }
     }

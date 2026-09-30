@@ -11,6 +11,7 @@ const BRAN: &str = env!("CARGO_BIN_EXE_bran");
 const REGISTRY: &str = "BRAN_REGISTERED_ROOTS";
 const CANARY: &str = "OUTSIDE-CANARY-7731";
 const SECRET: &str = "SYNTHETIC-SECRET-4411";
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
 /// Runs `bran` with a cleared environment; returns the exit code and the
 /// envelope (stdout on success, stderr on error).
@@ -129,6 +130,71 @@ fn unavailable_revision(root: &str, reason: &str) -> String {
     format!(
         "{{\"root\":\"{root}\",\"kind\":\"git-head\",\"status\":\"unavailable\",\"ref\":null,\"value\":null,\"reason\":\"{reason}\"}}"
     )
+}
+
+/// A fresh canonical scratch directory for one test.
+fn scratch(name: &str) -> PathBuf {
+    let base = std::env::temp_dir().join(format!("bran-deployment-{}-{name}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+    fs::canonicalize(&base).unwrap()
+}
+
+/// Like `run`, but gives up after `seconds`; `None` means the command hung.
+fn run_within(
+    cwd: &Path,
+    registry: Option<&str>,
+    args: &[&str],
+    seconds: u64,
+) -> Option<(i32, String)> {
+    let mut command = Command::new(BRAN);
+    command
+        .env_clear()
+        .current_dir(cwd)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(value) = registry {
+        command.env(REGISTRY, value);
+    }
+    let mut child = command.spawn().expect("bran starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some((output.status.code().unwrap_or(-1), text))
+}
+
+/// The readiness rule in docs/deployment-profile.md: exit 0, envelope status
+/// `ok`, no failures, and no warning other than an unmatched readiness term or
+/// a skipped in-repository symlink.
+fn ready(code: i32, envelope: &str) -> bool {
+    let Some(start) = envelope.find("\"warnings\":[") else {
+        return false;
+    };
+    let rest = &envelope[start + "\"warnings\":[".len()..];
+    let Some(end) = rest.find("],\"failures\":[]") else {
+        return false;
+    };
+    let warnings = rest[..end].trim_matches('"');
+    code == 0
+        && envelope
+            .starts_with("{\"schema_version\":\"1.0.0\",\"command\":\"query\",\"status\":\"ok\",")
+        && (warnings.is_empty()
+            || warnings.split("\",\"").all(|warning| {
+                warning.starts_with("unmatched_query_terms:") || warning.starts_with("Symlink {")
+            }))
 }
 
 fn strace_available(scratch: &Path) -> bool {
@@ -312,7 +378,7 @@ fn p8_deployment_profile() {
             "registered_roots_invalid",
         );
     }
-    assert_eq!(run(&state, Some(""), &["smoke"]).0, 0);
+    rejected(Some(""), &["smoke"], 3, "registered_roots_invalid");
 
     // Oversized requests and secret reflection.
     let at_limit = "ledger ".repeat(8192 / 7) + &"x".repeat(8192 % 7);
@@ -412,4 +478,152 @@ fn p8_deployment_profile() {
     set_modes(&repo, 0o755, 0o644);
     set_modes(&state, 0o755, 0o644);
     fs::remove_dir_all(&base).unwrap();
+}
+
+// Review finding 5: an empty or invalid registry refuses every command, and a
+// valid registry admits only check, query, and packet.
+#[test]
+fn registered_mode_admits_only_check_query_packet() {
+    let base = scratch("allowlist");
+    let repo = base.join("repo");
+    policy_repository(&repo, "Ledger rotation");
+    symlink(&repo, base.join("alias")).unwrap();
+    let repo_path = repo.to_str().unwrap();
+    let alias_path = base.join("alias").to_str().unwrap().to_owned();
+    let commands: [&[&str]; 7] = [
+        &["smoke"],
+        &["help"],
+        &["--help"],
+        &["-h"],
+        &["--version"],
+        &["-V"],
+        &["check", repo_path, "bran-strict"],
+    ];
+    for registry in ["", alias_path.as_str(), "relative"] {
+        for args in commands {
+            let (code, output) = run(&base, Some(registry), args);
+            assert_eq!(code, 3, "{registry:?} {args:?}: {output}");
+            assert!(output.contains("\"registered_roots_invalid\""), "{output}");
+        }
+    }
+    for args in &commands[..6] {
+        let (code, output) = run(&base, Some(repo_path), args);
+        assert_eq!(code, 2, "{args:?}: {output}");
+        assert!(
+            output.contains("\"unavailable_in_registered_root_mode\""),
+            "{output}"
+        );
+    }
+    assert_eq!(run(&base, Some(repo_path), commands[6]).0, 0);
+    // Default mode keeps every command.
+    for args in &commands[..6] {
+        assert_eq!(run(&base, None, args).0, 0, "{args:?}");
+    }
+    fs::remove_dir_all(base).unwrap();
+}
+
+// Review finding 6: error envelopes of an admitted root keep its source revision.
+#[test]
+fn error_envelopes_keep_source_revisions() {
+    let base = scratch("error-provenance");
+    let quota = base.join("quota");
+    write(&quota.join(".bran/policy.yaml"), "schema_version: \"1\"\n");
+    write(&quota.join(".git/HEAD"), &format!("{COMMIT}\n"));
+    for index in 0..=10_000 {
+        fs::write(quota.join(format!("f{index}")), "").unwrap();
+    }
+    let quota_path = quota.to_str().unwrap();
+    let revision = format!(
+        "\"provenance\":{{\"source_revisions\":[{{\"root\":\"{quota_path}\",\"kind\":\"git-head\",\"status\":\"attested\",\"ref\":null,\"value\":\"{COMMIT}\",\"reason\":null}}]}}"
+    );
+    for command in ["query", "packet"] {
+        let (code, output) = run(&base, Some(quota_path), &[command, quota_path, "ledger"]);
+        assert_eq!(code, 3, "{output}");
+        assert!(output.contains("LimitExceeded"), "{output}");
+        assert!(output.contains(&revision), "{command}: {output}");
+    }
+    let broken = base.join("broken-policy");
+    write(&broken.join(".bran/policy.yaml"), "schema_version: \"9\"\n");
+    let broken_path = broken.to_str().unwrap();
+    let (code, output) = run(
+        &base,
+        Some(broken_path),
+        &["check", broken_path, "bran-strict"],
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(
+        output.contains(&format!(
+            "\"provenance\":{{\"source_revisions\":[{}]}}",
+            unavailable_revision(broken_path, "not_a_git_checkout")
+        )),
+        "{output}"
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+// Review finding 7: readiness needs the envelope, not only the exit code.
+#[test]
+fn readiness_rule_rejects_policy_and_quota_gaps() {
+    let base = scratch("readiness");
+    let good = base.join("good");
+    policy_repository(&good, "Ledger rotation");
+    symlink(base.join("elsewhere"), good.join("link.md")).unwrap();
+    let plain = base.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    let oversized = base.join("oversized");
+    policy_repository(&oversized, "Ledger rotation");
+    fs::write(oversized.join("huge.txt"), vec![b'a'; 2 * 1024 * 1024]).unwrap();
+    let quota = base.join("quota");
+    write(&quota.join(".bran/policy.yaml"), "schema_version: \"1\"\n");
+    for index in 0..=10_000 {
+        fs::write(quota.join(format!("f{index}")), "").unwrap();
+    }
+    for (root, expected) in [
+        (&good, true),
+        (&plain, false),
+        (&oversized, false),
+        (&quota, false),
+    ] {
+        let root = root.to_str().unwrap();
+        let (code, output) = run(&base, Some(root), &["query", root, "readiness"]);
+        assert_eq!(
+            ready(code, &output),
+            expected,
+            "{root}: exit {code} {output}"
+        );
+    }
+    fs::remove_dir_all(base).unwrap();
+}
+
+// Review findings 2 and 3 through the CLI: an outside HEAD is not attested,
+// and a FIFO HEAD does not block the request.
+#[test]
+fn registered_revision_is_confined_and_never_blocks() {
+    let base = scratch("revision-safety");
+    let repo = base.join("repo");
+    policy_repository(&repo, "Ledger rotation");
+    write(&base.join("outside-head"), &format!("{COMMIT}\n"));
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    symlink(base.join("outside-head"), repo.join(".git/HEAD")).unwrap();
+    let repo_path = repo.to_str().unwrap();
+    let unsafe_head = format!(
+        "\"source_revisions\":[{}]",
+        unavailable_revision(repo_path, "git_metadata_unsafe")
+    );
+    let (code, output) = run(&base, Some(repo_path), &["query", repo_path, "ledger"]);
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains(&unsafe_head), "{output}");
+    assert!(!output.contains(COMMIT), "{output}");
+
+    fs::remove_file(repo.join(".git/HEAD")).unwrap();
+    assert!(Command::new("mkfifo")
+        .arg(repo.join(".git/HEAD"))
+        .status()
+        .unwrap()
+        .success());
+    let (code, output) = run_within(&base, Some(repo_path), &["query", repo_path, "ledger"], 10)
+        .expect("registered query with a FIFO HEAD completes");
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains(&unsafe_head), "{output}");
+    fs::remove_dir_all(base).unwrap();
 }
