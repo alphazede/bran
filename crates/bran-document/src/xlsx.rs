@@ -1085,9 +1085,7 @@ fn label_and_anchor(
     let mut anchors = Vec::new();
     for (&(row, column), cell) in cells.iter_mut() {
         let table = tables.iter().find(|t| {
-            t.header
-                && (t.left..=t.right).contains(&column)
-                && (t.top..=t.bottom).contains(&row)
+            t.header && (t.left..=t.right).contains(&column) && (t.top..=t.bottom).contains(&row)
         });
         let header_row = table.map_or(1, |t| t.top);
         let mut labels = BTreeMap::new();

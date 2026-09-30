@@ -832,10 +832,7 @@ fn xlsx_export_checks_receipt_content_for_dlp_and_boundary() {
     let mut tampered = features();
     let canonical = text(&tampered).replace("xl/charts/chart1.xml", "important_boundary");
     tampered.canonical = canonical.into_bytes();
-    assert_eq!(
-        xlsx::export(&tampered).err(),
-        Some(Refusal::PublicBoundary)
-    );
+    assert_eq!(xlsx::export(&tampered).err(), Some(Refusal::PublicBoundary));
 }
 
 /// A table whose range corners run backwards (`B1:A3`) is refused on
@@ -910,7 +907,8 @@ fn xlsx_relationship_ids_resolve_in_scope() {
         .zip();
     let canonical = text(&import(&bytes).expect("imports"));
     assert!(
-        canonical.contains(r#""hyperlinks":[{"ref":"A2","target":"https://example.invalid/alpha"}"#),
+        canonical
+            .contains(r#""hyperlinks":[{"ref":"A2","target":"https://example.invalid/alpha"}"#),
         "{canonical}"
     );
 }
@@ -920,7 +918,11 @@ fn xlsx_relationship_ids_resolve_in_scope() {
 #[test]
 fn xlsx_1904_epoch_round_trips() {
     let bytes = Parts::parse(FEATURES)
-        .edit(WORKBOOK, "<sheets>", r#"<workbookPr date1904="1"/><sheets>"#)
+        .edit(
+            WORKBOOK,
+            "<sheets>",
+            r#"<workbookPr date1904="1"/><sheets>"#,
+        )
         .zip();
     let imported = import(&bytes).expect("imports");
     assert!(
@@ -950,7 +952,11 @@ fn xlsx_1904_epoch_round_trips() {
 #[test]
 fn xlsx_style_zero_uses_first_cell_format() {
     let bytes = Parts::parse(FEATURES)
-        .edit("xl/styles.xml", r#"<xf numFmtId="0"/>"#, r#"<xf numFmtId="14"/>"#)
+        .edit(
+            "xl/styles.xml",
+            r#"<xf numFmtId="0"/>"#,
+            r#"<xf numFmtId="14"/>"#,
+        )
         .edit(SHEET1, r#"<c r="C3" s="2">"#, r#"<c r="C3" s="0">"#)
         .zip();
     let canonical = text(&import(&bytes).expect("imports"));
@@ -984,9 +990,7 @@ fn xlsx_table_headers_do_not_label_cells_below() {
         .zip();
     let canonical = text(&import(&bytes).expect("imports"));
     assert!(
-        canonical.contains(
-            r#""labels":{"column":"Value","row":"=1+1 stays text"},"ref":"B5""#
-        ),
+        canonical.contains(r#""labels":{"column":"Value","row":"=1+1 stays text"},"ref":"B5""#),
         "cell below the table took the table header: {canonical}"
     );
     assert!(
