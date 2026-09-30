@@ -315,13 +315,12 @@ fn p8_deployment_profile() {
 
     let rejected = |registry: Option<&str>, args: &[&str], code: i32, failure: &str| {
         let (actual, output) = run(&state, registry, args);
-        // Name only the command: later arguments can carry the synthetic secret under test.
-        let command = args.first().copied().unwrap_or_default();
-        // Messages omit the output too: it derives from arguments that carry the secret.
-        assert_eq!(actual, code, "{command} exited {actual}, expected {code}");
+        // Fixed messages only: every value here derives from arguments that carry the
+        // synthetic secret, and a failing assertion must not print it.
+        assert!(actual == code, "rejected command returned an unexpected exit code");
         assert!(
             output.contains(&format!("\"{failure}\"")),
-            "{command}: output lacks failure {failure}"
+            "rejected command output lacks the expected failure code"
         );
         output
     };
