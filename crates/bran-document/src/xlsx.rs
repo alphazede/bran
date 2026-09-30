@@ -418,7 +418,7 @@ impl<'a> Reader<'a> {
             let mut json = vec![
                 ("name", s(&name)),
                 ("value", s(&value)),
-                ("hidden", flag(attr(&attributes, "hidden") == Some("1"))),
+                ("hidden", flag(xml_true(attr(&attributes, "hidden")))),
                 ("quarantined", flag(quarantined)),
                 (
                     "scope",

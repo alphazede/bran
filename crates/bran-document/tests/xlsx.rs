@@ -1024,6 +1024,27 @@ fn xlsx_carriage_returns_survive_export() {
     assert!(text(&second).contains("line1\\rline2"));
 }
 
+/// A defined name with `hidden="true"` stays hidden through the round
+/// trip: both XML boolean spellings, `1` and `true`, are accepted.
+#[test]
+fn xlsx_defined_name_accepts_true_spelling() {
+    let bytes = Parts::parse(FEATURES)
+        .edit(WORKBOOK, r#"hidden="1""#, r#"hidden="true""#)
+        .zip();
+    let first = import(&bytes).expect("imports");
+    assert!(
+        text(&first).contains(r#""hidden":true,"name":"LocalNotes""#),
+        "true-spelled hidden flag lost on import"
+    );
+    let second = import(&exported(&first).bytes).expect("export re-imports");
+    let names = |imported: &Imported| {
+        let json = xlsx::parse_canonical(&imported.canonical).expect("canonical parses");
+        field(&json, "defined_names").clone()
+    };
+    assert_eq!(names(&second), names(&first));
+    assert_eq!(second.anchors, first.anchors);
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the
