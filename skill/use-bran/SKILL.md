@@ -43,6 +43,16 @@ symbol evidence; the index must be regenerated), or `unavailable`. BRAN never
 builds the index, and a symbol hit is evidence, not authority: it never changes
 ranking.
 
+Enterprise documents (DOCX, XLSX, PPTX, PDF) surface separately. When the
+root holds any, the same packet and query append `data.document_evidence`:
+admitted `sources` with their `source_digest` and `fidelity`, ranked anchor
+`matches` with `native_locator` and `derivation`, plus typed `refusals` and
+`unsupported` formats. A `derivation` of `ocr` means derived text: cite it as
+derived, never as byte-derived source text. Document files never appear in
+the Markdown rankings, and roots without them return unchanged output. Use
+`bran document inspect <repo-root> <path>` to read one document's evidence
+envelope without writing anything.
+
 `bran check <repo-root> okf-v0.1`, `okf-v0.2`, and `bran-strict` are
 independent selectable profiles. `okf-v0.1` remains supported; `okf-v0.2` is
 additive. Only the selected profile controls the exit code.

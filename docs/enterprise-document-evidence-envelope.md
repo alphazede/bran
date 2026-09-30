@@ -178,10 +178,45 @@ packet. `admitted` does not authorize export: ingest must still honor
 `policy.classification` and `policy.public_boundary` separately, and must
 not treat `unavailable` parser or revision claims as attested.
 
-Today `bran query` and `bran packet` still rank repository files. They do not
-read this envelope. That ingest is follow-up work, not this issue. The owner
-has approved native local Office/PDF adapters (#21, #22, #23, #26). They
-build on the shared conformance suite from #25, described in
+Issue #46 implements the ingest. `bran document inspect <root> <path>`
+prints this envelope for one supported document without writing anything.
+`bran query` and `bran packet` append a `document_evidence` member (sources,
+ranked anchor matches, typed refusals, unsupported formats) when document
+files exist, and byte-identical output otherwise.
+
+Admission design (why, for the record):
+
+- Discovery is by filename extension (`.docx`, `.xlsx`, `.pptx`, `.pdf`,
+  ASCII case-insensitive) under the requested root, not by policy
+  `document_coverage` roots: coverage classifies Markdown knowledge
+  documents, while enterprise files are found where the author left them.
+  The walk mirrors the repository scanner (sorted entries, `.branignore` /
+  `.okfignore` / `.gitignore`, no symlinks, depth 64, root containment) and
+  caps at 64 files with an `omitted_files` count.
+- Routing is by registered adapter, not by file: an extension whose adapter
+  has not landed (DOCX and PPTX until #21 and #22 merge) is reported under
+  `unsupported`, never refused and never ranked. Each format adds only a
+  projection reader; envelope assembly is shared.
+- Document anchors never rank as Markdown sources. `score_source_candidates`
+  skips document paths, so a refused file cannot be selected by a path
+  match; admitted anchors rank in the appended member only, by matched-term
+  count then bundle, path, and anchor id, capped at 32 matches. Markdown
+  rankings, selection, and byte accounting are untouched.
+- Derivation is per anchor. Native parse output is `embedded`; a projection
+  block marked OCR-derived is `ocr`, sorts after every embedded match, and
+  carries no byte rank. No OCR engine ships, so `ocr` anchors cannot occur
+  yet; the branch is pinned by unit tests.
+- The envelope's `language` is the adapter-declared default `en`, not a
+  detected language: the schema requires a two-letter tag and the adapters
+  are byte decoders, not language detectors. Consumers must not treat it as
+  detected. Classification and public-boundary stay `unavailable` (never
+  invented); only DLP gates admission.
+- Fixed-layout bounding boxes are clamped to the envelope's non-negative
+  range, matching the adapter's `approximated` fidelity for geometry, rather
+  than refusing citable text over coordinates.
+
+The owner has approved native local Office/PDF adapters (#21, #22, #23,
+#26). They build on the shared conformance suite from #25, described in
 [`enterprise-document-conformance.md`](enterprise-document-conformance.md).
 
 ## Fixtures

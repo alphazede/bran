@@ -1,3 +1,4 @@
+mod document_evidence;
 mod source_revision;
 
 use source_revision::SourceRevision;
@@ -83,6 +84,7 @@ Commands:
   query <repo-root> --add-dir <repo-root> <request>
   query <repo-root> --add-dir <repo-root> --record <request>
   packet <repo-root> <request>
+  document inspect <repo-root> <path>
   check [--policy-stdin] <repo-root> <profile>
   maintain <propose|apply|revalidate> ...
   evidence <summarize|propose|replay|clear> <repo-root>
@@ -470,6 +472,48 @@ impl CliApp {
                         &[failure.detail],
                         &registered_provenance("{}", revisions.as_deref()),
                         &failure.metrics,
+                    )),
+                }
+            }
+            "document" => {
+                let mut args = vec![];
+                for a in it {
+                    match a.as_ref().to_str() {
+                        Some(s) => args.push(s.to_owned()),
+                        None => return CliResult::usage(make_document_error("invalid_utf8")),
+                    }
+                }
+                let (Some(sub), Some(root), Some(path)) = (args.first(), args.get(1), args.get(2))
+                else {
+                    return CliResult::usage(make_document_error("missing_args"));
+                };
+                if sub != "inspect" || args.len() != 3 {
+                    return CliResult::usage(make_document_error("unknown_document_command"));
+                }
+                // Read-only: `inspect` never writes, and a refusal is a verdict
+                // (exit 0), not an operational failure.
+                match document_evidence::inspect(Path::new(root), path) {
+                    Ok(envelope) => CliResult::success(make_envelope(
+                        "document",
+                        "ok",
+                        &format!("{{\"envelope\":{envelope}}}"),
+                        &[],
+                        &[],
+                        "{\"sources\":[\"bran-document\"]}",
+                        "{}",
+                    )),
+                    Err(code) => CliResult::success(make_envelope(
+                        "document",
+                        "refused",
+                        &format!(
+                            "{{\"refusal\":{{\"code\":\"{}\",\"path\":\"{}\"}}}}",
+                            json_escape(code),
+                            json_escape(path)
+                        ),
+                        &[],
+                        &[],
+                        "{\"sources\":[\"bran-document\"]}",
+                        "{}",
                     )),
                 }
             }
@@ -1296,6 +1340,18 @@ fn make_packet_error(detail: &str) -> String {
     )
 }
 
+fn make_document_error(detail: &str) -> String {
+    make_envelope(
+        "document",
+        "error",
+        "null",
+        &[],
+        &[detail.to_owned()],
+        "{}",
+        "{}",
+    )
+}
+
 fn make_check_error(detail: &str) -> String {
     make_envelope(
         "check",
@@ -1867,6 +1923,9 @@ fn score_source_candidates(
         .nodes()
         .iter()
         .filter(|node| node.role() == NodeRole::Document)
+        // Enterprise documents rank only as document evidence (#46), never as
+        // Markdown sources: refused files must not be selectable by path.
+        .filter(|node| !document_evidence::is_document_path(node.provenance().locator()))
         .filter_map(|node| {
             let locator_original = node.provenance().locator();
             let locator = locator_original.to_ascii_lowercase();
@@ -2671,8 +2730,17 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         &selected_ids,
         &navigation.symbols_json(&retained),
     );
+    // Empty when no document file exists, so output stays byte-identical.
+    let documents = document_evidence::document_evidence_json(
+        &[(root.as_str(), root_path)],
+        &query_text,
+        false,
+    )
+    .map_or_else(String::new, |member| {
+        format!(",\"document_evidence\":{member}")
+    });
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}{}}}",
         json_escape(&root),
         json_escape(&query_text),
         query_outcome,
@@ -2684,7 +2752,8 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         selected_bytes,
         context_bytes_avoided,
         estimated,
-        navigation.json(&retained)
+        navigation.json(&retained),
+        documents
     );
     let provenance = if locs_json.is_empty() {
         format!("{{\"sources\":[{sources}]}}")
@@ -2839,8 +2908,16 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
 
     let (locs_json, why_selected_json) = selected_sources_json_with_bundle(&selected);
     let source_rankings_json = source_rankings_json_with_bundle(&rankings, &selected_keys);
+    let bundles: Vec<(&str, &Path)> = roots
+        .iter()
+        .map(|root| (root.as_str(), Path::new(root)))
+        .collect();
+    let documents = document_evidence::document_evidence_json(&bundles, &query_text, false)
+        .map_or_else(String::new, |member| {
+            format!(",\"document_evidence\":{member}")
+        });
     let data = format!(
-        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
+        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}{}}}",
         json_escape(&roots[0]),
         json_string_list(&roots),
         json_escape(&query_text),
@@ -2853,7 +2930,8 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
         selected_bytes,
         context_bytes_avoided,
         estimated,
-        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(&BTreeMap::new())
+        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(&BTreeMap::new()),
+        documents
     );
     let provenance = if locs_json.is_empty() {
         "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
@@ -3070,8 +3148,14 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         query_semantic_outcome(&query_text, &matched_terms, &rankings);
     warns.extend(unmatched_query_warnings(&unmatched));
 
+    // Empty when no document file exists, so output stays byte-identical.
+    let documents =
+        document_evidence::document_evidence_json(&[(root.as_str(), root_path)], &query_text, true)
+            .map_or_else(String::new, |member| {
+                format!(",\"document_evidence\":{member}")
+            });
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{},\"symbol_navigation\":{}}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{},\"symbol_navigation\":{}{}}}",
         json_escape(&root),
         json_escape(&query_text),
         query_outcome,
@@ -3094,7 +3178,8 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         token_ceiling.map_or_else(|| "null".to_owned(), |value| value.to_string()),
         tr,
         sqz_json,
-        navigation.json(&retained)
+        navigation.json(&retained),
+        documents
     );
     let sources = provenance_sources(&retained);
     let provenance = if selected_locators_json.is_empty() {
