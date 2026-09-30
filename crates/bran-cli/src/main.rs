@@ -53,6 +53,7 @@ use bran_core::profile::BRAN_STRICT;
 use bran_core::profile::{Diagnostic, ProfileValidator, ValidationStatus};
 use bran_core::repair::{MaintainerAuthority, RepairCoordinator, RepairReceipt, RepairTerminal};
 use bran_core::scan::{is_knowledge_document_path, RepositoryScanner, ScanConfig, ScanSnapshot};
+use bran_core::scip;
 use bran_core::view::{
     Presentation, ViewCompiler, ViewField, ViewFilter, ViewGrouping, ViewSort, ViewSource, ViewSpec,
 };
@@ -1936,15 +1937,20 @@ fn query_view_spec(rankings: &[SourceRanking], max_sources: usize) -> ViewSpec {
     }
 }
 
-fn source_rankings_json(rankings: &[SourceRanking], selected_ids: &BTreeSet<NodeId>) -> String {
+fn source_rankings_json(
+    rankings: &[SourceRanking],
+    selected_ids: &BTreeSet<NodeId>,
+    symbols: &BTreeMap<String, String>,
+) -> String {
     rankings
         .iter()
         .filter(|ranking| selected_ids.contains(&ranking.id))
         .map(|ranking| format!(
-            "{{\"locator\":\"{}\",\"rank\":{},\"score\":{{\"exact\":{},\"partial\":{},\"active\":{},\"canonical\":{},\"public_safe\":{},\"confidence\":{},\"freshness\":\"{}\"}},\"match_reason\":\"{}\"}}",
+            "{{\"locator\":\"{}\",\"rank\":{},\"score\":{{\"exact\":{},\"partial\":{},\"active\":{},\"canonical\":{},\"public_safe\":{},\"confidence\":{},\"freshness\":\"{}\"}},\"match_reason\":\"{}\"{}}}",
             json_escape(&ranking.locator), ranking.rank, ranking.exact_matches,
             ranking.partial_matches, ranking.active, ranking.canonical, ranking.public_safe,
-            ranking.confidence, json_escape(&ranking.freshness), json_escape(&ranking.match_reason)
+            ranking.confidence, json_escape(&ranking.freshness), json_escape(&ranking.match_reason),
+            symbols.get(&ranking.locator).map_or_else(String::new, |symbols| format!(",\"symbols\":[{symbols}]"))
         ))
         .collect::<Vec<_>>()
         .join(",")
@@ -1966,6 +1972,178 @@ fn source_rankings_json_with_bundle(
         ))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Provenance source list; `scip` joins it only when symbol evidence is
+/// attached to a ranked source.
+fn provenance_sources(attached: &BTreeMap<&str, Vec<&scip::Evidence>>) -> &'static str {
+    if attached.is_empty() {
+        "\"repository-scanner\",\"bran-core\""
+    } else {
+        "\"repository-scanner\",\"bran-core\",\"scip\""
+    }
+}
+
+const SCIP_INDEX: &str = "index.scip";
+const MAX_SYMBOL_EVIDENCE: usize = 64;
+
+/// Exact symbol navigation for one query from an existing `index.scip` at
+/// the repository root (issue #38). BRAN never generates the index, and an
+/// index it cannot prove fresh is reported as `partial` or `stale`.
+#[derive(Default)]
+struct SymbolNavigation {
+    status: &'static str,
+    reason: Option<&'static str>,
+    index: scip::Index,
+    evidence: Vec<scip::Evidence>,
+}
+
+impl SymbolNavigation {
+    fn unavailable(status: &'static str, reason: &'static str) -> Self {
+        Self {
+            status,
+            reason: Some(reason),
+            ..Self::default()
+        }
+    }
+
+    fn resolve(root: &Path, snapshot: &ScanSnapshot, query_text: &str) -> Self {
+        let path = root.join(SCIP_INDEX);
+        let regular = |path: &Path| {
+            fs::symlink_metadata(path)
+                .map(|metadata| metadata.is_file() && metadata.len() <= scip::MAX_INDEX_BYTES)
+        };
+        match regular(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Self::unavailable("unavailable", "index_missing")
+            }
+            Ok(true) => {}
+            _ => return Self::unavailable("unavailable", "index_unreadable"),
+        }
+        // ponytail: decodes the whole index on every call; cache it by digest
+        // if large indexes make queries slow.
+        let index = fs::read(&path)
+            .ok()
+            .filter(|_| regular(&path).is_ok_and(|regular| regular))
+            .and_then(|bytes| scip::decode_index(&bytes).ok());
+        let Some(index) = index else {
+            return Self::unavailable("unavailable", "index_unreadable");
+        };
+        let (status, reason) =
+            match index.freshness(|path| snapshot.entries.get(path).map(|entry| &*entry.source)) {
+                scip::Freshness::Fresh => ("available", None),
+                scip::Freshness::Unverified => ("partial", Some("freshness_unverified")),
+                scip::Freshness::Stale => return Self::unavailable("stale", "index_stale"),
+            };
+        let (terms, entities) = query_terms_and_entities(query_text);
+        let evidence = index.evidence(&terms.into_iter().chain(entities).collect());
+        Self {
+            status,
+            reason,
+            index,
+            evidence,
+        }
+    }
+
+    /// Evidence per ranked locator, in rank order, at most
+    /// `MAX_SYMBOL_EVIDENCE` items in total.
+    fn attach(&self, rankings: &[SourceRanking]) -> BTreeMap<&str, Vec<&scip::Evidence>> {
+        let mut attached = BTreeMap::<&str, Vec<_>>::new();
+        let mut remaining = MAX_SYMBOL_EVIDENCE;
+        for ranking in rankings {
+            for evidence in self
+                .evidence
+                .iter()
+                .filter(|evidence| evidence.locator == ranking.locator)
+                .take(remaining)
+            {
+                attached
+                    .entry(evidence.locator.as_str())
+                    .or_default()
+                    .push(evidence);
+                remaining -= 1;
+            }
+        }
+        attached
+    }
+
+    /// `symbols` JSON array content per ranked locator.
+    fn symbols_json(
+        &self,
+        attached: &BTreeMap<&str, Vec<&scip::Evidence>>,
+    ) -> BTreeMap<String, String> {
+        attached
+            .iter()
+            .map(|(locator, items)| {
+                let items = items.iter().map(|evidence| {
+                    let (name, qualified_name) = self.names(&evidence.symbol);
+                    let implements = evidence.implements.as_ref().map_or_else(String::new, |target| {
+                        format!(",\"implements\":\"{}\"", json_escape(target))
+                    });
+                    format!(
+                        "{{\"role\":\"{}\",\"name\":\"{}\",\"qualified_name\":\"{}\",\"kind\":\"{}\",\"id\":\"{}\",\"source\":\"scip\",\"span\":{{\"start_line\":{},\"end_line\":{}}}{}}}",
+                        evidence.role.as_str(), json_escape(&name), json_escape(&qualified_name),
+                        self.index.kind(&evidence.symbol), json_escape(&evidence.symbol),
+                        evidence.start_line, evidence.end_line, implements
+                    )
+                });
+                ((*locator).to_owned(), items.collect::<Vec<_>>().join(","))
+            })
+            .collect()
+    }
+
+    /// One packet payload line per ranked locator.
+    fn payload_lines(
+        &self,
+        attached: &BTreeMap<&str, Vec<&scip::Evidence>>,
+    ) -> BTreeMap<String, String> {
+        attached
+            .iter()
+            .map(|(locator, items)| {
+                let items = items.iter().map(|evidence| {
+                    let implements = evidence
+                        .implements
+                        .as_ref()
+                        .map_or_else(String::new, |target| {
+                            format!(" implements {}", self.names(target).1)
+                        });
+                    format!(
+                        "{} {} {}-{}{}",
+                        evidence.role.as_str(),
+                        self.names(&evidence.symbol).1,
+                        evidence.start_line,
+                        evidence.end_line,
+                        implements
+                    )
+                });
+                (
+                    (*locator).to_owned(),
+                    format!("scip_symbols: {}\n", items.collect::<Vec<_>>().join("; ")),
+                )
+            })
+            .collect()
+    }
+
+    fn names(&self, symbol: &str) -> (String, String) {
+        scip::symbol_name(symbol).map_or_else(
+            || (String::new(), String::new()),
+            |name| (name.name, name.qualified_name),
+        )
+    }
+
+    fn json(&self, attached: usize) -> String {
+        let outcome = match self.status {
+            "available" | "partial" if attached > 0 => "hit",
+            "available" | "partial" => "miss",
+            _ => "unavailable",
+        };
+        format!(
+            "{{\"schema_version\":\"1.0.0\",\"outcome\":\"{outcome}\",\"truncated\":{},\"scip\":{{\"status\":\"{}\",\"reason\":{},\"index\":\"{SCIP_INDEX}\"}},\"lsp\":{{\"status\":\"unavailable\",\"reason\":\"not_implemented\"}}}}",
+            self.evidence.len() > attached,
+            self.status,
+            self.reason.map_or_else(|| "null".to_owned(), |reason| format!("\"{reason}\"")),
+        )
+    }
 }
 
 fn selected_sources_json_with_bundle(
@@ -2011,6 +2189,7 @@ fn locator_evidence_content(
     graph: &KnowledgeGraph,
     content_digest: Option<&str>,
     excerpt: Option<&str>,
+    symbols: Option<&str>,
 ) -> String {
     let metadata = RANKED_FACT_KEYS
         .iter()
@@ -2046,10 +2225,11 @@ fn locator_evidence_content(
     let excerpt = excerpt.map_or_else(String::new, |excerpt| format!("excerpt: {excerpt}\n"));
     match ranking {
         Some(ranking) => format!(
-            "path: {}\nrank: {}\nscore: exact={} partial={} active={} canonical={} public_safe={} confidence={} freshness={}\nmatch_reason: {}\nmetadata: {}\nrelationships: {}\n{}{}",
+            "path: {}\nrank: {}\nscore: exact={} partial={} active={} canonical={} public_safe={} confidence={} freshness={}\nmatch_reason: {}\nmetadata: {}\nrelationships: {}\n{}{}{}",
             ranking.locator, ranking.rank, ranking.exact_matches, ranking.partial_matches,
             ranking.active, ranking.canonical, ranking.public_safe, ranking.confidence,
-            ranking.freshness, ranking.match_reason, metadata, relationships, digest, excerpt
+            ranking.freshness, ranking.match_reason, metadata, relationships,
+            symbols.unwrap_or_default(), digest, excerpt
         ),
         None => format!(
             "path: {}\nrank: dependency\nmetadata: {}\nrelationships: {}\n{}{}",
@@ -2289,10 +2469,17 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         query_semantic_outcome(&query_text, &matched_terms, &rankings);
     warns.extend(unmatched_query_warnings(&unmatched));
 
+    let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text);
+    let attached = navigation.attach(&rankings);
+    let sources = provenance_sources(&attached);
     let (locs_json, why_selected_json) = selected_sources_json(&selected);
-    let source_rankings_json = source_rankings_json(&rankings, &selected_ids);
+    let source_rankings_json = source_rankings_json(
+        &rankings,
+        &selected_ids,
+        &navigation.symbols_json(&attached),
+    );
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
         json_escape(&root),
         json_escape(&query_text),
         query_outcome,
@@ -2303,14 +2490,15 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         candidate_bytes,
         selected_bytes,
         context_bytes_avoided,
-        estimated
+        estimated,
+        navigation.json(attached.values().map(Vec::len).sum())
     );
     let provenance = if locs_json.is_empty() {
-        "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
+        format!("{{\"sources\":[{sources}]}}")
     } else {
         format!(
-            "{{\"sources\":[\"repository-scanner\",\"bran-core\"],\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}]}}",
-            locs_json, why_selected_json, source_rankings_json
+            "{{\"sources\":[{}],\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}]}}",
+            sources, locs_json, why_selected_json, source_rankings_json
         )
     };
     let metrics = format!(
@@ -2459,7 +2647,7 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
     let (locs_json, why_selected_json) = selected_sources_json_with_bundle(&selected);
     let source_rankings_json = source_rankings_json_with_bundle(&rankings, &selected_keys);
     let data = format!(
-        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
+        "{{\"root\":\"{}\",\"requested_roots\":[{}],\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
         json_escape(&roots[0]),
         json_string_list(&roots),
         json_escape(&query_text),
@@ -2471,7 +2659,8 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
         candidate_bytes,
         selected_bytes,
         context_bytes_avoided,
-        estimated
+        estimated,
+        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(0)
     );
     let provenance = if locs_json.is_empty() {
         "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
@@ -2520,6 +2709,9 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
     let (rankings, matched_terms) =
         source_rankings(&graph_input, &snapshot, &query_text, controls.max_sources());
+    let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text);
+    let attached = navigation.attach(&rankings);
+    let symbol_lines = navigation.payload_lines(&attached);
     let spec = query_view_spec(&rankings, controls.max_sources());
     let graph =
         KnowledgeGraph::build(graph_input, limits).map_err(|e| format!("graph_error: {:?}", e))?;
@@ -2566,6 +2758,9 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
                     &graph,
                     None,
                     public_safe_excerpt(node, &snapshot, controls.excerpt_bytes).as_deref(),
+                    symbol_lines
+                        .get(node.provenance().locator())
+                        .map(String::as_str),
                 ),
                 if !anchors.is_empty() {
                     EvidencePriority::Required
@@ -2618,7 +2813,11 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
     let context_bytes_avoided = candidate_bytes.saturating_sub(selected_source_bytes);
 
     let (selected_locators_json, why_selected_json) = selected_sources_json(&selected);
-    let source_rankings_json = source_rankings_json(&rankings, &selected_id_set);
+    let source_rankings_json = source_rankings_json(
+        &rankings,
+        &selected_id_set,
+        &navigation.symbols_json(&attached),
+    );
     let seed_ids_json = pkt
         .receipt
         .seed_ids
@@ -2679,7 +2878,7 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
     warns.extend(unmatched_query_warnings(&unmatched));
 
     let data = format!(
-        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{}}}",
+        "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"controls\":{},\"payload\":\"{}\",\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"seed_ids\":[{}],\"admitted_dependency_ids\":[{}],\"selected_ids\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"excerpt_bytes\":{},\"raw_bytes\":{},\"encoded_packet_bytes\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"runtime_token_ceiling\":{},\"truncated\":{},\"sqz\":{},\"symbol_navigation\":{}}}",
         json_escape(&root),
         json_escape(&query_text),
         query_outcome,
@@ -2701,14 +2900,16 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         est,
         token_ceiling.map_or_else(|| "null".to_owned(), |value| value.to_string()),
         tr,
-        sqz_json
+        sqz_json,
+        navigation.json(attached.values().map(Vec::len).sum())
     );
+    let sources = provenance_sources(&attached);
     let provenance = if selected_locators_json.is_empty() {
-        "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
+        format!("{{\"sources\":[{sources}]}}")
     } else {
         format!(
-            "{{\"sources\":[\"repository-scanner\",\"bran-core\"],\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}]}}",
-            selected_locators_json, why_selected_json, source_rankings_json
+            "{{\"sources\":[{}],\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}]}}",
+            sources, selected_locators_json, why_selected_json, source_rankings_json
         )
     };
     let metrics = format!(
@@ -5192,6 +5393,7 @@ fn grounded_request_with(
                     &graph,
                     digest.as_deref(),
                     public_safe_excerpt(node, &snapshot, controls.excerpt_bytes).as_deref(),
+                    None,
                 ),
                 if !anchors.is_empty() {
                     EvidencePriority::Required
@@ -6645,6 +6847,9 @@ impl CliResult {
         self.exit_code
     }
 }
+
+#[cfg(test)]
+mod scip_tests;
 
 #[cfg(test)]
 mod tests {
