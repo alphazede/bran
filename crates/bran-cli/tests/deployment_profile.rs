@@ -317,10 +317,11 @@ fn p8_deployment_profile() {
         let (actual, output) = run(&state, registry, args);
         // Name only the command: later arguments can carry the synthetic secret under test.
         let command = args.first().copied().unwrap_or_default();
-        assert_eq!(actual, code, "{command}: {output}");
+        // Messages omit the output too: it derives from arguments that carry the secret.
+        assert_eq!(actual, code, "{command} exited {actual}, expected {code}");
         assert!(
             output.contains(&format!("\"{failure}\"")),
-            "{command}: {output}"
+            "{command}: output lacks failure {failure}"
         );
         output
     };
