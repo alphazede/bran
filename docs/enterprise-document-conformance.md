@@ -5,7 +5,7 @@ okf_status: active
 tags:
   - public
   - developer
-freshness: "2026-09-29"
+freshness: "2026-09-30"
 resource: https://github.com/alphazede/bran
 public_boundary: public
 ---
@@ -47,8 +47,10 @@ optionally `export`) and adds itself to `conformance::registered()`. From
 then on the corpus runs every package row of its format through the adapter
 as well as through the shared intake. The adapter must give the same outcome
 the row expects. An adapter that registers for a format also fails the corpus
-test until it replaces that format's unavailable adapter rows with executable
-ones, so a registered format cannot keep rows in the unavailable state.
+test until `adapter_row` in `crates/bran-document/tests/conformance.rs`
+implements every row of that format, so a registered format cannot keep rows
+in the unavailable state. The XLSX adapter (#26,
+[`enterprise-document-xlsx.md`](enterprise-document-xlsx.md)) is registered.
 
 For each row, `conformance::check` verifies:
 
@@ -108,9 +110,16 @@ issue; it never counts them as passing.
 | Row | Needs |
 |---|---|
 | `docx-ordinary-projection`, `docx-unsupported-benign-fidelity`, `docx-round-trip-anchors` | #21 |
-| `xlsx-ordinary-projection`, `xlsx-unsupported-benign-fidelity`, `xlsx-round-trip-anchors` | #26 |
 | `pptx-ordinary-projection`, `pptx-unsupported-benign-fidelity`, `pptx-round-trip-anchors` | #22 |
 | `pdf-ordinary-projection`, `pdf-malformed-object-graph`, `pdf-recursive-structure`, `pdf-active-action`, `pdf-embedded-file`, `pdf-encrypted`, `pdf-signed`, `pdf-dlp-canary`, `pdf-oversized-stream`, `pdf-round-trip-anchors` | #23 |
+
+XLSX adapter rows run now against the registered adapter:
+
+| Row | Checks |
+|---|---|
+| `xlsx-ordinary-projection` | the ordinary workbook's grid projection equals the recorded digest and has anchors |
+| `xlsx-unsupported-benign-fidelity` | `xlsx-features.parts` is admitted, re-encoding invariant, with `unsupported-chart`, `unsupported-image`, `unsupported-drawing`, `unsupported-conditional-formatting`, `rich-text-flattened`, `formula-cached-result-not-recalculated`, and `hyperlink-not-fetched` |
+| `xlsx-round-trip-anchors` | `xlsx-features.parts` exports, re-imports with identical anchors, and exports the same bytes twice (`round_trip: true`) |
 
 PDF fixtures are not written yet. A hand-written PDF with no parser to check
 it would be an untested fixture; #23 adds them with the parser.
@@ -150,7 +159,7 @@ cancelled result is never admitted as evidence.
   sheets, and macro-enabled main parts are refused by content type. XLSX
   data connections are refused as external references by content type.
   Power Query mashups sit in custom XML parts with a generic content type,
-  so #26 must detect and refuse them.
+  so the XLSX adapter (#26) detects and refuses them.
 - Budgets: `Limits::default()` allows a 20 MiB package, 16 MiB per part,
   128 MiB inflated in total, and a 100:1 compression ratio per part. Large
   spreadsheets can exceed the part budget; the refusal is typed and the
@@ -169,10 +178,10 @@ cancelled result is never admitted as evidence.
 
 | Property | Evidence | Status |
 |---|---|---|
-| Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule` | done for packages; adapter envelopes when adapters register |
+| Same logical input, same canonical bytes and digest | check step 2; `ordinary` recorded digests; `canonical_json_matches_envelope_rule`; `xlsx-ordinary-projection` | done for packages and XLSX; other adapters when they register |
 | Archive order, timestamps, producer differences do not change the result | check step 4 on every admitted row | done for packages |
-| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes; content fidelity needs #21, #22, #23, #26 |
-| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift` | harness done; not exercised until an adapter exports |
+| Every normalization, approximation, omission, or refusal in a versioned receipt | typed refusals and receipt codes (`RECEIPT_VERSION` 1); check step 3 | done for package outcomes and XLSX content; DOCX, PPTX, PDF content fidelity needs #21, #22, #23 |
+| Citation anchors survive deterministic round trips | check step 5; `harness_rejects_round_trip_anchor_drift`; `xlsx-round-trip-anchors` | done for XLSX; other formats when their adapters export |
 | No network requests, no active content executed | `importers_have_no_network_or_process_access`; active-content and external rows | done |
 | Containment, DLP, classification, byte budgets on import and export | budget rows; `dlp-canary`; `export_gate_*` tests | done for the shared gates; classification is the envelope's `policy` block |
 | Typed, bounded failures; no panic; no partial output | check step 1; `parser_limit_property`; refusal rows; export gate tests | done |
@@ -206,7 +215,8 @@ not use.
 | Property iterations | 2,000 | 50,000 |
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
-| Measured on 2026-09-30 (debug build) | 0.8 s, 120 checks | 23.7 s, 120 checks |
+| Measured on 2026-09-30 (debug build, shared intake only) | 0.8 s, 120 checks | 23.7 s, 120 checks |
+| Measured on 2026-09-30 (debug build, XLSX adapter registered) | 0.8 s, 162 checks | 28.6 s, 162 checks |
 | Fixture file size | 8 KiB each | same files |
 
 The budgets are constants at the top of the test file. A tier that runs
@@ -229,13 +239,14 @@ Status values: exact, normalized, approximated, unsupported, refused.
 | External relationships, remote media, external workbooks | refused | refused | refused | pending #23 |
 | External hyperlinks | recorded, never fetched | recorded, never fetched | recorded, never fetched | pending #23 |
 | DTDs and custom entities | refused | refused | refused | n/a |
-| Text, structure, tables, lists | pending #21 | pending #26 | pending #22 | pending #23 |
-| Comments, tracked changes, notes | pending #21 | pending #26 | pending #22 | pending #23 |
-| Formulas and cached values | n/a | pending #26 | n/a | n/a |
-| Images and media | pending #21 | pending #26 | pending #22 | pending #23 |
-| Charts, SmartArt, animations | pending #21 | pending #26 | pending #22 | n/a |
+| Text, structure, tables, lists | pending #21 | exact values and tables; rich text and styles normalized | pending #22 | pending #23 |
+| Comments, tracked changes, notes | pending #21 | legacy comments exact; threaded comments unsupported | pending #22 | pending #23 |
+| Formulas and cached values | n/a | text exact, kept apart, never recalculated; active formulas quarantined | n/a | n/a |
+| Images and media | pending #21 | unsupported, typed relationship with digest | pending #22 | pending #23 |
+| Charts, SmartArt, animations | pending #21 | unsupported, typed relationship with digest | pending #22 | n/a |
+| Power Query, external workbook links, query tables | n/a | refused | n/a | n/a |
 | OCR text | n/a | n/a | n/a | pending #23 |
-| Export | pending #21 | pending #26 | pending #22 | pending #23 |
+| Export | pending #21 | deterministic, with fidelity receipt; DLP first | pending #22 | pending #23 |
 
 ## Acceptance status for #25
 

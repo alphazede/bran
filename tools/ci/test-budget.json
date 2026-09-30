@@ -314,6 +314,19 @@
       ]
     },
     {
+      "stable_id": "P3-ENTERPRISE-XLSX",
+      "phase": 3,
+      "slice": "3.4",
+      "runner": "rust",
+      "name": "xlsx_features_import",
+      "category": "integration",
+      "classification": "new",
+      "source": "crates/bran-document/tests/xlsx.rs",
+      "support_fixtures": [
+        "fixtures/enterprise-documents/conformance/xlsx-features.parts"
+      ]
+    },
+    {
       "stable_id": "P3-GOOGLE-ATTESTATION",
       "phase": 3,
       "slice": "3.4",
