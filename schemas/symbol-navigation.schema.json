@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.alphazede.dev/bran/symbol-navigation/v1/schema.json",
+  "title": "BRAN Symbol Navigation",
+  "description": "The data.symbol_navigation member of bran query and bran packet results: whether exact symbol navigation ran for this query, and the typed status of each backend. BRAN reads an existing SCIP index at index.scip in the repository root and never generates one. Symbol facts are evidence attached to ranked sources as $defs/symbol items; they never change ranking or authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "outcome", "truncated", "scip", "lsp"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "outcome": {
+      "description": "hit: the result keeps symbol evidence on at least one ranked source. miss: a usable index has no evidence for the sources the result keeps. unavailable: no usable index.",
+      "enum": ["hit", "miss", "unavailable"]
+    },
+    "truncated": {
+      "description": "The index holds more evidence for the query than the result keeps: past the evidence or collection bounds, in a file that is not ranked or not scanned, or in a ranked source the packet did not keep.",
+      "type": "boolean"
+    },
+    "scip": { "$ref": "#/$defs/scip" },
+    "lsp": { "$ref": "#/$defs/lsp" }
+  },
+  "$defs": {
+    "scip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason", "index"],
+      "properties": {
+        "status": {
+          "description": "available: every indexed document's recorded text equals the scanned file. partial: the index is readable but freshness is not proven. stale: some recorded text differs from the scanned file, so no evidence is returned. unavailable: no index could be used.",
+          "enum": ["available", "partial", "stale", "unavailable"]
+        },
+        "reason": {
+          "oneOf": [
+            { "type": "null" },
+            { "enum": ["freshness_unverified", "index_stale", "index_missing", "index_unreadable", "multi_root_unsupported", "native_policy_unavailable"] }
+          ]
+        },
+        "index": { "const": "index.scip" }
+      }
+    },
+    "lsp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "status": { "const": "unavailable" },
+        "reason": { "const": "not_implemented" }
+      }
+    },
+    "symbol": {
+      "description": "One item of the symbols array on a ranked source. Lines are one-based and inclusive.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "name", "qualified_name", "kind", "id", "source", "span"],
+      "properties": {
+        "role": { "enum": ["definition", "implementation", "reference"] },
+        "name": { "type": "string" },
+        "qualified_name": {
+          "description": "Namespace, type, term, method, and macro descriptor names joined by ::.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "SCIP SymbolInformation.Kind in snake case, or unspecified_kind.",
+          "type": "string",
+          "pattern": "^[a-z_]+$"
+        },
+        "id": { "description": "The exact SCIP symbol.", "type": "string", "minLength": 1 },
+        "source": { "const": "scip" },
+        "span": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start_line", "end_line"],
+          "properties": {
+            "start_line": { "type": "integer", "minimum": 1 },
+            "end_line": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "implements": {
+          "description": "For an implementation, the exact SCIP symbol it implements.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

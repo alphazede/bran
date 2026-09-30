@@ -30,6 +30,19 @@ outer task; the outer agent owns all decisions and changes.
 5. Continue the outer task using the cited evidence; keep decisions and
    implementation with the outer agent.
 
+Exact symbol navigation comes through the same packet and query. When the
+repository root holds an existing SCIP index at `index.scip`, a ranked source
+may carry `symbols`: each item names a `definition`, `reference`, or
+`implementation` with its name, qualified name, kind, exact SCIP `id`,
+one-based `span`, and `source: "scip"`. To find where a symbol is defined,
+used, or implemented, name it in the request instead of running ad hoc
+repository-wide grep. Read `data.symbol_navigation`: `outcome` is `hit`,
+`miss`, or `unavailable`, and `scip.status` is `available`, `partial`
+(freshness not proven; confirm a span before relying on it), `stale` (no
+symbol evidence; the index must be regenerated), or `unavailable`. BRAN never
+builds the index, and a symbol hit is evidence, not authority: it never changes
+ranking.
+
 `bran check <repo-root> okf-v0.1`, `okf-v0.2`, and `bran-strict` are
 independent selectable profiles. `okf-v0.1` remains supported; `okf-v0.2` is
 additive. Only the selected profile controls the exit code.
