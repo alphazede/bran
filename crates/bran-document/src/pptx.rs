@@ -1278,7 +1278,7 @@ pub fn export(imported: &Imported) -> Result<Vec<u8>, Refusal> {
         }
     }
     let deck = parse_canonical(&imported.canonical)?;
-    if deck.get("schema")?.str()? != SCHEMA {
+    if deck.field("schema")?.str()? != SCHEMA {
         return Err(Refusal::ExportUnsupported);
     }
     let mut writer = Writer::default();
@@ -1315,7 +1315,7 @@ pub fn export(imported: &Imported) -> Result<Vec<u8>, Refusal> {
 
 /// Reads canonical content; any mismatch with the model is `BAD`.
 trait Field {
-    fn get(&self, key: &str) -> Result<&Json, Refusal>;
+    fn field(&self, key: &str) -> Result<&Json, Refusal>;
     fn str(&self) -> Result<&str, Refusal>;
     fn opt_str(&self) -> Result<Option<&str>, Refusal>;
     fn int(&self) -> Result<i64, Refusal>;
@@ -1325,7 +1325,7 @@ trait Field {
 }
 
 impl Field for Json {
-    fn get(&self, key: &str) -> Result<&Json, Refusal> {
+    fn field(&self, key: &str) -> Result<&Json, Refusal> {
         match self {
             Json::Obj(map) => map.get(key).ok_or(BAD),
             _ => Err(BAD),
@@ -1446,25 +1446,25 @@ impl Writer {
 
     /// Writes every deck part. Returns whether any comment was written.
     fn deck(&mut self, deck: &Json) -> Result<bool, Refusal> {
-        let slides = deck.get("slides")?.arr()?;
+        let slides = deck.field("slides")?.arr()?;
         let mut media = BTreeMap::new();
-        for (index, asset) in deck.get("assets")?.arr()?.iter().enumerate() {
-            let data = unhex(asset.get("data_hex")?.str()?)?;
-            if sha256_hex(&data) != asset.get("sha256")?.str()? {
+        for (index, asset) in deck.field("assets")?.arr()?.iter().enumerate() {
+            let data = unhex(asset.field("data_hex")?.str()?)?;
+            if sha256_hex(&data) != asset.field("sha256")?.str()? {
                 return Err(BAD);
             }
-            let media_type = asset.get("media_type")?.str()?;
+            let media_type = asset.field("media_type")?.str()?;
             let file = format!("image{}.{}", index + 1, extension(media_type));
             self.part(format!("ppt/media/{file}"), Some(media_type), data);
-            media.insert(asset.get("id")?.str()?, file);
+            media.insert(asset.field("id")?.str()?, file);
         }
         let mut ids = BTreeMap::new();
         let mut layouts: Vec<Option<&str>> = Vec::new();
         for (index, slide) in slides.iter().enumerate() {
-            if ids.insert(slide.get("id")?.int()?, index + 1).is_some() {
+            if ids.insert(slide.field("id")?.int()?, index + 1).is_some() {
                 return Err(BAD);
             }
-            let layout = slide.get("layout")?.opt_str()?;
+            let layout = slide.field("layout")?.opt_str()?;
             if !layouts.contains(&layout) {
                 layouts.push(layout);
             }
@@ -1542,10 +1542,10 @@ impl Writer {
             let _ = write!(
                 slide_list,
                 "<p:sldId id=\"{}\" r:id=\"{rid}\"/>",
-                slide.get("id")?.int()?
+                slide.field("id")?.int()?
             );
             let mut rels = Rels::default();
-            let layout = slide.get("layout")?.opt_str()?;
+            let layout = slide.field("layout")?.opt_str()?;
             let layout = layouts
                 .iter()
                 .position(|item| *item == layout)
@@ -1556,10 +1556,10 @@ impl Writer {
                 false,
             );
             let mut shapes = String::new();
-            for shape in slide.get("shapes")?.arr()? {
+            for shape in slide.field("shapes")?.arr()? {
                 self.shape(&mut shapes, shape, &mut rels, &media, &ids, 0)?;
             }
-            let notes = slide.get("notes")?;
+            let notes = slide.field("notes")?;
             if !matches!(notes, Json::Null) {
                 any_notes = true;
                 self.notes(notes, number, &ids)?;
@@ -1569,13 +1569,13 @@ impl Writer {
                     false,
                 );
             }
-            let comments = slide.get("comments")?.arr()?;
+            let comments = slide.field("comments")?.arr()?;
             if !comments.is_empty() {
                 let mut xml = format!("{DECL}<p:cmLst {NS}>");
                 for comment in comments {
-                    let author = comment.get("author")?.str()?;
-                    let initials = comment.get("initials")?.opt_str()?;
-                    let text = comment.get("text")?.str()?;
+                    let author = comment.field("author")?.str()?;
+                    let initials = comment.field("initials")?.opt_str()?;
+                    let text = comment.field("text")?.str()?;
                     self.texts.extend([author.to_owned(), text.to_owned()]);
                     let key = (author, initials);
                     let id = match authors.iter().position(|(item, _)| *item == key) {
@@ -1605,12 +1605,12 @@ impl Writer {
                     false,
                 );
             }
-            let hidden = if slide.get("hidden")?.bool()? {
+            let hidden = if slide.field("hidden")?.bool()? {
                 " show=\"0\""
             } else {
                 ""
             };
-            let name = match slide.get("name")?.opt_str()? {
+            let name = match slide.field("name")?.opt_str()? {
                 Some(name) => {
                     self.texts.push(name.to_owned());
                     format!(" name=\"{}\"", esc(name))
@@ -1670,20 +1670,20 @@ impl Writer {
             );
         }
         presentation.add(&format!("{R}/theme"), "theme/theme1.xml", false);
-        let size = match deck.get("slide_size")? {
+        let size = match deck.field("slide_size")? {
             Json::Null => String::new(),
             size => format!(
                 "<p:sldSz cx=\"{}\" cy=\"{}\"/>",
-                size.get("cx")?.int()?,
-                size.get("cy")?.int()?
+                size.field("cx")?.int()?,
+                size.field("cy")?.int()?
             ),
         };
         let mut sections = String::new();
-        for section in deck.get("sections")?.arr()? {
-            let name = section.get("name")?.str()?;
+        for section in deck.field("sections")?.arr()? {
+            let name = section.field("name")?.str()?;
             self.texts.push(name.to_owned());
             let id = section
-                .get("id")?
+                .field("id")?
                 .opt_str()?
                 .map(|id| format!(" id=\"{}\"", esc(id)))
                 .unwrap_or_default();
@@ -1692,7 +1692,7 @@ impl Writer {
                 "<p14:section name=\"{}\"{id}><p14:sldIdLst>",
                 esc(name)
             );
-            for slide in section.get("slides")?.arr()? {
+            for slide in section.field("slides")?.arr()? {
                 let _ = write!(sections, "<p14:sldId id=\"{}\"/>", slide.int()?);
             }
             sections.push_str("</p14:sldIdLst></p14:section>");
@@ -1716,7 +1716,7 @@ impl Writer {
         ids: &BTreeMap<i64, usize>,
     ) -> Result<(), Refusal> {
         let id = notes
-            .get("shape")?
+            .field("shape")?
             .opt_int()?
             .ok_or(Refusal::ExportUnsupported)?;
         let mut rels = Rels::default();
@@ -1730,7 +1730,7 @@ impl Writer {
             &format!("../slides/slide{number}.xml"),
             false,
         );
-        let body = self.paragraphs(notes.get("paragraphs")?, &mut rels, ids)?;
+        let body = self.paragraphs(notes.field("paragraphs")?, &mut rels, ids)?;
         let part = format!("ppt/notesSlides/notesSlide{number}.xml");
         self.part(
             part.clone(),
@@ -1755,47 +1755,47 @@ impl Writer {
         }
         // A shape without an identity cannot be projected faithfully.
         let id = shape
-            .get("id")?
+            .field("id")?
             .opt_int()?
             .ok_or(Refusal::ExportUnsupported)?;
-        let name = shape.get("name")?.str()?;
+        let name = shape.field("name")?.str()?;
         self.texts.push(name.to_owned());
         let mut attributes = format!(" id=\"{id}\" name=\"{}\"", esc(name));
         for (key, attribute) in [("alt_text", "descr"), ("alt_title", "title")] {
-            if let Some(value) = shape.get(key)?.opt_str()? {
+            if let Some(value) = shape.field(key)?.opt_str()? {
                 self.texts.push(value.to_owned());
                 let _ = write!(attributes, " {attribute}=\"{}\"", esc(value));
             }
         }
-        if shape.get("hidden")?.bool()? {
+        if shape.field("hidden")?.bool()? {
             attributes.push_str(" hidden=\"1\"");
         }
-        let link = self.link(shape.get("link")?, rels, ids)?;
+        let link = self.link(shape.field("link")?, rels, ids)?;
         let c_nv_pr = format!("<p:cNvPr{attributes}>{link}</p:cNvPr>");
-        let nv_pr = match shape.get("placeholder")? {
+        let nv_pr = match shape.field("placeholder")? {
             Json::Null => "<p:nvPr/>".to_owned(),
             placeholder => {
                 let mut ph = String::new();
                 for key in ["type", "idx"] {
-                    if let Some(value) = placeholder.get(key)?.opt_str()? {
+                    if let Some(value) = placeholder.field(key)?.opt_str()? {
                         let _ = write!(ph, " {key}=\"{}\"", esc(value));
                     }
                 }
                 format!("<p:nvPr><p:ph{ph}/></p:nvPr>")
             }
         };
-        let geometry = match shape.get("preset")?.opt_str()? {
+        let geometry = match shape.field("preset")?.opt_str()? {
             Some(preset) => format!(
                 "<a:prstGeom prst=\"{}\"><a:avLst/></a:prstGeom>",
                 esc(preset)
             ),
             None => String::new(),
         };
-        let frame = shape.get("xfrm")?;
-        let _ = match shape.get("kind")?.str()? {
+        let frame = shape.field("xfrm")?;
+        let _ = match shape.field("kind")?.str()? {
             "shape" => {
-                let text_box = if shape.get("text_box")?.bool()? { " txBox=\"1\"" } else { "" };
-                let body = match shape.get("paragraphs")? {
+                let text_box = if shape.field("text_box")?.bool()? { " txBox=\"1\"" } else { "" };
+                let body = match shape.field("paragraphs")? {
                     Json::Null => String::new(),
                     paragraphs => format!(
                         "<p:txBody><a:bodyPr/><a:lstStyle/>{}</p:txBody>",
@@ -1806,7 +1806,7 @@ impl Writer {
             }
             "connector" => write!(out, "<p:cxnSp><p:nvCxnSpPr>{c_nv_pr}<p:cNvCxnSpPr/>{nv_pr}</p:nvCxnSpPr><p:spPr>{}{geometry}</p:spPr></p:cxnSp>", xfrm_xml(frame, "a:xfrm")?),
             "picture" => {
-                let blip = match shape.get("image")?.opt_str()? {
+                let blip = match shape.field("image")?.opt_str()? {
                     Some(asset) => {
                         let file = media.get(asset).ok_or(BAD)?;
                         let rid = rels.add(&format!("{R}/image"), &format!("../media/{file}"), false);
@@ -1818,20 +1818,20 @@ impl Writer {
             }
             "group" => {
                 let mut children = String::new();
-                for child in shape.get("children")?.arr()? {
+                for child in shape.field("children")?.arr()? {
                     self.shape(&mut children, child, rels, media, ids, depth + 1)?;
                 }
                 write!(out, "<p:grpSp><p:nvGrpSpPr>{c_nv_pr}<p:cNvGrpSpPr/>{nv_pr}</p:nvGrpSpPr><p:grpSpPr>{}</p:grpSpPr>{children}</p:grpSp>", xfrm_xml(frame, "a:xfrm")?)
             }
             "table" => {
                 let mut table = String::from("<a:tbl><a:tblPr firstRow=\"1\" bandRow=\"1\"/><a:tblGrid>");
-                for column in shape.get("columns")?.arr()? {
+                for column in shape.field("columns")?.arr()? {
                     let _ = write!(table, "<a:gridCol w=\"{}\"/>", column.int()?);
                 }
                 table.push_str("</a:tblGrid>");
-                for row in shape.get("rows")?.arr()? {
-                    let _ = write!(table, "<a:tr h=\"{}\">", row.get("height")?.int()?);
-                    for cell in row.get("cells")?.arr()? {
+                for row in shape.field("rows")?.arr()? {
+                    let _ = write!(table, "<a:tr h=\"{}\">", row.field("height")?.int()?);
+                    for cell in row.field("cells")?.arr()? {
                         let _ = write!(table, "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>{}</a:txBody><a:tcPr/></a:tc>", self.paragraphs(cell, rels, ids)?);
                     }
                     table.push_str("</a:tr>");
@@ -1853,14 +1853,14 @@ impl Writer {
         let mut out = String::new();
         for paragraph in paragraphs.arr()? {
             out.push_str("<a:p>");
-            let level = paragraph.get("level")?.int()?;
+            let level = paragraph.field("level")?.int()?;
             if level != 0 {
                 let _ = write!(out, "<a:pPr lvl=\"{level}\"/>");
             }
             let mut line = String::new();
-            for run in paragraph.get("runs")?.arr()? {
-                let text = run.get("text")?.str()?;
-                let link = self.link(run.get("link")?, rels, ids)?;
+            for run in paragraph.field("runs")?.arr()? {
+                let text = run.field("text")?.str()?;
+                let link = self.link(run.field("link")?, rels, ids)?;
                 line.push_str(text);
                 let _ = match (text, link.is_empty()) {
                     ("\n", true) => write!(out, "<a:br/>"),
@@ -1891,9 +1891,12 @@ impl Writer {
         if matches!(link, Json::Null) {
             return Ok(String::new());
         }
-        let action = link.get("action")?.opt_str()?;
+        let action = link.field("action")?.opt_str()?;
         check_action(action)?;
-        let rid = match (link.get("url")?.opt_str()?, link.get("slide")?.opt_int()?) {
+        let rid = match (
+            link.field("url")?.opt_str()?,
+            link.field("slide")?.opt_int()?,
+        ) {
             (Some(url), _) => {
                 self.texts.push(url.to_owned());
                 rels.add(&format!("{R}/hyperlink"), url, true)
@@ -1976,7 +1979,7 @@ fn xfrm_xml(frame: &Json, tag: &str) -> Result<String, Refusal> {
         ("ch_off", "a:chOff", "x", "y"),
         ("ch_ext", "a:chExt", "cx", "cy"),
     ] {
-        match frame.get(key)? {
+        match frame.field(key)? {
             Json::Null => {}
             Json::Arr(pair) if pair.len() == 2 => {
                 let _ = write!(

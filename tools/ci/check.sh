@@ -83,6 +83,14 @@ run_google_attestation_contract() {
     python3 "$bran_root/tools/ci/google_attestation_contract_check.py"
 }
 
+run_deployment_contract() {
+    python3 "$bran_root/tools/ci/deployment_contract_check.py"
+}
+
+run_database_contract() {
+    python3 "$bran_root/tools/ci/database_contract_check.py"
+}
+
 run_export() {
     printf '%s\n' 'EXPORT: running Slice 3.3 Obsidian export gate.'
     run_budget
@@ -123,6 +131,8 @@ run_fast() {
     run_release_contract
     run_enterprise_contract
     run_google_attestation_contract
+    run_deployment_contract
+    run_database_contract
     run_public_boundary
     run_public_export
 
@@ -135,6 +145,7 @@ run_security() {
     run_budget
     cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-core p2_scanner
     cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-document --test conformance enterprise_conformance_full -- --ignored
+    cargo test --manifest-path "$bran_root/Cargo.toml" -p bran-document --test pdf pdf_conformance_full -- --ignored
     run_public_boundary
 
     printf '%s\n' 'PASS Slice 2.1 security gate'

@@ -1,0 +1,70 @@
+--- trailer
+/Root 1 0 R /Info 18 0 R
+--- 1
+<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /Lang (en-US) >>
+--- 2
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+--- 3
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R /Annots [12 0 R 13 0 R] >>
+--- 4
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 90 /Resources << /Font << /F2 6 0 R >> /XObject << /Im1 9 0 R >> >> /Contents 8 0 R >>
+--- 5
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+--- 6
+<< /Type /Font /Subtype /Type0 /BaseFont /SyntheticSans /Encoding /Identity-H /DescendantFonts [15 0 R] /ToUnicode 16 0 R >>
+--- 7 stream
+<< >>
+/H1 << /MCID 0 >> BDC
+BT /F1 18 Tf 72 720 Td (Synthetic PDF heading) Tj ET
+EMC
+/P << /MCID 1 >> BDC
+BT /F1 11 Tf 72 690 Td (First line of the synthetic paragraph.) Tj
+0 -14 Td [(Second line with a) -300 (gap.)] TJ ET
+EMC
+--- 8 stream
+<< >>
+BT /F2 12 Tf 72 500 Td <00010002000300040008000500060007> Tj ET
+q 100 0 0 50 72 400 cm /Im1 Do Q
+--- 9 stream
+<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 >>
+AZAZ
+--- 10
+<< /Type /Outlines /First 11 0 R /Last 14 0 R /Count 2 >>
+--- 11
+<< /Title (Synthetic heading) /Parent 10 0 R /Next 14 0 R /Dest [3 0 R /XYZ 72 740 0] >>
+--- 12
+<< /Type /Annot /Subtype /Text /Rect [500 700 520 720] /Contents (Synthetic reviewer note) >>
+--- 13
+<< /Type /Annot /Subtype /Link /Rect [72 715 300 740] /Border [0 0 0] /Dest [4 0 R /Fit] >>
+--- 14
+<< /Title (Second page) /Parent 10 0 R /Prev 11 0 R /Dest [4 0 R /Fit] >>
+--- 15
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /SyntheticSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 17 0 R /DW 600 /W [1 [700 400 600 550]] >>
+--- 16 stream
+<< >>
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CMapName /Synthetic-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+5 beginbfchar
+<0001> <0047>
+<0002> <0072>
+<0003> <00FC>
+<0004> <00DF0065>
+<0008> <0020>
+endbfchar
+1 beginbfrange
+<0005> <0007> <0061>
+endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+--- 17
+<< /Type /FontDescriptor /FontName /SyntheticSans /Flags 32 /FontBBox [0 -200 1000 800] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>
+--- 18
+<< /Title (Synthetic PDF fixture) /Author (BRAN synthetic fixture) /Producer (Synthetic producer one) /CreationDate (D:20260101000000Z) >>

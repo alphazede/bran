@@ -8,9 +8,14 @@
 
 pub mod canonical;
 pub mod conformance;
+pub mod docx;
 pub mod export;
 pub mod opc;
+pub mod pdf;
+mod pdf_syntax;
+mod pdf_text;
 pub mod pptx;
+pub mod xlsx;
 pub mod xml;
 pub mod zip;
 
@@ -46,6 +51,10 @@ pub enum Refusal {
     ExportExists,
     ExportIo,
     ExportUnsupported,
+    PdfMalformed,
+    PdfDepthLimit,
+    PdfObjectLimit,
+    PdfPageLimit,
 }
 
 impl Refusal {
@@ -73,6 +82,10 @@ impl Refusal {
             Self::ExportExists => "export-exists",
             Self::ExportIo => "export-io",
             Self::ExportUnsupported => "export-unsupported",
+            Self::PdfMalformed => "malformed-pdf",
+            Self::PdfDepthLimit => "pdf-depth-limit",
+            Self::PdfObjectLimit => "pdf-object-limit",
+            Self::PdfPageLimit => "pdf-page-limit",
         }
     }
 }
@@ -93,6 +106,7 @@ pub struct Limits {
     pub max_package_bytes: u64,
     pub max_parts: usize,
     pub max_part_bytes: u64,
+    /// Total inflated package bytes; also bounds DOCX run payload and metadata copies.
     pub max_total_bytes: u64,
     /// Largest allowed uncompressed/compressed size ratio for one part.
     pub max_ratio: u64,

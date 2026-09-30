@@ -259,7 +259,7 @@ fn inflate_counted(raw: &[u8], size: u64) -> (Result<Vec<u8>, Refusal>, u64) {
 /// Writes entries in the given order with exactly the given names and
 /// timestamps. Export callers pass sorted names and one fixed timestamp.
 pub fn write(entries: &[WriteEntry<'_>]) -> Vec<u8> {
-    write_inner(entries, None).expect("unbounded in-memory ZIP write")
+    write_inner(entries, None, u64::MAX).expect("unbounded in-memory ZIP write")
 }
 
 /// Export policy: enforce intake budgets and store entries whose deflate
@@ -283,31 +283,37 @@ pub(crate) fn write_bounded(
             .checked_sub(entry.data.len() as u64)
             .ok_or(Refusal::Oversized)?;
     }
-    write_inner(entries, Some(limits))
+    write_inner(entries, Some(limits), limits.max_ratio)
 }
 
-fn write_inner(entries: &[WriteEntry<'_>], limits: Option<&Limits>) -> Result<Vec<u8>, Refusal> {
+/// Stores entries whose compressed representation would exceed intake's ratio.
+/// The unrestricted writer remains available for adversarial intake fixtures.
+pub(crate) fn write_with_ratio(entries: &[WriteEntry<'_>], max_ratio: u64) -> Vec<u8> {
+    write_inner(entries, None, max_ratio).expect("unbounded in-memory ZIP write")
+}
+
+fn write_inner(
+    entries: &[WriteEntry<'_>],
+    limits: Option<&Limits>,
+    max_ratio: u64,
+) -> Result<Vec<u8>, Refusal> {
     use std::io::Write;
     let mut out = Vec::new();
     let mut central = Vec::new();
     for entry in entries {
-        let mut data = if entry.deflate {
+        let (data, method) = if entry.deflate {
             let mut encoder =
                 flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
             encoder.write_all(entry.data).expect("in-memory write");
-            encoder.finish().expect("in-memory write")
+            let compressed = encoder.finish().expect("in-memory write");
+            if entry.data.len() as u64 > max_ratio.saturating_mul(compressed.len().max(1) as u64) {
+                (entry.data.to_vec(), 0u16)
+            } else {
+                (compressed, 8u16)
+            }
         } else {
-            entry.data.to_vec()
+            (entry.data.to_vec(), 0u16)
         };
-        let mut method: u16 = if entry.deflate { 8 } else { 0 };
-        if entry.deflate
-            && limits.is_some_and(|limits| {
-                entry.data.len() as u64 > limits.max_ratio.saturating_mul(data.len().max(1) as u64)
-            })
-        {
-            data = entry.data.to_vec();
-            method = 0;
-        }
         // Include both headers, both names, and the final end record before
         // growing either output buffer.
         let package_size = (out.len() as u64)

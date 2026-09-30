@@ -35,6 +35,14 @@ const XLSX_BASE: &str =
     include_str!("../../../fixtures/enterprise-documents/conformance/xlsx-base.parts");
 const PPTX_BASE: &str =
     include_str!("../../../fixtures/enterprise-documents/conformance/pptx-base.parts");
+const DOCX_REPRESENTATIVE: &str =
+    include_str!("../../../fixtures/enterprise-documents/docx/representative.parts");
+const DOCX_UNSUPPORTED: &str =
+    include_str!("../../../fixtures/enterprise-documents/docx/unsupported-benign.parts");
+/// A valid 1x1 PNG for the DOCX image part; `.parts` fixtures hold text only.
+const PIXEL_PNG: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\xda\x63\xd0\xcb\x5e\x01\x00\x02\x0c\x01\x42\x16\x7d\x65\x4c\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+const XLSX_FEATURES: &str =
+    include_str!("../../../fixtures/enterprise-documents/conformance/xlsx-features.parts");
 const CONFORMANCE_DOC: &str = include_str!("../../../docs/enterprise-document-conformance.md");
 const CANARIES: &str =
     include_str!("../../../fixtures/public-boundary/rejected/synthetic-canaries.txt");
@@ -119,16 +127,7 @@ const ADAPTER_ROWS: &[(Format, &str)] = &[
     (Format::Pptx, "pptx-ordinary-projection"),
     (Format::Pptx, "pptx-unsupported-benign-fidelity"),
     (Format::Pptx, "pptx-round-trip-anchors"),
-    (Format::Pdf, "pdf-ordinary-projection"),
-    (Format::Pdf, "pdf-malformed-object-graph"),
-    (Format::Pdf, "pdf-recursive-structure"),
-    (Format::Pdf, "pdf-active-action"),
-    (Format::Pdf, "pdf-embedded-file"),
-    (Format::Pdf, "pdf-encrypted"),
-    (Format::Pdf, "pdf-signed"),
-    (Format::Pdf, "pdf-dlp-canary"),
-    (Format::Pdf, "pdf-oversized-stream"),
-    (Format::Pdf, "pdf-round-trip-anchors"),
+    // PDF rows are executable in tests/pdf.rs against the registered adapter.
 ];
 
 fn expect(row: &str) -> Expect {
@@ -558,6 +557,7 @@ fn reencode(original: &[u8]) -> Vec<Vec<u8>> {
 
 struct Report {
     checked: usize,
+    adapter_rows: usize,
     unavailable: Vec<(Format, &'static str, u32)>,
 }
 
@@ -570,6 +570,7 @@ fn run_corpus(tier: Tier) -> Report {
     };
     let mut report = Report {
         checked: 0,
+        adapter_rows: 0,
         unavailable: Vec::new(),
     };
     for format in OOXML {
@@ -617,50 +618,172 @@ fn run_corpus(tier: Tier) -> Report {
                 .push((*format, row, format.adapter_issue()));
             continue;
         }
-        let (input, expect) = adapter_row(*format, row).unwrap_or_else(|| {
-            panic!("{format:?} adapter registered: replace {row} with an executable row")
-        });
-        let variants = match (&expect, tier) {
-            (Expect::Admit(_), Tier::Fast) => reencode(&input),
-            _ => Vec::new(),
-        };
         for adapter in adapters {
-            let outcome = conformance::check(
-                adapter,
-                &input,
-                &variants,
-                &expect,
-                &limits,
-                &Cancel::default(),
-            )
-            .unwrap_or_else(|error| panic!("{format:?}/{row}: {error}"));
-            assert!(
-                outcome.round_trip || !row.ends_with("round-trip-anchors"),
-                "{format:?}/{row}: the adapter must export and round-trip"
-            );
+            adapter_row(adapter, row, &limits)
+                .unwrap_or_else(|error| panic!("{format:?}/{row}: {error}"));
             report.checked += 1;
         }
+        report.adapter_rows += 1;
     }
     report
 }
 
-/// Executable adapter rows, supplied by each registered adapter's test module.
-fn adapter_row(format: Format, row: &str) -> Option<(Vec<u8>, Expect)> {
-    match format {
-        Format::Pptx => pptx_decks::row(row),
-        _ => None,
-    }
+/// Recorded canonical digest of the DOCX representative projection. A change
+/// here is a change to the DOCX content model and must be reviewed as one.
+const DOCX_PROJECTION: &str = "b8572ed2ebb59a213503f4873a76fbb9b3a6553910e4044f5089e7cf95c9c14f";
+
+/// Canonical XLSX projection of the ordinary package, recorded from the
+/// adapter. A change here is a change to the grid projection.
+const XLSX_ORDINARY_PROJECTION: &str =
+    "29cf261bf0933533ea37b196375340f0ec723183d9e09c30fcfbc9291fd9ca03";
+
+fn docx_representative() -> Parts {
+    Parts::parse(DOCX_REPRESENTATIVE).add("word/media/pixel.png", PIXEL_PNG)
 }
 
-fn unregistered_adapter_rows() -> usize {
-    let registered: Vec<Format> = conformance::registered()
-        .iter()
-        .map(|adapter| adapter.format())
-        .collect();
-    ADAPTER_ROWS
-        .iter()
-        .filter(|(format, _)| !registered.contains(format))
-        .count()
+fn reencodings(parts: &Parts) -> Vec<Vec<u8>> {
+    vec![
+        parts.zip_with(true, false, 0x4A21),
+        parts.zip_with(false, true, 0x3C01),
+    ]
+}
+
+/// Executable adapter rows. A registered format must implement every one of
+/// its rows here; an unknown row fails, so no row silently stays unavailable.
+fn adapter_row(adapter: &dyn Adapter, row: &str, limits: &Limits) -> Result<(), String> {
+    let cancel = Cancel::default();
+    let run = |parts: &Parts, expect: &Expect| {
+        conformance::check(
+            adapter,
+            &parts.zip(),
+            &reencodings(parts),
+            expect,
+            limits,
+            &cancel,
+        )
+    };
+    let features = Parts::parse(XLSX_FEATURES);
+    let features_variants = || {
+        vec![
+            features.zip_with(true, false, 0x4A21),
+            features.zip_with(false, true, 0x3C01),
+        ]
+    };
+    match row {
+        "docx-ordinary-projection" => {
+            let parts = docx_representative();
+            run(
+                &parts,
+                &Expect::Admit(vec![
+                    "hyperlink-not-fetched",
+                    "headings:normalized",
+                    "lists:normalized",
+                    "tables:normalized",
+                    "hyperlinks:exact",
+                    "bookmarks:exact",
+                    "captions:normalized",
+                    "comments:normalized",
+                    "tracked-changes:exact",
+                    "footnotes:normalized",
+                    "endnotes:normalized",
+                    "images:exact",
+                    "sections:normalized",
+                ]),
+            )?;
+            let imported = adapter
+                .import(&parts.zip(), limits, &cancel)
+                .map_err(|refusal| format!("refused: {refusal}"))?;
+            let digest = sha256_hex(&imported.canonical);
+            if digest != DOCX_PROJECTION {
+                return Err(format!("projection changed: {digest}"));
+            }
+            Ok(())
+        }
+        "docx-unsupported-benign-fidelity" => run(
+            &Parts::parse(DOCX_UNSUPPORTED),
+            &Expect::Admit(vec![
+                "charts:unsupported",
+                "math:unsupported",
+                "shapes:unsupported",
+                "headers-footers:unsupported",
+                "document-properties:unsupported",
+                "symbols:unsupported",
+                "formatting-changes:unsupported",
+                "paragraph-mark-changes:unsupported",
+                "fields:normalized",
+                "content-controls:normalized",
+            ]),
+        )
+        .map(|_| ()),
+        "docx-round-trip-anchors" => {
+            let outcome = run(&docx_representative(), &Expect::Admit(vec![]))?;
+            if outcome.round_trip {
+                Ok(())
+            } else {
+                Err("export refused, so no round trip was exercised".to_owned())
+            }
+        }
+        "xlsx-ordinary-projection" => {
+            let imported = adapter
+                .import(&Parts::parse(XLSX_BASE).zip(), limits, &cancel)
+                .map_err(|refusal| format!("ordinary workbook refused: {refusal}"))?;
+            let digest = sha256_hex(&imported.canonical);
+            if digest != XLSX_ORDINARY_PROJECTION {
+                return Err(format!("projection changed: {digest}"));
+            }
+            if imported.anchors.is_empty() {
+                return Err("ordinary workbook produced no anchors".to_owned());
+            }
+            Ok(())
+        }
+        "xlsx-unsupported-benign-fidelity" => conformance::check(
+            adapter,
+            &features.zip(),
+            &features_variants(),
+            &Expect::Admit(vec![
+                "unsupported-chart",
+                "unsupported-image",
+                "unsupported-drawing",
+                "unsupported-conditional-formatting",
+                "rich-text-flattened",
+                "formula-cached-result-not-recalculated",
+                "hyperlink-not-fetched",
+            ]),
+            limits,
+            &cancel,
+        )
+        .map(|_| ()),
+        "xlsx-round-trip-anchors" => {
+            let outcome = conformance::check(
+                adapter,
+                &features.zip(),
+                &features_variants(),
+                &Expect::Admit(vec![]),
+                limits,
+                &cancel,
+            )?;
+            if !outcome.round_trip {
+                return Err("export refused, so no round trip was exercised".to_owned());
+            }
+            Ok(())
+        }
+        "pptx-ordinary-projection"
+        | "pptx-unsupported-benign-fidelity"
+        | "pptx-round-trip-anchors" => {
+            let (input, expect) = pptx_decks::row(row).ok_or_else(|| {
+                format!("adapter registered: replace {row} with an executable row")
+            })?;
+            let outcome =
+                conformance::check(adapter, &input, &reencode(&input), &expect, limits, &cancel)?;
+            if row.ends_with("round-trip-anchors") && !outcome.round_trip {
+                return Err("export refused, so no round trip was exercised".to_owned());
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "adapter registered: replace {other} with an executable row"
+        )),
+    }
 }
 
 /// The ordinary package's canonical projection matches the recorded digest.
@@ -715,7 +838,11 @@ fn enterprise_conformance_fast() {
     for (format, row, issue) in &report.unavailable {
         println!("unavailable {format:?}/{row}: needs adapter #{issue}");
     }
-    assert_eq!(report.unavailable.len(), unregistered_adapter_rows());
+    assert_eq!(
+        report.unavailable.len() + report.adapter_rows,
+        ADAPTER_ROWS.len(),
+        "every adapter row is either executed or reported unavailable"
+    );
     assert!(
         elapsed <= FAST_RUNTIME_BUDGET,
         "fast tier exceeded its runtime budget: {elapsed:?}"

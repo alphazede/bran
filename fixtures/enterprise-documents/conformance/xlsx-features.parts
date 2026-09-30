@@ -1,0 +1,87 @@
+--- [Content_Types].xml
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
+<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+<Override PartName="/xl/comments1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>
+<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>
+<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>
+<Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>
+--- _rels/.rels
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+</Relationships>
+--- docProps/core.xml
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dcterms="http://purl.org/dc/terms/"><dcterms:modified>2026-01-02T03:04:05Z</dcterms:modified></cp:coreProperties>
+--- xl/_rels/workbook.xml.rels
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>
+--- xl/workbook.xml
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="Metrics" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="4" state="hidden" r:id="rId2"/></sheets>
+<definedNames><definedName name="TotalValue">Metrics!$B$4</definedName><definedName name="LocalNotes" localSheetId="1" hidden="1">Notes!$A$1:$A$2</definedName></definedNames>
+</workbook>
+--- xl/sharedStrings.xml
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="5" uniqueCount="5"><si><t>Metric</t></si><si><t>Value</t></si><si><t>Alpha</t></si><si><r><t>Be</t></r><r><rPr><b/></rPr><t>ta</t></r><rPh sb="0" eb="1"><t>reading</t></rPh></si><si><t>Total</t></si></sst>
+--- xl/styles.xml
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="0.0%"/></numFmts><cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="14"/></cellXfs></styleSheet>
+--- xl/worksheets/sheet1.xml
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<dimension ref="A1:E5"/>
+<sheetViews><sheetView workbookViewId="0"/></sheetViews>
+<sheetData>
+<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
+<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>40</v></c><c r="C2" s="1"><v>0.25</v></c></row>
+<row r="3"><c r="A3" t="s"><v>3</v></c><c r="B3"><v>2</v></c><c r="C3" s="2"><v>46023</v></c></row>
+<row r="4"><c r="A4" t="s"><v>4</v></c><c r="B4"><f>SUM(Table1[Value])</f><v>42</v></c><c r="C4" t="b"><v>1</v></c></row>
+<row r="5"><c r="A5" t="inlineStr"><is><t>=1+1 stays text</t></is></c><c r="B5" t="e"><v>#DIV/0!</v></c><c r="C5" t="str"><f>A2&amp;"!"</f><v>Alpha!</v></c></row>
+</sheetData>
+<mergeCells count="1"><mergeCell ref="D1:E2"/></mergeCells>
+<conditionalFormatting sqref="B2:B3"><cfRule type="cellIs" priority="1" operator="greaterThan"><formula>10</formula></cfRule></conditionalFormatting>
+<dataValidations count="1"><dataValidation type="list" allowBlank="1" sqref="A2:A3"><formula1>"Alpha,Beta"</formula1></dataValidation></dataValidations>
+<hyperlinks><hyperlink ref="A2" r:id="rId1"/><hyperlink ref="A3" location="Notes!A1" display="Notes"/></hyperlinks>
+<drawing r:id="rId2"/>
+<legacyDrawing r:id="rId3"/>
+<tableParts count="1"><tablePart r:id="rId4"/></tableParts>
+</worksheet>
+--- xl/worksheets/_rels/sheet1.xml.rels
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/alpha" TargetMode="External"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>
+<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>
+<Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
+</Relationships>
+--- xl/worksheets/sheet2.xml
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Synthetic notes</t></is></c></row><row r="2"><c r="A2"><f>Metrics!B4*2</f><v>84</v></c></row></sheetData></worksheet>
+--- xl/comments1.xml
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>Reviewer</author></authors><commentList><comment ref="B2" authorId="0"><text><r><t>Synthetic note</t></r></text></comment></commentList></comments>
+--- xl/tables/table1.xml
+<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Table1" displayName="Table1" ref="A1:B3"><autoFilter ref="A1:B3"/><tableColumns count="2"><tableColumn id="1" name="Metric"/><tableColumn id="2" name="Value"/></tableColumns><tableStyleInfo name="TableStyleMedium2" showRowStripes="1"/></table>
+--- xl/drawings/_rels/drawing1.xml.rels
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+</Relationships>
+--- xl/drawings/drawing1.xml
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>
+--- xl/drawings/vmlDrawing1.vml
+<xml xmlns:v="urn:schemas-microsoft-com:vml"/>
+--- xl/charts/chart1.xml
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>
+--- xl/media/image1.png
+synthetic image bytes
