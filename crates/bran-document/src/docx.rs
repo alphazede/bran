@@ -489,6 +489,48 @@ pub fn read(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Document, 
     Ok(document)
 }
 
+/// Namespaces whose attributes the adapter reads, under the prefix it reads
+/// them by. Transitional and Strict share a prefix.
+const PREFIXES: [(&str, &str); 4] = [
+    (
+        "w",
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    ),
+    ("w", "http://purl.oclc.org/ooxml/wordprocessingml/main"),
+    (
+        "r",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    ),
+    (
+        "r",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships",
+    ),
+];
+
+/// Attribute keys keep their prefix as written, so `w:` and `r:` attributes
+/// are read by those prefixes. A part that binds either namespace to another
+/// prefix, or either prefix to another namespace, would be misread, so it is
+/// refused instead.
+fn check_prefixes(events: &[Event]) -> Result<(), Refusal> {
+    for event in events {
+        let Event::Open { attributes, .. } = event else {
+            continue;
+        };
+        for (key, uri) in attributes {
+            let Some(prefix) = key.strip_prefix("xmlns:") else {
+                continue;
+            };
+            let misbound = PREFIXES.iter().any(|(known, namespace)| {
+                (namespace == uri && *known != prefix) || (*known == prefix && namespace != uri)
+            }) && !PREFIXES.contains(&(prefix, uri.as_str()));
+            if misbound {
+                return Err(Refusal::UnsupportedContainer);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn part<'p>(package: &'p Package, name: &str) -> Option<&'p Part> {
     package
         .parts
@@ -676,7 +718,9 @@ impl<'a> Importer<'a> {
 
     fn parse(&self, part: &Part) -> Result<Vec<Event>, Refusal> {
         self.cancel.check()?;
-        xml::parse(&part.data, self.limits, self.cancel)
+        let events = xml::parse(&part.data, self.limits, self.cancel)?;
+        check_prefixes(&events)?;
+        Ok(events)
     }
 
     /// Records package and main-part relationships this model does not carry.
@@ -727,14 +771,14 @@ impl<'a> Importer<'a> {
         for (depth, name, attributes) in cursor.elements()? {
             path.truncate(depth - 1);
             path.push(name);
-            let val = attr(attributes, "val");
+            let val = attr(attributes, "w:val");
             if depth == 1 {
                 if let Some((id, style)) = current.take() {
                     self.styles.entry(id).or_insert(style);
                 }
-                if name == "style" && attr(attributes, "type") == Some("paragraph") {
-                    if let Some(id) = attr(attributes, "styleId") {
-                        if matches!(attr(attributes, "default"), Some("1" | "true" | "on")) {
+                if name == "style" && attr(attributes, "w:type") == Some("paragraph") {
+                    if let Some(id) = attr(attributes, "w:styleId") {
+                        if matches!(attr(attributes, "w:default"), Some("1" | "true" | "on")) {
                             self.default_style.get_or_insert_with(|| id.to_owned());
                         }
                         current = Some((id.to_owned(), Style::default()));
@@ -772,20 +816,21 @@ impl<'a> Importer<'a> {
             path.truncate(depth - 1);
             path.push(name);
             match path.as_slice() {
-                ["abstractNum"] => abstract_id = number(attr(attributes, "abstractNumId")),
-                ["abstractNum", "lvl"] => level = number(attr(attributes, "ilvl")),
+                ["abstractNum"] => abstract_id = number(attr(attributes, "w:abstractNumId")),
+                ["abstractNum", "lvl"] => level = number(attr(attributes, "w:ilvl")),
                 ["abstractNum", "lvl", "numFmt"] => {
                     if let (Some(abstract_id), Some(level), Some(format)) =
-                        (abstract_id, level, attr(attributes, "val"))
+                        (abstract_id, level, attr(attributes, "w:val"))
                     {
                         self.formats
                             .entry((abstract_id, level))
                             .or_insert_with(|| format.to_owned());
                     }
                 }
-                ["num"] => num = number(attr(attributes, "numId")),
+                ["num"] => num = number(attr(attributes, "w:numId")),
                 ["num", "abstractNumId"] => {
-                    if let (Some(num), Some(abstract_id)) = (num, number(attr(attributes, "val"))) {
+                    if let (Some(num), Some(abstract_id)) = (num, number(attr(attributes, "w:val")))
+                    {
                         self.numbers.entry(num).or_insert(abstract_id);
                     }
                 }
@@ -839,12 +884,12 @@ impl<'a> Importer<'a> {
                 }
             };
             // Separator notes are layout, not content.
-            if attr(attributes, "type").is_some_and(|kind| kind != "normal") {
+            if attr(attributes, "w:type").is_some_and(|kind| kind != "normal") {
                 cursor.skip()?;
                 continue;
             }
             self.note(feature, Status::Normalized);
-            match number::<i64>(attr(attributes, "id")) {
+            match number::<i64>(attr(attributes, "w:id")) {
                 Some(id) if ids.insert(id) => {
                     let blocks = self.story(&mut cursor, 0, feature)?;
                     notes.push(Note { id, blocks });
@@ -873,11 +918,11 @@ impl<'a> Importer<'a> {
                 }
             };
             self.note("comments", Status::Normalized);
-            match number::<i64>(attr(attributes, "id")) {
+            match number::<i64>(attr(attributes, "w:id")) {
                 Some(id) if ids.insert(id) => {
-                    let author = self.clean(attr(attributes, "author").unwrap_or_default());
-                    let date = self.clean(attr(attributes, "date").unwrap_or_default());
-                    let initials = self.clean(attr(attributes, "initials").unwrap_or_default());
+                    let author = self.clean(attr(attributes, "w:author").unwrap_or_default());
+                    let date = self.clean(attr(attributes, "w:date").unwrap_or_default());
+                    let initials = self.clean(attr(attributes, "w:initials").unwrap_or_default());
                     let blocks = self.story(&mut cursor, 0, "comments")?;
                     comments.push(Comment {
                         id,
@@ -1030,12 +1075,12 @@ impl<'a> Importer<'a> {
             for (level, name, attributes) in cursor.elements()? {
                 match (level, name) {
                     (1, "gridSpan") => {
-                        span = number(attr(attributes, "val"))
+                        span = number(attr(attributes, "w:val"))
                             .filter(|span| (1..=63).contains(span))
                             .unwrap_or(1);
                     }
                     (1, "vMerge") => {
-                        merge = if attr(attributes, "val") == Some("restart") {
+                        merge = if attr(attributes, "w:val") == Some("restart") {
                             Merge::Restart
                         } else {
                             Merge::Continue
@@ -1096,7 +1141,7 @@ impl<'a> Importer<'a> {
                 "sdtContent" | "smartTag" | "customXml" | "dir" | "bdo" | "AlternateContent"
                 | "Choice" => frames.push(Frame::Plain),
                 "bookmarkStart" => {
-                    match (attr(attributes, "id"), attr(attributes, "name")) {
+                    match (attr(attributes, "w:id"), attr(attributes, "w:name")) {
                         (Some(id), Some(name)) if self.bookmark_names.insert(name.to_owned()) => {
                             let name = self.clean(name);
                             self.note("bookmarks", Status::Exact);
@@ -1108,14 +1153,14 @@ impl<'a> Importer<'a> {
                     cursor.skip()?;
                 }
                 "bookmarkEnd" => {
-                    match attr(attributes, "id").and_then(|id| self.bookmarks.remove(id)) {
+                    match attr(attributes, "w:id").and_then(|id| self.bookmarks.remove(id)) {
                         Some(name) => inlines.push(Inline::BookmarkEnd(name)),
                         None => self.note("bookmarks", Status::Normalized),
                     }
                     cursor.skip()?;
                 }
                 "commentRangeStart" | "commentRangeEnd" => {
-                    if let Some(id) = number(attr(attributes, "id")) {
+                    if let Some(id) = number(attr(attributes, "w:id")) {
                         inlines.push(if name == "commentRangeStart" {
                             Inline::CommentStart(id)
                         } else {
@@ -1142,7 +1187,7 @@ impl<'a> Importer<'a> {
         let mut props = ParagraphProps::default();
         let mut parent = "";
         for (depth, name, attributes) in cursor.elements()? {
-            let val = attr(attributes, "val");
+            let val = attr(attributes, "w:val");
             if depth == 1 {
                 parent = name;
             }
@@ -1229,8 +1274,8 @@ impl<'a> Importer<'a> {
     }
 
     fn link(&mut self, attributes: &[(String, String)]) -> Option<Link> {
-        let anchor = attr(attributes, "anchor");
-        let link = match attr(attributes, "id") {
+        let anchor = attr(attributes, "w:anchor");
+        let link = match attr(attributes, "r:id") {
             Some(id) => match self.relationship(id) {
                 Some(rel) if rel.external && kind_of(rel) == "hyperlink" => {
                     let target = match anchor {
@@ -1260,9 +1305,9 @@ impl<'a> Importer<'a> {
                 .into_iter()
                 .find(|kind| kind.element() == name)
                 .unwrap_or(ChangeKind::Insert),
-            id: number(attr(attributes, "id")).unwrap_or(0),
-            author: self.clean(attr(attributes, "author").unwrap_or_default()),
-            date: self.clean(attr(attributes, "date").unwrap_or_default()),
+            id: number(attr(attributes, "w:id")).unwrap_or(0),
+            author: self.clean(attr(attributes, "w:author").unwrap_or_default()),
+            date: self.clean(attr(attributes, "w:date").unwrap_or_default()),
         }
     }
 
@@ -1313,7 +1358,7 @@ impl<'a> Importer<'a> {
             match name {
                 "rPr" => {
                     for (depth, element, attributes) in cursor.elements()? {
-                        let val = attr(attributes, "val");
+                        let val = attr(attributes, "w:val");
                         match (depth, element) {
                             (1, "b") => template.bold = on(val),
                             (1, "i") => template.italic = on(val),
@@ -1334,7 +1379,7 @@ impl<'a> Importer<'a> {
                 }
                 "tab" | "ptab" | "br" | "cr" | "noBreakHyphen" | "softHyphen" => {
                     if name == "ptab"
-                        || attr(attributes, "type").is_some_and(|t| t != "textWrapping")
+                        || attr(attributes, "w:type").is_some_and(|t| t != "textWrapping")
                     {
                         self.note("breaks", Status::Normalized);
                     }
@@ -1350,7 +1395,7 @@ impl<'a> Importer<'a> {
                 }
                 "fldChar" => {
                     self.note("fields", Status::Normalized);
-                    match attr(attributes, "fldCharType") {
+                    match attr(attributes, "w:fldCharType") {
                         Some("begin") => self.fields.push(true),
                         Some("separate") => {
                             if let Some(code) = self.fields.last_mut() {
@@ -1378,7 +1423,7 @@ impl<'a> Importer<'a> {
                     }
                 }
                 "footnoteReference" | "endnoteReference" | "commentReference" => {
-                    if let (Some(id), false) = (number(attr(attributes, "id")), hidden) {
+                    if let (Some(id), false) = (number(attr(attributes, "w:id")), hidden) {
                         if !text.is_empty() {
                             emit(
                                 RunContent::Text(std::mem::take(&mut text)),
@@ -1432,7 +1477,7 @@ impl<'a> Importer<'a> {
                     name = attr(attributes, "name").unwrap_or_default();
                     description = attr(attributes, "descr").unwrap_or_default();
                 }
-                (_, "blip") => blip = blip.or(attr(attributes, "embed")),
+                (_, "blip") => blip = blip.or(attr(attributes, "r:embed")),
                 (_, "svgBlip") => self.note("svg-images", Status::Normalized),
                 (_, "chart") => other = Some("charts"),
                 (_, "relIds") => other = Some("smartart"),

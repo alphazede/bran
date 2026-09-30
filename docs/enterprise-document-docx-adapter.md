@@ -28,6 +28,9 @@ not need Microsoft Word, LibreOffice, or a network service.
   escape, duplicate parts, bombs, budgets, macro and OLE content types,
   external relationships other than hyperlinks, DTDs, and entities. The
   adapter adds its own refusals only for the parts it reads.
+- The shared XML reader keeps attribute prefixes as written, so the adapter
+  reads `w:val`, `r:id`, and `r:embed` by prefix. A part that binds those
+  namespaces under other prefixes is refused rather than misread.
 - Nothing is fetched or executed. Fields keep their cached result and their
   code is dropped. Hyperlink targets are recorded, never dereferenced.
 - Content the model does not carry is skipped and recorded in the fidelity
@@ -36,6 +39,7 @@ not need Microsoft Word, LibreOffice, or a network service.
 | Input | Refusal |
 |---|---|
 | Main part is not WordprocessingML (for example a workbook) | `unsupported-container` |
+| A part binds the WordprocessingML or relationships namespace to a prefix other than `w` or `r`, or binds `w` or `r` to another namespace | `unsupported-container` |
 | No `officeDocument` relationship, missing main part, or no `body` | `malformed-container` |
 | Malformed XML or an undeclared entity in any part the adapter reads | `malformed-xml` |
 | A DTD in any part the adapter reads | `xml-dtd-refused` |

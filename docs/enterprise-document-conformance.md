@@ -214,7 +214,7 @@ not use.
 | Property iterations | 2,000 | 50,000 |
 | Largest generated package | 2 MiB | 24 MiB |
 | Runtime ceiling (debug build, whole tier) | 10 s | 120 s |
-| Measured on 2026-09-30 (debug build, with the DOCX adapter) | 0.9 s, 126 checks | 25.6 s, 126 checks |
+| Measured on 2026-09-30 (debug build, with the DOCX adapter) | 0.9 s, 162 checks | 29.8 s, 162 checks |
 | Fixture file size | 8 KiB each | same files |
 
 The budgets are constants at the top of the test file. A tier that runs

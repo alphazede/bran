@@ -373,6 +373,22 @@ fn docx_citation_anchors_are_stable_locators() {
 }
 
 #[test]
+fn docx_reads_attributes_only_under_their_prefix() {
+    let parts = edit(
+        representative(),
+        MAIN,
+        "<w:pStyle w:val=\"Title\"/>",
+        "<w:pStyle xmlns:o=\"urn:example:other\" o:val=\"Title\"/>",
+    );
+    let document = read(&package(&parts)).expect("imports");
+    assert_eq!(
+        paragraph(&document, "Synthetic quarterly brief").kind,
+        Kind::Body,
+        "an attribute in a foreign namespace is not w:val"
+    );
+}
+
+#[test]
 fn docx_import_ignores_archive_order_timestamps_and_compression() {
     let parts = representative();
     let first = imported(&package(&parts));
@@ -565,6 +581,28 @@ fn docx_refuses_hostile_packages() {
             )),
             &default,
             Refusal::ActiveContent,
+        ),
+        (
+            "WordprocessingML namespace bound to another prefix",
+            package(&edit(
+                base.clone(),
+                MAIN,
+                "<w:document ",
+                "<w:document xmlns:x=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" ",
+            )),
+            &default,
+            Refusal::UnsupportedContainer,
+        ),
+        (
+            "w prefix bound to a foreign namespace",
+            package(&edit(
+                base.clone(),
+                "word/styles.xml",
+                "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"",
+                "xmlns:w=\"urn:example:other\"",
+            )),
+            &default,
+            Refusal::UnsupportedContainer,
         ),
         (
             "office document that is not WordprocessingML",
