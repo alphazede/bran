@@ -995,6 +995,35 @@ fn xlsx_table_headers_do_not_label_cells_below() {
     );
 }
 
+/// A carriage return in cell text survives the round trip byte for byte:
+/// the exporter writes it as a character reference, since a literal CR in
+/// XML would normalize to a newline on re-import and move citation anchors.
+#[test]
+fn xlsx_carriage_returns_survive_export() {
+    let bytes = Parts::parse(FEATURES)
+        .edit(SHEET1, "=1+1 stays text", "line1&#13;line2")
+        .zip();
+    let first = import(&bytes).expect("imports");
+    assert!(
+        text(&first).contains("line1\\rline2"),
+        "import changed the carriage return"
+    );
+    let out = exported(&first);
+    let entries = zip::read(&out.bytes, &limits(), &Cancel::default()).unwrap();
+    let sheet = entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .expect("sheet part");
+    let xml = String::from_utf8(sheet.data.clone()).unwrap();
+    assert!(
+        xml.contains("line1&#13;line2"),
+        "export wrote a literal carriage return: {xml:?}"
+    );
+    let second = import(&out.bytes).expect("export re-imports");
+    assert_eq!(second.anchors, first.anchors);
+    assert!(text(&second).contains("line1\\rline2"));
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the

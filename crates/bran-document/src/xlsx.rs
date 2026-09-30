@@ -1957,7 +1957,9 @@ fn rels_part(relationships: &str) -> String {
 
 // ---- Text encoding ----
 
-/// Escapes element text. XML 1.0 cannot carry other C0 controls, so text
+/// Escapes element text. A carriage return goes out as a character
+/// reference: XML line-ending normalization would turn a literal CR into a
+/// newline on re-import. XML 1.0 cannot carry other C0 controls, so text
 /// that still has one after `encode_xstring` is refused.
 fn escape(value: &str) -> Result<String, Refusal> {
     let mut out = String::with_capacity(value.len());
@@ -1966,7 +1968,8 @@ fn escape(value: &str) -> Result<String, Refusal> {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
-            '\t' | '\n' | '\r' => out.push(c),
+            '\r' => out.push_str("&#13;"),
+            '\t' | '\n' => out.push(c),
             c if (c as u32) < 0x20 || c == '\u{FFFE}' || c == '\u{FFFF}' => {
                 return Err(Refusal::ExportUnsupported)
             }
