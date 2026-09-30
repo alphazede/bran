@@ -1,15 +1,30 @@
 //! Exact symbol navigation facts read from an existing SCIP index (issue #38).
 //!
-//! BRAN never generates an index. It decodes only the parts of the SCIP
-//! protobuf schema (sourcegraph/scip `scip.proto`) it needs: document paths
+//! BRAN never generates an index. It validates the parts of the SCIP
+//! protobuf schema (sourcegraph/scip `scip.proto`) it reads: document paths
 //! and text, occurrences with their ranges and roles, and symbol kinds and
 //! implementation relationships. Anything malformed is a decode error, never
-//! a partial guess.
+//! a partial guess. Validated views borrow from the index bytes, so decoding
+//! allocates nothing per message, and every collection a query builds is
+//! bounded before it grows.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Largest index BRAN will read.
 pub const MAX_INDEX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Most distinct symbols one query selects, and most (implementing symbol,
+/// selected symbol) pairs it tracks.
+const MAX_SYMBOLS: usize = 1024;
+
+/// Most candidate facts one query examines.
+const MAX_CANDIDATES: usize = 1 << 20;
+
+/// Occurrence coordinates are protobuf `int32` values and never negative.
+const MAX_COORDINATE: u64 = i32::MAX as u64;
+
+/// Largest protobuf field number.
+const MAX_FIELD_NUMBER: u64 = (1 << 29) - 1;
 
 /// `SymbolRole.Definition` in `Occurrence.symbol_roles`.
 const DEFINITION_ROLE: u64 = 1;
@@ -17,36 +32,9 @@ const DEFINITION_ROLE: u64 = 1;
 /// `SymbolInformation.Kind` values 0..=86 in snake case; 83 is unassigned.
 const KIND_NAMES: &str = "unspecified_kind array assertion associated_type attribute axiom boolean class constant constructor data_family enum enum_member event fact field file function getter grammar instance interface key lang lemma macro method method_receiver message module namespace null number object operator package package_object parameter parameter_label pattern predicate property protocol quasiquoter self_parameter setter signature subscript string struct tactic theorem this_parameter trait type type_alias type_class type_family type_parameter union value variable contract error library modifier abstract_method method_specification protocol_method pure_virtual_method trait_method type_class_method accessor delegate method_alias singleton_class singleton_method static_data_member static_event static_field static_method static_property static_variable unspecified_kind extension mixin concept";
 
-#[derive(Debug, Default)]
-pub struct Index {
-    pub documents: Vec<Document>,
-    pub external_symbols: Vec<SymbolInformation>,
-}
-
-#[derive(Debug, Default)]
-pub struct Document {
-    pub relative_path: String,
-    /// Source text as indexed; empty when the indexer did not record it.
-    pub text: String,
-    pub occurrences: Vec<Occurrence>,
-    pub symbols: Vec<SymbolInformation>,
-}
-
-#[derive(Debug, Default)]
-pub struct Occurrence {
-    pub symbol: String,
-    pub definition: bool,
-    /// Zero-based, inclusive.
-    pub start_line: u32,
-    pub end_line: u32,
-}
-
-#[derive(Debug, Default)]
-pub struct SymbolInformation {
-    pub symbol: String,
-    pub kind: u64,
-    /// Symbols this one implements (`Relationship.is_implementation`).
-    pub implements: Vec<String>,
+/// A validated SCIP `Index`.
+pub struct Index<'a> {
+    bytes: &'a [u8],
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -80,14 +68,16 @@ impl Role {
 }
 
 /// One exact navigation fact, with one-based inclusive lines.
-#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Evidence {
     pub locator: String,
     pub start_line: u32,
     pub end_line: u32,
     pub role: Role,
     pub symbol: String,
-    /// For an implementation, the matched symbol it implements.
+    /// The snake-case `SymbolInformation.Kind` recorded for `symbol`.
+    pub kind: &'static str,
+    /// For an implementation, the selected symbol it implements.
     pub implements: Option<String>,
 }
 
@@ -103,12 +93,38 @@ pub struct SymbolName {
     pub navigable: bool,
 }
 
-impl Index {
+#[derive(Clone, Copy)]
+struct DocumentView<'a> {
+    path: &'a str,
+    text: &'a str,
+    body: &'a [u8],
+}
+
+#[derive(Clone, Copy)]
+struct OccurrenceView<'a> {
+    symbol: &'a str,
+    definition: bool,
+    /// Zero-based, inclusive, at most `MAX_COORDINATE`.
+    start_line: u32,
+    end_line: u32,
+}
+
+#[derive(Clone, Copy)]
+struct InformationView<'a> {
+    symbol: &'a str,
+    kind: u64,
+    body: &'a [u8],
+}
+
+/// One candidate fact: rank, locator, lines, role, symbol, implemented symbol.
+type Candidate<'a> = (usize, &'a str, u32, u32, Role, &'a str, Option<&'a str>);
+
+impl<'a> Index<'a> {
     /// Compares each document's recorded text with the scanned source.
-    pub fn freshness<'a>(&self, scanned: impl Fn(&str) -> Option<&'a [u8]>) -> Freshness {
+    pub fn freshness<'s>(&self, scanned: impl Fn(&str) -> Option<&'s [u8]>) -> Freshness {
         let mut freshness = Freshness::Fresh;
-        for document in &self.documents {
-            match scanned(&document.relative_path) {
+        for document in self.documents() {
+            match scanned(document.path) {
                 Some(source) if !document.text.is_empty() => {
                     if source != document.text.as_bytes() {
                         return Freshness::Stale;
@@ -120,96 +136,172 @@ impl Index {
         freshness
     }
 
-    /// Definitions, references, and implementations of every global symbol
-    /// whose name equals one of `names` (compared lowercase), in locator and
-    /// line order.
-    pub fn evidence(&self, names: &BTreeSet<String>) -> Vec<Evidence> {
-        let mut matched = BTreeSet::new();
-        for symbol in self.symbols() {
-            if symbol_name(symbol).is_some_and(|name| {
-                name.navigable && names.contains(&name.name.to_ascii_lowercase())
-            }) {
-                matched.insert(symbol);
+    /// Definitions, references, and implementations of the global symbols
+    /// whose name equals one of `names` (compared ASCII-lowercase), in the
+    /// documents `ranked` maps to a rank. Returns at most `limit` facts in
+    /// rank, locator, and line order, and whether the index holds more: past
+    /// the limit, in an unranked document, or past a collection bound.
+    pub fn evidence(
+        &self,
+        names: &BTreeSet<String>,
+        ranked: &BTreeMap<&str, usize>,
+        limit: usize,
+    ) -> (Vec<Evidence>, bool) {
+        let mut truncated = false;
+        let mut selected = BTreeSet::new();
+        let occurrences = self
+            .documents()
+            .flat_map(DocumentView::occurrences)
+            .map(|occurrence| occurrence.symbol);
+        for symbol in occurrences.chain(self.informations().map(|information| information.symbol)) {
+            if selected.contains(symbol)
+                || !symbol_name(symbol).is_some_and(|name| {
+                    name.navigable && names.contains(&name.name.to_ascii_lowercase())
+                })
+            {
+                continue;
             }
+            if selected.len() == MAX_SYMBOLS {
+                truncated = true;
+                break;
+            }
+            selected.insert(symbol);
         }
-        let mut implemented = BTreeMap::<&str, Vec<&str>>::new();
+
+        let mut implemented = BTreeMap::<&str, BTreeSet<&str>>::new();
+        let mut pairs = 0;
         for information in self.informations() {
-            for target in &information.implements {
-                if matched.contains(target.as_str()) {
-                    implemented
-                        .entry(&information.symbol)
-                        .or_default()
-                        .push(target);
+            for target in information.implements() {
+                if !selected.contains(target)
+                    || implemented
+                        .get(information.symbol)
+                        .is_some_and(|targets| targets.contains(target))
+                {
+                    continue;
                 }
+                if pairs == MAX_SYMBOLS {
+                    truncated = true;
+                    continue;
+                }
+                implemented
+                    .entry(information.symbol)
+                    .or_default()
+                    .insert(target);
+                pairs += 1;
             }
         }
-        let mut evidence = Vec::new();
-        for document in &self.documents {
-            for occurrence in &document.occurrences {
-                let fact = |role, implements: Option<&str>| Evidence {
-                    locator: document.relative_path.clone(),
-                    start_line: occurrence.start_line + 1,
-                    end_line: occurrence.end_line + 1,
-                    role,
-                    symbol: occurrence.symbol.clone(),
-                    implements: implements.map(str::to_owned),
-                };
-                if matched.contains(occurrence.symbol.as_str()) {
-                    evidence.push(fact(
-                        if occurrence.definition {
-                            Role::Definition
-                        } else {
-                            Role::Reference
-                        },
-                        None,
-                    ));
+
+        // Keep only the first `limit` distinct facts while collecting.
+        let mut kept = BTreeSet::<Candidate>::new();
+        let mut candidates = 0;
+        'documents: for document in self.documents() {
+            let rank = ranked.get(document.path).copied();
+            for occurrence in document.occurrences() {
+                let is_selected = selected.contains(occurrence.symbol);
+                let targets = occurrence
+                    .definition
+                    .then(|| implemented.get(occurrence.symbol))
+                    .flatten();
+                if !is_selected && targets.is_none() {
+                    continue;
                 }
-                if occurrence.definition {
-                    for target in implemented
-                        .get(occurrence.symbol.as_str())
-                        .into_iter()
-                        .flatten()
-                    {
-                        evidence.push(fact(Role::Implementation, Some(target)));
+                let Some(rank) = rank else {
+                    truncated = true;
+                    continue;
+                };
+                let own = is_selected.then_some(if occurrence.definition {
+                    (Role::Definition, None)
+                } else {
+                    (Role::Reference, None)
+                });
+                let implementations = targets
+                    .into_iter()
+                    .flatten()
+                    .map(|target| (Role::Implementation, Some(*target)));
+                for (role, implements) in own.into_iter().chain(implementations) {
+                    candidates += 1;
+                    if candidates > MAX_CANDIDATES {
+                        truncated = true;
+                        break 'documents;
+                    }
+                    kept.insert((
+                        rank,
+                        document.path,
+                        occurrence.start_line,
+                        occurrence.end_line,
+                        role,
+                        occurrence.symbol,
+                        implements,
+                    ));
+                    if kept.len() > limit {
+                        kept.pop_last();
+                        truncated = true;
                     }
                 }
             }
         }
-        evidence.sort();
-        evidence.dedup();
-        evidence
-    }
 
-    /// The snake-case `SymbolInformation.Kind` recorded for `symbol`.
-    pub fn kind(&self, symbol: &str) -> &'static str {
-        let kind = self
-            .informations()
-            .find(|information| information.symbol == symbol)
-            .map_or(0, |information| information.kind);
-        usize::try_from(kind)
-            .ok()
-            .and_then(|kind| KIND_NAMES.split(' ').nth(kind))
-            .unwrap_or("unspecified_kind")
-    }
-
-    fn informations(&self) -> impl Iterator<Item = &SymbolInformation> {
-        self.documents
+        let wanted = kept
             .iter()
-            .flat_map(|document| &document.symbols)
-            .chain(&self.external_symbols)
-    }
-
-    fn symbols(&self) -> BTreeSet<&str> {
-        self.documents
-            .iter()
-            .flat_map(|document| &document.occurrences)
-            .map(|occurrence| occurrence.symbol.as_str())
-            .chain(
-                self.informations()
-                    .map(|information| information.symbol.as_str()),
+            .map(|candidate| candidate.5)
+            .collect::<BTreeSet<_>>();
+        let mut kinds = BTreeMap::new();
+        for information in self.informations() {
+            if wanted.contains(information.symbol) {
+                kinds.entry(information.symbol).or_insert(information.kind);
+            }
+        }
+        let evidence = kept
+            .into_iter()
+            .map(
+                |(_, locator, start_line, end_line, role, symbol, implements)| Evidence {
+                    locator: locator.to_owned(),
+                    // Coordinates are at most `i32::MAX`, so this cannot overflow.
+                    start_line: start_line + 1,
+                    end_line: end_line + 1,
+                    role,
+                    symbol: symbol.to_owned(),
+                    kind: kind_name(kinds.get(symbol).copied().unwrap_or(0)),
+                    implements: implements.map(str::to_owned),
+                },
             )
-            .collect()
+            .collect();
+        (evidence, truncated)
     }
+
+    fn documents(&self) -> impl Iterator<Item = DocumentView<'a>> {
+        messages(self.bytes, 2).filter_map(|bytes| document(bytes).ok())
+    }
+
+    /// Symbol information from every document, then external symbols.
+    fn informations(&self) -> impl Iterator<Item = InformationView<'a>> {
+        self.documents()
+            .flat_map(|document| messages(document.body, 3))
+            .chain(messages(self.bytes, 3))
+            .filter_map(|bytes| information(bytes).ok())
+    }
+}
+
+impl<'a> DocumentView<'a> {
+    fn occurrences(self) -> impl Iterator<Item = OccurrenceView<'a>> {
+        messages(self.body, 2).filter_map(|bytes| occurrence(bytes).ok())
+    }
+}
+
+impl<'a> InformationView<'a> {
+    /// Symbols this one implements (`Relationship.is_implementation`).
+    fn implements(self) -> impl Iterator<Item = &'a str> {
+        messages(self.body, 4)
+            .filter_map(|bytes| relationship(bytes).ok())
+            .filter_map(|(target, implementation)| implementation.then_some(target))
+    }
+}
+
+fn kind_name(kind: u64) -> &'static str {
+    usize::try_from(kind)
+        .ok()
+        .and_then(|kind| KIND_NAMES.split(' ').nth(kind))
+        .unwrap_or("unspecified_kind")
 }
 
 /// Name and qualified name of a global symbol. Local symbols, malformed
@@ -292,128 +384,167 @@ fn descriptor_name(text: &str) -> Option<(String, &str)> {
     (end > 0).then(|| (text[..end].to_owned(), &text[end..]))
 }
 
-/// Decodes a SCIP `Index` message.
-pub fn decode_index(bytes: &[u8]) -> Result<Index, DecodeError> {
-    let mut index = Index::default();
-    each_field(bytes, |field, value| {
-        match field {
-            2 => index.documents.push(document(value.bytes()?)?),
-            3 => index
-                .external_symbols
-                .push(symbol_information(value.bytes()?)?),
+/// Validates a SCIP `Index` message and every document, occurrence, symbol,
+/// and relationship in it, without allocating per message.
+pub fn decode_index(bytes: &[u8]) -> Result<Index<'_>, DecodeError> {
+    for field in fields(bytes) {
+        match field? {
+            (2, value) => {
+                let document = document(value.bytes()?)?;
+                for field in fields(document.body) {
+                    match field? {
+                        (2, value) => {
+                            occurrence(value.bytes()?)?;
+                        }
+                        (3, value) => {
+                            information(value.bytes()?)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (3, value) => {
+                information(value.bytes()?)?;
+            }
             _ => {}
         }
-        Ok(())
-    })?;
-    Ok(index)
+    }
+    Ok(Index { bytes })
 }
 
-fn document(bytes: &[u8]) -> Result<Document, DecodeError> {
-    let mut document = Document::default();
-    each_field(bytes, |field, value| {
-        match field {
-            1 => document.relative_path = value.string()?,
-            2 => document.occurrences.push(occurrence(value.bytes()?)?),
-            3 => document.symbols.push(symbol_information(value.bytes()?)?),
-            5 => document.text = value.string()?,
+fn document(bytes: &[u8]) -> Result<DocumentView<'_>, DecodeError> {
+    let mut document = DocumentView {
+        path: "",
+        text: "",
+        body: bytes,
+    };
+    for field in fields(bytes) {
+        match field? {
+            (1, value) => document.path = value.str()?,
+            (5, value) => document.text = value.str()?,
             _ => {}
         }
-        Ok(())
-    })?;
+    }
     Ok(document)
 }
 
-fn occurrence(bytes: &[u8]) -> Result<Occurrence, DecodeError> {
-    let mut symbol = String::new();
+fn occurrence(bytes: &[u8]) -> Result<OccurrenceView<'_>, DecodeError> {
+    let mut symbol = "";
     let mut roles = 0;
-    let mut range = Vec::new();
+    // The deprecated `range` holds three or four coordinates; a fifth is
+    // rejected before it is stored.
+    let mut range = [0; 4];
+    let mut count = 0;
+    let mut push = |value| {
+        *range.get_mut(count).ok_or(DecodeError)? = value;
+        count += 1;
+        Ok(())
+    };
     let mut typed = None;
-    each_field(bytes, |field, value| {
-        match (field, value) {
-            // Deprecated `range`: packed, or one unpacked element per field.
+    for field in fields(bytes) {
+        match field? {
+            // Packed, or one unpacked element per field.
             (1, Value::Bytes(packed)) => {
                 let mut reader = Reader {
                     bytes: packed,
                     at: 0,
                 };
                 while reader.at < packed.len() {
-                    range.push(reader.varint()?);
+                    push(reader.varint()?)?;
                 }
             }
-            (1, Value::Varint(element)) => range.push(element),
-            (2, value) => symbol = value.string()?,
+            (1, Value::Varint(element)) => push(element)?,
+            (2, value) => symbol = value.str()?,
             (3, value) => roles = value.varint()?,
-            // `single_line_range`: line = 1.
+            // `single_line_range`: line = 1, start_character = 2, end_character = 3.
             (8, value) => {
-                let line = message_varint(value.bytes()?, 1)?;
-                typed = Some((line, line));
+                let [line, start, end] = message_varints(value.bytes()?, [1, 2, 3])?;
+                typed = Some([line, start, line, end]);
             }
-            // `multi_line_range`: start_line = 1, end_line = 3.
-            (9, value) => {
-                let bytes = value.bytes()?;
-                typed = Some((message_varint(bytes, 1)?, message_varint(bytes, 3)?));
-            }
+            // `multi_line_range`: start_line, start_character, end_line, end_character.
+            (9, value) => typed = Some(message_varints(value.bytes()?, [1, 2, 3, 4])?),
             _ => {}
         }
-        Ok(())
-    })?;
-    let (start, end) = match (typed, range.as_slice()) {
-        (Some(lines), _) => lines,
-        (None, [line, _, _]) => (*line, *line),
-        (None, [start, _, end, _]) => (*start, *end),
+    }
+    let [start_line, start_character, end_line, end_character] = match (typed, &range[..count]) {
+        (Some(coordinates), _) => coordinates,
+        (None, [line, start, end]) => [*line, *start, *line, *end],
+        (None, [start_line, start, end_line, end]) => [*start_line, *start, *end_line, *end],
         _ => return Err(DecodeError),
     };
-    let line = |value: u64| u32::try_from(value).map_err(|_| DecodeError);
-    let (start_line, end_line) = (line(start)?, line(end)?);
-    if end_line < start_line {
+    if [start_line, start_character, end_line, end_character]
+        .iter()
+        .any(|coordinate| *coordinate > MAX_COORDINATE)
+        || (end_line, end_character) < (start_line, start_character)
+    {
         return Err(DecodeError);
     }
-    Ok(Occurrence {
+    let line = |value| u32::try_from(value).map_err(|_| DecodeError);
+    Ok(OccurrenceView {
         symbol,
         definition: roles & DEFINITION_ROLE != 0,
-        start_line,
-        end_line,
+        start_line: line(start_line)?,
+        end_line: line(end_line)?,
     })
 }
 
-fn symbol_information(bytes: &[u8]) -> Result<SymbolInformation, DecodeError> {
-    let mut information = SymbolInformation::default();
-    each_field(bytes, |field, value| {
-        match field {
-            1 => information.symbol = value.string()?,
-            4 => {
-                let mut target = String::new();
-                let mut implementation = false;
-                each_field(value.bytes()?, |field, value| {
-                    match field {
-                        1 => target = value.string()?,
-                        3 => implementation = value.varint()? != 0,
-                        _ => {}
-                    }
-                    Ok(())
-                })?;
-                if implementation {
-                    information.implements.push(target);
-                }
+/// A symbol information message; its symbol must not be empty.
+fn information(bytes: &[u8]) -> Result<InformationView<'_>, DecodeError> {
+    let mut information = InformationView {
+        symbol: "",
+        kind: 0,
+        body: bytes,
+    };
+    for field in fields(bytes) {
+        match field? {
+            (1, value) => information.symbol = value.str()?,
+            (4, value) => {
+                relationship(value.bytes()?)?;
             }
-            5 => information.kind = value.varint()?,
+            (5, value) => information.kind = value.varint()?,
             _ => {}
         }
-        Ok(())
-    })?;
+    }
+    if information.symbol.is_empty() {
+        return Err(DecodeError);
+    }
     Ok(information)
 }
 
-/// The last value of varint field `wanted` in one message; zero when absent.
-fn message_varint(bytes: &[u8], wanted: u64) -> Result<u64, DecodeError> {
-    let mut found = 0;
-    each_field(bytes, |field, value| {
-        if field == wanted {
-            found = value.varint()?;
+/// A relationship's target symbol and whether it is an implementation.
+fn relationship(bytes: &[u8]) -> Result<(&str, bool), DecodeError> {
+    let mut target = "";
+    let mut implementation = false;
+    for field in fields(bytes) {
+        match field? {
+            (1, value) => target = value.str()?,
+            (3, value) => implementation = value.varint()? != 0,
+            _ => {}
         }
-        Ok(())
-    })?;
+    }
+    Ok((target, implementation))
+}
+
+/// The last value of each wanted varint field in one message; zero when absent.
+fn message_varints<const N: usize>(
+    bytes: &[u8],
+    wanted: [u64; N],
+) -> Result<[u64; N], DecodeError> {
+    let mut found = [0; N];
+    for field in fields(bytes) {
+        let (field, value) = field?;
+        if let Some(slot) = wanted.iter().position(|wanted| *wanted == field) {
+            found[slot] = value.varint()?;
+        }
+    }
     Ok(found)
+}
+
+/// Length-delimited values of field `wanted` in an already validated message.
+fn messages(bytes: &[u8], wanted: u64) -> impl Iterator<Item = &[u8]> {
+    fields(bytes)
+        .map_while(Result::ok)
+        .filter_map(move |(field, value)| (field == wanted).then(|| value.bytes().ok()).flatten())
 }
 
 enum Value<'a> {
@@ -437,8 +568,8 @@ impl<'a> Value<'a> {
         }
     }
 
-    fn string(self) -> Result<String, DecodeError> {
-        String::from_utf8(self.bytes()?.to_vec()).map_err(|_| DecodeError)
+    fn str(self) -> Result<&'a str, DecodeError> {
+        std::str::from_utf8(self.bytes()?).map_err(|_| DecodeError)
     }
 }
 
@@ -448,11 +579,15 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// A base-128 varint of at most ten bytes whose value fits in 64 bits.
     fn varint(&mut self) -> Result<u64, DecodeError> {
         let mut value = 0u64;
         for shift in (0..64).step_by(7) {
             let byte = *self.bytes.get(self.at).ok_or(DecodeError)?;
             self.at += 1;
+            if shift == 63 && byte > 1 {
+                return Err(DecodeError);
+            }
             value |= u64::from(byte & 0x7f) << shift;
             if byte < 0x80 {
                 return Ok(value);
@@ -471,36 +606,47 @@ impl<'a> Reader<'a> {
         self.at = end;
         Ok(bytes)
     }
-}
 
-/// Calls `visit` for each field of one message. Group wire types and
-/// truncated input are errors.
-fn each_field<'a>(
-    bytes: &'a [u8],
-    mut visit: impl FnMut(u64, Value<'a>) -> Result<(), DecodeError>,
-) -> Result<(), DecodeError> {
-    let mut reader = Reader { bytes, at: 0 };
-    while reader.at < bytes.len() {
-        let key = reader.varint()?;
+    /// One field. Field number zero or above the protobuf maximum, group
+    /// wire types, and truncated input are errors.
+    fn field(&mut self) -> Result<(u64, Value<'a>), DecodeError> {
+        let key = self.varint()?;
+        let number = key >> 3;
+        if number == 0 || number > MAX_FIELD_NUMBER {
+            return Err(DecodeError);
+        }
         let value = match key & 7 {
-            0 => Value::Varint(reader.varint()?),
+            0 => Value::Varint(self.varint()?),
             1 => {
-                reader.take(8)?;
+                self.take(8)?;
                 Value::Fixed
             }
             2 => {
-                let length = reader.varint()?;
-                Value::Bytes(reader.take(length)?)
+                let length = self.varint()?;
+                Value::Bytes(self.take(length)?)
             }
             5 => {
-                reader.take(4)?;
+                self.take(4)?;
                 Value::Fixed
             }
             _ => return Err(DecodeError),
         };
-        visit(key >> 3, value)?;
+        Ok((number, value))
     }
-    Ok(())
+}
+
+/// The fields of one message; iteration stops after the first error.
+fn fields(bytes: &[u8]) -> impl Iterator<Item = Result<(u64, Value<'_>), DecodeError>> {
+    let mut reader = Reader { bytes, at: 0 };
+    let mut failed = false;
+    std::iter::from_fn(move || {
+        if failed || reader.at == reader.bytes.len() {
+            return None;
+        }
+        let field = reader.field();
+        failed = field.is_err();
+        Some(field)
+    })
 }
 
 #[cfg(test)]
@@ -565,8 +711,10 @@ mod tests {
         let mut index = vec![0x12, document.len() as u8];
         index.extend_from_slice(&document);
         let decoded = decode_index(&index).unwrap();
-        assert_eq!(decoded.documents[0].occurrences[0].symbol, "s");
-        assert!(decoded.documents[0].occurrences[0].definition);
+        let document = decoded.documents().next().unwrap();
+        let occurrence = document.occurrences().next().unwrap();
+        assert_eq!((document.path, occurrence.symbol), ("a.rs", "s"));
+        assert!(occurrence.definition);
         for end in 1..index.len() {
             assert!(decode_index(&index[..end]).is_err(), "prefix {end}");
         }

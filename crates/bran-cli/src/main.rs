@@ -1974,14 +1974,25 @@ fn source_rankings_json_with_bundle(
         .join(",")
 }
 
-/// Provenance source list; `scip` joins it only when symbol evidence is
-/// attached to a ranked source.
-fn provenance_sources(attached: &BTreeMap<&str, Vec<&scip::Evidence>>) -> &'static str {
-    if attached.is_empty() {
+/// Provenance source list; `scip` joins it only when the result keeps
+/// symbol evidence.
+fn provenance_sources(retained: &BTreeMap<&str, Vec<&scip::Evidence>>) -> &'static str {
+    if retained.is_empty() {
         "\"repository-scanner\",\"bran-core\""
     } else {
         "\"repository-scanner\",\"bran-core\",\"scip\""
     }
+}
+
+/// Symbol name candidates: every run of characters a simple SCIP name may
+/// contain, ASCII-lowercase, without the ranking tokenizer's length and
+/// stop-word filters.
+fn symbol_candidates(query_text: &str) -> BTreeSet<String> {
+    query_text
+        .split(|character: char| !(character.is_alphanumeric() || "_+-$".contains(character)))
+        .filter(|run| !run.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 const SCIP_INDEX: &str = "index.scip";
@@ -1994,8 +2005,10 @@ const MAX_SYMBOL_EVIDENCE: usize = 64;
 struct SymbolNavigation {
     status: &'static str,
     reason: Option<&'static str>,
-    index: scip::Index,
+    /// At most `MAX_SYMBOL_EVIDENCE` facts for ranked sources, in rank order.
     evidence: Vec<scip::Evidence>,
+    /// The index holds evidence beyond `evidence`.
+    truncated: bool,
 }
 
 impl SymbolNavigation {
@@ -2007,7 +2020,12 @@ impl SymbolNavigation {
         }
     }
 
-    fn resolve(root: &Path, snapshot: &ScanSnapshot, query_text: &str) -> Self {
+    fn resolve(
+        root: &Path,
+        snapshot: &ScanSnapshot,
+        query_text: &str,
+        rankings: &[SourceRanking],
+    ) -> Self {
         let path = root.join(SCIP_INDEX);
         let regular = |path: &Path| {
             fs::symlink_metadata(path)
@@ -2022,11 +2040,13 @@ impl SymbolNavigation {
         }
         // ponytail: decodes the whole index on every call; cache it by digest
         // if large indexes make queries slow.
-        let index = fs::read(&path)
+        let Some(bytes) = fs::read(&path)
             .ok()
             .filter(|_| regular(&path).is_ok_and(|regular| regular))
-            .and_then(|bytes| scip::decode_index(&bytes).ok());
-        let Some(index) = index else {
+        else {
+            return Self::unavailable("unavailable", "index_unreadable");
+        };
+        let Ok(index) = scip::decode_index(&bytes) else {
             return Self::unavailable("unavailable", "index_unreadable");
         };
         let (status, reason) =
@@ -2035,55 +2055,57 @@ impl SymbolNavigation {
                 scip::Freshness::Unverified => ("partial", Some("freshness_unverified")),
                 scip::Freshness::Stale => return Self::unavailable("stale", "index_stale"),
             };
-        let (terms, entities) = query_terms_and_entities(query_text);
-        let evidence = index.evidence(&terms.into_iter().chain(entities).collect());
+        let ranked = rankings
+            .iter()
+            .map(|ranking| (ranking.locator.as_str(), ranking.rank))
+            .collect();
+        let (evidence, truncated) =
+            index.evidence(&symbol_candidates(query_text), &ranked, MAX_SYMBOL_EVIDENCE);
         Self {
             status,
             reason,
-            index,
             evidence,
+            truncated,
         }
     }
 
-    /// Evidence per ranked locator, in rank order, at most
-    /// `MAX_SYMBOL_EVIDENCE` items in total.
-    fn attach(&self, rankings: &[SourceRanking]) -> BTreeMap<&str, Vec<&scip::Evidence>> {
-        let mut attached = BTreeMap::<&str, Vec<_>>::new();
-        let mut remaining = MAX_SYMBOL_EVIDENCE;
-        for ranking in rankings {
-            for evidence in self
-                .evidence
+    /// Evidence per locator, limited to the `selected` sources the result keeps.
+    fn retained(
+        &self,
+        selected: &[(String, &'static str)],
+    ) -> BTreeMap<&str, Vec<&scip::Evidence>> {
+        let mut retained = BTreeMap::<&str, Vec<_>>::new();
+        for evidence in &self.evidence {
+            if selected
                 .iter()
-                .filter(|evidence| evidence.locator == ranking.locator)
-                .take(remaining)
+                .any(|(locator, _)| *locator == evidence.locator)
             {
-                attached
+                retained
                     .entry(evidence.locator.as_str())
                     .or_default()
                     .push(evidence);
-                remaining -= 1;
             }
         }
-        attached
+        retained
     }
 
-    /// `symbols` JSON array content per ranked locator.
+    /// `symbols` JSON array content per locator.
     fn symbols_json(
         &self,
-        attached: &BTreeMap<&str, Vec<&scip::Evidence>>,
+        retained: &BTreeMap<&str, Vec<&scip::Evidence>>,
     ) -> BTreeMap<String, String> {
-        attached
+        retained
             .iter()
             .map(|(locator, items)| {
                 let items = items.iter().map(|evidence| {
-                    let (name, qualified_name) = self.names(&evidence.symbol);
+                    let (name, qualified_name) = symbol_names(&evidence.symbol);
                     let implements = evidence.implements.as_ref().map_or_else(String::new, |target| {
                         format!(",\"implements\":\"{}\"", json_escape(target))
                     });
                     format!(
                         "{{\"role\":\"{}\",\"name\":\"{}\",\"qualified_name\":\"{}\",\"kind\":\"{}\",\"id\":\"{}\",\"source\":\"scip\",\"span\":{{\"start_line\":{},\"end_line\":{}}}{}}}",
                         evidence.role.as_str(), json_escape(&name), json_escape(&qualified_name),
-                        self.index.kind(&evidence.symbol), json_escape(&evidence.symbol),
+                        evidence.kind, json_escape(&evidence.symbol),
                         evidence.start_line, evidence.end_line, implements
                     )
                 });
@@ -2092,58 +2114,56 @@ impl SymbolNavigation {
             .collect()
     }
 
-    /// One packet payload line per ranked locator.
-    fn payload_lines(
-        &self,
-        attached: &BTreeMap<&str, Vec<&scip::Evidence>>,
-    ) -> BTreeMap<String, String> {
-        attached
-            .iter()
-            .map(|(locator, items)| {
-                let items = items.iter().map(|evidence| {
-                    let implements = evidence
-                        .implements
-                        .as_ref()
-                        .map_or_else(String::new, |target| {
-                            format!(" implements {}", self.names(target).1)
-                        });
-                    format!(
-                        "{} {} {}-{}{}",
-                        evidence.role.as_str(),
-                        self.names(&evidence.symbol).1,
-                        evidence.start_line,
-                        evidence.end_line,
-                        implements
-                    )
+    /// One packet payload line per ranked locator holding evidence.
+    fn payload_lines(&self) -> BTreeMap<String, String> {
+        let mut lines = BTreeMap::<String, Vec<String>>::new();
+        for evidence in &self.evidence {
+            let implements = evidence
+                .implements
+                .as_ref()
+                .map_or_else(String::new, |target| {
+                    format!(" implements {}", symbol_names(target).1)
                 });
-                (
-                    (*locator).to_owned(),
-                    format!("scip_symbols: {}\n", items.collect::<Vec<_>>().join("; ")),
-                )
-            })
+            lines
+                .entry(evidence.locator.clone())
+                .or_default()
+                .push(format!(
+                    "{} {} {}-{}{}",
+                    evidence.role.as_str(),
+                    symbol_names(&evidence.symbol).1,
+                    evidence.start_line,
+                    evidence.end_line,
+                    implements
+                ));
+        }
+        lines
+            .into_iter()
+            .map(|(locator, items)| (locator, format!("scip_symbols: {}\n", items.join("; "))))
             .collect()
     }
 
-    fn names(&self, symbol: &str) -> (String, String) {
-        scip::symbol_name(symbol).map_or_else(
-            || (String::new(), String::new()),
-            |name| (name.name, name.qualified_name),
-        )
-    }
-
-    fn json(&self, attached: usize) -> String {
+    /// Status for the evidence the result retained.
+    fn json(&self, retained: &BTreeMap<&str, Vec<&scip::Evidence>>) -> String {
+        let retained = retained.values().map(Vec::len).sum::<usize>();
         let outcome = match self.status {
-            "available" | "partial" if attached > 0 => "hit",
+            "available" | "partial" if retained > 0 => "hit",
             "available" | "partial" => "miss",
             _ => "unavailable",
         };
         format!(
             "{{\"schema_version\":\"1.0.0\",\"outcome\":\"{outcome}\",\"truncated\":{},\"scip\":{{\"status\":\"{}\",\"reason\":{},\"index\":\"{SCIP_INDEX}\"}},\"lsp\":{{\"status\":\"unavailable\",\"reason\":\"not_implemented\"}}}}",
-            self.evidence.len() > attached,
+            self.truncated || self.evidence.len() > retained,
             self.status,
             self.reason.map_or_else(|| "null".to_owned(), |reason| format!("\"{reason}\"")),
         )
     }
+}
+
+fn symbol_names(symbol: &str) -> (String, String) {
+    scip::symbol_name(symbol).map_or_else(
+        || (String::new(), String::new()),
+        |name| (name.name, name.qualified_name),
+    )
 }
 
 fn selected_sources_json_with_bundle(
@@ -2409,9 +2429,11 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
             return Err("evidence_store_unavailable".to_owned());
         }
         let data = format!(
-            "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"unavailable\",\"query_coverage\":{{\"matched_terms\":[],\"unmatched_terms\":[]}},\"bran_status\":\"unavailable\",\"selected_locators\":[],\"why_selected\":[],\"source_rankings\":[],\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\"}}",
+            "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"unavailable\",\"query_coverage\":{{\"matched_terms\":[],\"unmatched_terms\":[]}},\"bran_status\":\"unavailable\",\"selected_locators\":[],\"why_selected\":[],\"source_rankings\":[],\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
             json_escape(&root),
-            json_escape(&query_text)
+            json_escape(&query_text),
+            SymbolNavigation::unavailable("unavailable", "native_policy_unavailable")
+                .json(&BTreeMap::new())
         );
         return Ok((
             "unavailable",
@@ -2469,14 +2491,14 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         query_semantic_outcome(&query_text, &matched_terms, &rankings);
     warns.extend(unmatched_query_warnings(&unmatched));
 
-    let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text);
-    let attached = navigation.attach(&rankings);
-    let sources = provenance_sources(&attached);
+    let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text, &rankings);
+    let retained = navigation.retained(&selected);
+    let sources = provenance_sources(&retained);
     let (locs_json, why_selected_json) = selected_sources_json(&selected);
     let source_rankings_json = source_rankings_json(
         &rankings,
         &selected_ids,
-        &navigation.symbols_json(&attached),
+        &navigation.symbols_json(&retained),
     );
     let data = format!(
         "{{\"root\":\"{}\",\"query\":\"{}\",\"query_outcome\":\"{}\",\"query_coverage\":{},\"selected_locators\":[{}],\"why_selected\":[{}],\"source_rankings\":[{}],\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{}}}",
@@ -2491,7 +2513,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         selected_bytes,
         context_bytes_avoided,
         estimated,
-        navigation.json(attached.values().map(Vec::len).sum())
+        navigation.json(&retained)
     );
     let provenance = if locs_json.is_empty() {
         format!("{{\"sources\":[{sources}]}}")
@@ -2660,7 +2682,7 @@ fn do_query_multi(roots: Vec<String>, query_text: String, record: bool) -> Query
         selected_bytes,
         context_bytes_avoided,
         estimated,
-        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(0)
+        SymbolNavigation::unavailable("unavailable", "multi_root_unsupported").json(&BTreeMap::new())
     );
     let provenance = if locs_json.is_empty() {
         "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned()
@@ -2709,9 +2731,8 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
     let (rankings, matched_terms) =
         source_rankings(&graph_input, &snapshot, &query_text, controls.max_sources());
-    let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text);
-    let attached = navigation.attach(&rankings);
-    let symbol_lines = navigation.payload_lines(&attached);
+    let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text, &rankings);
+    let symbol_lines = navigation.payload_lines();
     let spec = query_view_spec(&rankings, controls.max_sources());
     let graph =
         KnowledgeGraph::build(graph_input, limits).map_err(|e| format!("graph_error: {:?}", e))?;
@@ -2812,11 +2833,12 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         .sum::<usize>();
     let context_bytes_avoided = candidate_bytes.saturating_sub(selected_source_bytes);
 
+    let retained = navigation.retained(&selected);
     let (selected_locators_json, why_selected_json) = selected_sources_json(&selected);
     let source_rankings_json = source_rankings_json(
         &rankings,
         &selected_id_set,
-        &navigation.symbols_json(&attached),
+        &navigation.symbols_json(&retained),
     );
     let seed_ids_json = pkt
         .receipt
@@ -2901,9 +2923,9 @@ fn do_packet(root: String, query_text: String, controls: &ExperimentalControls) 
         token_ceiling.map_or_else(|| "null".to_owned(), |value| value.to_string()),
         tr,
         sqz_json,
-        navigation.json(attached.values().map(Vec::len).sum())
+        navigation.json(&retained)
     );
-    let sources = provenance_sources(&attached);
+    let sources = provenance_sources(&retained);
     let provenance = if selected_locators_json.is_empty() {
         format!("{{\"sources\":[{sources}]}}")
     } else {

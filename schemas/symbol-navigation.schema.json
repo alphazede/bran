@@ -9,11 +9,11 @@
   "properties": {
     "schema_version": { "const": "1.0.0" },
     "outcome": {
-      "description": "hit: symbol evidence is attached to at least one ranked source. miss: a usable index has no evidence for the query in the ranked sources. unavailable: no usable index.",
+      "description": "hit: the result keeps symbol evidence on at least one ranked source. miss: a usable index has no evidence for the sources the result keeps. unavailable: no usable index.",
       "enum": ["hit", "miss", "unavailable"]
     },
     "truncated": {
-      "description": "The index holds more evidence for the query than is attached to ranked sources, because of the evidence bound or because a file is not ranked or not scanned.",
+      "description": "The index holds more evidence for the query than the result keeps: past the evidence or collection bounds, in a file that is not ranked or not scanned, or in a ranked source the packet did not keep.",
       "type": "boolean"
     },
     "scip": { "$ref": "#/$defs/scip" },
@@ -32,7 +32,7 @@
         "reason": {
           "oneOf": [
             { "type": "null" },
-            { "enum": ["freshness_unverified", "index_stale", "index_missing", "index_unreadable", "multi_root_unsupported"] }
+            { "enum": ["freshness_unverified", "index_stale", "index_missing", "index_unreadable", "multi_root_unsupported", "native_policy_unavailable"] }
           ]
         },
         "index": { "const": "index.scip" }
