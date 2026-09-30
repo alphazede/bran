@@ -140,11 +140,15 @@ the index. Produce it with a SCIP indexer for the language, for example
 `rust-analyzer scip .` for a Rust workspace, and regenerate it after source
 changes. Any language in the index is navigable. The index must be a regular
 file of at most 256 MiB, not a symlink. The repository scanner lists the binary
-index as an `UnsupportedInput` warning, as it does for other binary files.
+index as an `UnsupportedInput` warning, as it does for other binary files. A
+malformed index, including bad protobuf framing, an empty symbol, or an
+occurrence range that is reversed, has more than four coordinates, or exceeds
+the protobuf `int32` range, is `unavailable`.
 
-A query term that equals a symbol's name, ignoring ASCII case, selects the
-symbol. Each ranked source whose file holds evidence for a selected symbol
-gains a `symbols` array:
+Every run of letters, digits, `_`, `+`, `-`, or `$` in the request is a
+candidate name, with no length or stop-word filter; a symbol whose name equals
+a candidate, ignoring ASCII case, is selected. Each ranked source whose file
+holds evidence for a selected symbol gains a `symbols` array:
 
 ```json
 {
@@ -169,18 +173,19 @@ gains a `symbols` array:
 the definition of a symbol whose SCIP relationship marks it as implementing the
 selected one. Lines are one-based and inclusive. A packet adds the same facts to
 the ranked source's payload as one `scip_symbols:` line. Symbol evidence never
-changes ranking, scores, `match_reason`, or authority, and at most 64 items are
-attached per result, in rank order.
+changes ranking, scores, `match_reason`, or authority. At most 64 items are
+attached per result, in rank order; one query selects at most 1,024 symbols and
+1,024 implementation pairs and examines at most 1,048,576 candidate facts.
 
 Every result also carries `data.symbol_navigation`
 (`schemas/symbol-navigation.schema.json`, version `1.0.0`):
 
 | Field | Values |
 | --- | --- |
-| `outcome` | `hit` (evidence attached), `miss` (usable index, no evidence for the ranked sources), `unavailable` |
-| `truncated` | `true` when the index holds more evidence than is attached |
+| `outcome` | `hit` (the result keeps evidence), `miss` (usable index, no evidence for the sources the result keeps), `unavailable` |
+| `truncated` | `true` when the index holds more evidence than the result keeps, including sources a packet dropped |
 | `scip.status` | `available`, `partial`, `stale`, `unavailable` |
-| `scip.reason` | `null`, `freshness_unverified`, `index_stale`, `index_missing`, `index_unreadable`, `multi_root_unsupported` |
+| `scip.reason` | `null`, `freshness_unverified`, `index_stale`, `index_missing`, `index_unreadable`, `multi_root_unsupported`, `native_policy_unavailable` |
 | `lsp.status` | always `unavailable` (`not_implemented`) |
 
 Freshness is proven only when every indexed document records its source text
@@ -189,8 +194,9 @@ document records no text or is outside the scan, the status is `partial` and
 the spans should be confirmed before use. If any recorded text differs from the
 file, the status is `stale` and no symbol evidence is returned. A missing,
 unreadable, or malformed index is `unavailable`, never a guess. `query
---add-dir` reports `multi_root_unsupported`. With no index, every other part of
-the result is unchanged.
+--add-dir` reports `multi_root_unsupported`, and a query on a root without
+native policy reports `native_policy_unavailable`. With no index, every other
+part of the result is unchanged.
 
 ## Reading unavailable results
 

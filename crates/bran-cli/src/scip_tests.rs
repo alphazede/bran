@@ -436,3 +436,190 @@ fn scip_absent_index_keeps_existing_output() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+// Review round (alphazede/bran#38): the reviewer's reproducer inputs, built
+// the same way as its `reproduce.py`.
+
+const REVIEW_TEXT: &str = "pub trait Renderer {}\npub struct Html;\n";
+
+const UNREADABLE_NAVIGATION: &str = "\"outcome\":\"unavailable\",\"truncated\":false,\"scip\":{\"status\":\"unavailable\",\"reason\":\"index_unreadable\"";
+
+/// One definition occurrence with a packed `range` of any length.
+fn review_occurrence(symbol: &str, range: &[u64]) -> Vec<u8> {
+    let mut packed = Vec::new();
+    for value in range {
+        varint(&mut packed, *value);
+    }
+    let mut out = Vec::new();
+    field_bytes(&mut out, 1, &packed);
+    field_bytes(&mut out, 2, symbol.as_bytes());
+    field_varint(&mut out, 3, 1);
+    out
+}
+
+/// An index holding one `src/render.rs` document with recorded `text`.
+fn review_index(occurrences: &[Vec<u8>], text: &str) -> Vec<u8> {
+    let mut document = Vec::new();
+    field_bytes(&mut document, 1, b"src/render.rs");
+    field_bytes(&mut document, 5, text.as_bytes());
+    for item in occurrences {
+        field_bytes(&mut document, 2, item);
+    }
+    let mut out = Vec::new();
+    field_bytes(&mut out, 2, &document);
+    out
+}
+
+fn review_repository(name: &str, index: &[u8], text: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("bran-scip-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".bran")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join(".bran/policy.yaml"), "schema_version: \"1\"\n").unwrap();
+    std::fs::write(root.join("src/render.rs"), text).unwrap();
+    std::fs::write(root.join("index.scip"), index).unwrap();
+    root
+}
+
+fn assert_unreadable(name: &str, index: &[u8]) {
+    let root = review_repository(name, index, REVIEW_TEXT);
+    for command in ["query", "packet"] {
+        let output = run(command, &root, "Renderer");
+        assert!(
+            navigation(&output).contains(UNREADABLE_NAVIGATION),
+            "{name} {command}: {output}"
+        );
+        assert!(
+            !output.contains("\"symbols\":"),
+            "{name} {command}: {output}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn valid_review_index() -> Vec<u8> {
+    review_index(&[review_occurrence(RENDERER, &[0, 10, 18])], REVIEW_TEXT)
+}
+
+#[test]
+fn scip_review_index_is_a_hit() {
+    let root = review_repository("review-valid", &valid_review_index(), REVIEW_TEXT);
+    for command in ["query", "packet"] {
+        let output = run(command, &root, "Renderer");
+        assert!(
+            navigation(&output).contains("\"outcome\":\"hit\""),
+            "{output}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Finding 1: a line past `int32` overflowed the one-based conversion.
+#[test]
+fn scip_line_beyond_int32_is_typed_unavailable() {
+    assert_unreadable(
+        "overflow",
+        &review_index(
+            &[review_occurrence(RENDERER, &[4_294_967_295, 10, 18])],
+            REVIEW_TEXT,
+        ),
+    );
+}
+
+/// Finding 4: field number zero and an overflowing tenth varint byte.
+#[test]
+fn scip_invalid_protobuf_framing_is_typed_unavailable() {
+    let mut field_zero = vec![0x00, 0x00];
+    field_zero.extend(valid_review_index());
+    assert_unreadable("field-zero", &field_zero);
+    let mut overflow = vec![
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02, 0x00,
+    ];
+    overflow.extend(valid_review_index());
+    assert_unreadable("varint-overflow", &overflow);
+}
+
+/// Finding 5: an end column before the start column.
+#[test]
+fn scip_reversed_columns_are_typed_unavailable() {
+    assert_unreadable(
+        "reversed-columns",
+        &review_index(&[review_occurrence(RENDERER, &[0, 18, 10])], REVIEW_TEXT),
+    );
+}
+
+/// Finding 6: evidence dropped by packet assembly is neither a hit nor
+/// provenance.
+#[test]
+fn scip_packet_status_counts_only_retained_evidence() {
+    let root = review_repository("token-packet", &valid_review_index(), REVIEW_TEXT);
+    std::fs::write(
+        root.join(".bran/settings.conf"),
+        "version=3\ncompleted=true\nprofile=offline-core\nsqz=false\ndiagnostics=true\nvoice=false\nstructured_history=false\nsaved_chat=false\nnetwork=false\nauth=false\nmutation=false\nconnected_agent_task_token_ceiling=100\nroot=bounded-current-root\ntools=read-only\napproval=explicit\nretention=zero-conversation\ndiagnostic_policy=bounded\n",
+    )
+    .unwrap();
+    let output = run("packet", &root, "Renderer");
+    assert!(
+        output.contains("\"selected_locators\":[\"index.scip\"]"),
+        "{output}"
+    );
+    assert!(!output.contains("\"symbols\":"), "{output}");
+    assert!(!output.contains("scip_symbols:"), "{output}");
+    assert!(
+        navigation(&output).contains("\"outcome\":\"miss\",\"truncated\":true"),
+        "{output}"
+    );
+    assert!(
+        output.contains("\"provenance\":{\"sources\":[\"repository-scanner\",\"bran-core\"],"),
+        "{output}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Finding 7: short names, short snake-case names, and stop words are
+/// symbol candidates.
+#[test]
+fn scip_short_and_common_names_are_symbol_candidates() {
+    for name in ["go", "foo_x", "from"] {
+        let text = format!("pub fn {name}() {{}} // module\n");
+        let symbol = format!("rust-analyzer cargo demo 0.1.0 {name}().");
+        let root = review_repository(
+            &format!("short-{name}"),
+            &review_index(&[review_occurrence(&symbol, &[0, 10, 18])], &text),
+            &text,
+        );
+        for command in ["query", "packet"] {
+            let output = run(command, &root, &format!("{name} module"));
+            assert!(
+                navigation(&output).contains("\"outcome\":\"hit\""),
+                "{name} {command}: {output}"
+            );
+            assert!(
+                ranked_symbols(&output, "src/render.rs").contains(&format!("\"name\":\"{name}\"")),
+                "{name} {command}: {output}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// Finding 8: the no-policy fallback keeps its fields and appends the typed
+/// member.
+#[test]
+fn scip_no_policy_fallback_appends_typed_navigation() {
+    let root = std::env::temp_dir().join(format!("bran-scip-no-policy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("render.rs"), REVIEW_TEXT).unwrap();
+    let result = CliApp::run(vec![
+        "query".to_owned(),
+        root.to_string_lossy().into_owned(),
+        "Renderer".to_owned(),
+    ]);
+    assert_eq!(result.exit_code, ExitCode::SUCCESS, "{}", result.output);
+    assert_eq!(
+        result.output.replace(&*root.to_string_lossy(), "ROOT"),
+        "{\"schema_version\":\"1.0.0\",\"command\":\"query\",\"status\":\"unavailable\",\"data\":{\"root\":\"ROOT\",\"query\":\"Renderer\",\"query_outcome\":\"unavailable\",\"query_coverage\":{\"matched_terms\":[],\"unmatched_terms\":[]},\"bran_status\":\"unavailable\",\"selected_locators\":[],\"why_selected\":[],\"source_rankings\":[],\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\",\"actual_model_input_tokens\":\"unavailable\",\"symbol_navigation\":{\"schema_version\":\"1.0.0\",\"outcome\":\"unavailable\",\"truncated\":false,\"scip\":{\"status\":\"unavailable\",\"reason\":\"native_policy_unavailable\",\"index\":\"index.scip\"},\"lsp\":{\"status\":\"unavailable\",\"reason\":\"not_implemented\"}}},\"warnings\":[\"native_policy_unavailable\"],\"failures\":[],\"provenance\":{\"sources\":[\"repository-policy-check\"]},\"metrics\":{\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
