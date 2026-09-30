@@ -35,18 +35,25 @@ ranked, with the reason attached.
 | Reports a miss | n/a | rarely | yes, explicitly |
 | Offline | yes | rarely | yes |
 
+## What is new in 0.2.0
+
+- [Exact symbol navigation from existing SCIP indexes](docs/integrations/agent-setup.md#exact-symbol-navigation), with definitions, references, and implementations.
+- Enterprise-document intake adapters for [DOCX](docs/enterprise-document-docx-adapter.md), [XLSX](docs/enterprise-document-xlsx.md), [PPTX](docs/enterprise-document-pptx-adapter.md), and [PDF](docs/enterprise-document-pdf-adapter.md), with citation anchors and explicit fidelity limits.
+- A [database evidence and state-store boundary](docs/database-boundary.md) that separates read-only evidence from derived state. Real database adapters and CLI wiring remain deferred; only the local file state backend is available.
+- A [staged deployment profile](docs/deployment-profile.md) with registered-root mode for read-only remote CLI use. A service and an OCI image verified on a real base remain future work.
+
 ## Install
 
 Prebuilt archives for Linux, macOS, and Windows are attached to each release:
 
 ```sh
-https://github.com/alphazede/bran/releases/download/bran-v0.1.1/
+https://github.com/alphazede/bran/releases/download/bran-v0.2.0/
 ```
 
 Or build from source:
 
 ```sh
-cargo install --git https://github.com/alphazede/bran --tag bran-v0.1.1 bran-cli
+cargo install --git https://github.com/alphazede/bran --tag bran-v0.2.0 bran-cli
 ```
 
 ## Quickstart
@@ -263,7 +270,7 @@ manage or leak. Verify a download:
 ```sh
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore \
-  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.1.1" \
+  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.2.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 sha256sum -c SHA256SUMS --ignore-missing
 ```

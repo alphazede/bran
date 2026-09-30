@@ -41,7 +41,7 @@ body:
     attributes:
       label: Version
       description: Output of `bran --version`.
-      placeholder: bran 0.1.1
+      placeholder: bran 0.2.0
     validations:
       required: true
   - type: input
