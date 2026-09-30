@@ -9,6 +9,9 @@ bran-core = { path = "../bran-core", version = "0.1.0" }
 bran-tui = { path = "../bran-tui", version = "0.1.0" }
 crossterm = { version = "=0.29.0", default-features = false, features = ["events", "windows"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.186"
+
 [[bin]]
 name = "bran"
 path = "src/main.rs"

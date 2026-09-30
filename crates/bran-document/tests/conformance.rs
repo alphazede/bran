@@ -32,6 +32,8 @@ const XLSX_BASE: &str =
     include_str!("../../../fixtures/enterprise-documents/conformance/xlsx-base.parts");
 const PPTX_BASE: &str =
     include_str!("../../../fixtures/enterprise-documents/conformance/pptx-base.parts");
+const XLSX_FEATURES: &str =
+    include_str!("../../../fixtures/enterprise-documents/conformance/xlsx-features.parts");
 const CONFORMANCE_DOC: &str = include_str!("../../../docs/enterprise-document-conformance.md");
 const CANARIES: &str =
     include_str!("../../../fixtures/public-boundary/rejected/synthetic-canaries.txt");
@@ -543,6 +545,7 @@ fn variants(row: &str, format: Format) -> Vec<Vec<u8>> {
 
 struct Report {
     checked: usize,
+    adapter_rows: usize,
     unavailable: Vec<(Format, &'static str, u32)>,
 }
 
@@ -555,6 +558,7 @@ fn run_corpus(tier: Tier) -> Report {
     };
     let mut report = Report {
         checked: 0,
+        adapter_rows: 0,
         unavailable: Vec::new(),
     };
     for format in OOXML {
@@ -592,18 +596,91 @@ fn run_corpus(tier: Tier) -> Report {
         report.checked += 1;
     }
     for (format, row) in ADAPTER_ROWS {
-        if conformance::registered()
-            .iter()
-            .all(|adapter| adapter.format() != *format)
-        {
+        let adapters: Vec<&dyn Adapter> = conformance::registered()
+            .into_iter()
+            .filter(|adapter| adapter.format() == *format)
+            .collect();
+        if adapters.is_empty() {
             report
                 .unavailable
                 .push((*format, row, format.adapter_issue()));
-        } else {
-            panic!("{format:?} adapter registered: replace {row} with an executable row");
+            continue;
         }
+        for adapter in adapters {
+            adapter_row(adapter, row, &limits)
+                .unwrap_or_else(|error| panic!("{format:?}/{row}: {error}"));
+            report.checked += 1;
+        }
+        report.adapter_rows += 1;
     }
     report
+}
+
+/// Canonical XLSX projection of the ordinary package, recorded from the
+/// adapter. A change here is a change to the grid projection.
+const XLSX_ORDINARY_PROJECTION: &str =
+    "29cf261bf0933533ea37b196375340f0ec723183d9e09c30fcfbc9291fd9ca03";
+
+/// Executable adapter rows. A registered format must implement every one of
+/// its rows here; an unknown row fails, so no row silently stays unavailable.
+fn adapter_row(adapter: &dyn Adapter, row: &str, limits: &Limits) -> Result<(), String> {
+    let cancel = Cancel::default();
+    let features = Parts::parse(XLSX_FEATURES);
+    let features_variants = || {
+        vec![
+            features.zip_with(true, false, 0x4A21),
+            features.zip_with(false, true, 0x3C01),
+        ]
+    };
+    match row {
+        "xlsx-ordinary-projection" => {
+            let imported = adapter
+                .import(&Parts::parse(XLSX_BASE).zip(), limits, &cancel)
+                .map_err(|refusal| format!("ordinary workbook refused: {refusal}"))?;
+            let digest = sha256_hex(&imported.canonical);
+            if digest != XLSX_ORDINARY_PROJECTION {
+                return Err(format!("projection changed: {digest}"));
+            }
+            if imported.anchors.is_empty() {
+                return Err("ordinary workbook produced no anchors".to_owned());
+            }
+            Ok(())
+        }
+        "xlsx-unsupported-benign-fidelity" => conformance::check(
+            adapter,
+            &features.zip(),
+            &features_variants(),
+            &Expect::Admit(vec![
+                "unsupported-chart",
+                "unsupported-image",
+                "unsupported-drawing",
+                "unsupported-conditional-formatting",
+                "rich-text-flattened",
+                "formula-cached-result-not-recalculated",
+                "hyperlink-not-fetched",
+            ]),
+            limits,
+            &cancel,
+        )
+        .map(|_| ()),
+        "xlsx-round-trip-anchors" => {
+            let outcome = conformance::check(
+                adapter,
+                &features.zip(),
+                &features_variants(),
+                &Expect::Admit(vec![]),
+                limits,
+                &cancel,
+            )?;
+            if !outcome.round_trip {
+                return Err("export refused, so no round trip was exercised".to_owned());
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "adapter registered: replace {other} with an executable row"
+        )),
+    }
 }
 
 /// The ordinary package's canonical projection matches the recorded digest.
@@ -658,7 +735,11 @@ fn enterprise_conformance_fast() {
     for (format, row, issue) in &report.unavailable {
         println!("unavailable {format:?}/{row}: needs adapter #{issue}");
     }
-    assert_eq!(report.unavailable.len(), ADAPTER_ROWS.len());
+    assert_eq!(
+        report.unavailable.len() + report.adapter_rows,
+        ADAPTER_ROWS.len(),
+        "every adapter row is either executed or reported unavailable"
+    );
     assert!(
         elapsed <= FAST_RUNTIME_BUDGET,
         "fast tier exceeded its runtime budget: {elapsed:?}"
