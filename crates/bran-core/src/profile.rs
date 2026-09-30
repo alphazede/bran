@@ -350,7 +350,12 @@ impl ProfileValidator {
             if !document_participates(path, dc) {
                 continue;
             }
-            if matches!(doc.kind(), DocKind::Index | DocKind::Log) {
+            let is_canonical = canonical_set
+                .as_ref()
+                .is_some_and(|cs| cs.contains(path.as_str()));
+            // Reserved index/log documents stay skipped unless explicitly listed
+            // in canonical_documents, which get the full per-document checks.
+            if matches!(doc.kind(), DocKind::Index | DocKind::Log) && !is_canonical {
                 continue;
             }
             // Excluded documents are intentionally skipped by strict document checks.
@@ -367,9 +372,6 @@ impl ProfileValidator {
             let is_legacy = legacy_set
                 .as_ref()
                 .is_some_and(|ls| ls.contains(path.as_str()));
-            let is_canonical = canonical_set
-                .as_ref()
-                .is_some_and(|cs| cs.contains(path.as_str()));
             let migration_legacy_baseline = policy
                 .and_then(|p| p.frontmatter.as_ref())
                 .and_then(|fm| fm.canonical_docs_frontmatter_state.as_deref())
@@ -382,7 +384,18 @@ impl ProfileValidator {
                 continue;
             }
             if let Some(diagnostic) = okf_diagnostic(path, fm.status(), fm.parsed()) {
-                diagnostics.push(diagnostic);
+                // An absent frontmatter block (empty raw, successful parse) reports
+                // the distinct missing-frontmatter code in place of missing-type.
+                // OKF profiles keep missing-type via okf_diagnostic itself.
+                if diagnostic.code == "missing-type" && fm.raw().is_empty() && fm.status().is_ok() {
+                    diagnostics.push(Diagnostic {
+                        path: path.clone(),
+                        code: "missing-frontmatter".to_owned(),
+                        message: "frontmatter block is missing for BRAN strict".to_owned(),
+                    });
+                } else {
+                    diagnostics.push(diagnostic);
+                }
             }
             let map = match fm.parsed() {
                 Some(m) => m,
@@ -4872,6 +4885,189 @@ mod tests {
                 "okf-log-invalid-date-heading".to_owned(),
                 "okf-log-invalid-date-heading".to_owned(),
             ]
+        );
+    }
+
+    // ===================================================================
+    // Issue #36: bran-strict on explicitly canonical index/log documents
+    // ===================================================================
+
+    fn canonical_strict_policy(canonical: Vec<String>, native: Vec<String>) -> RepositoryPolicy {
+        let mut p = valid_v1_policy();
+        if let Some(ref mut fm) = p.frontmatter {
+            fm.required = vec![
+                "type".to_owned(),
+                "title".to_owned(),
+                "okf_status".to_owned(),
+                "tags".to_owned(),
+            ];
+            fm.canonical_docs_frontmatter_state = Some("strict".to_owned());
+        }
+        p.document_coverage = Some(crate::policy::DocumentCoveragePolicy {
+            roots: vec!["docs".to_owned()],
+            native_bundle: native,
+            canonical_documents: canonical,
+            legacy_documents: vec![],
+            excluded_documents: BTreeMap::new(),
+            bridge_targets: vec![],
+        });
+        p
+    }
+
+    #[test]
+    fn canonical_index_absent_frontmatter_strict_fails() {
+        let policy = canonical_strict_policy(vec!["docs/index.md".to_owned()], vec![]);
+        let body = "# A\n\nNo frontmatter.\n";
+        let doc = Doc::new("docs/index.md", body, body, Frontmatter::empty());
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        assert_eq!(result.bran_strict.status, ValidationStatus::Fail);
+        let codes: Vec<_> = result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .filter(|d| d.path == "docs/index.md")
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"missing-frontmatter"),
+            "expected missing-frontmatter in {codes:?}"
+        );
+        for key in ["type", "title", "okf_status", "tags"] {
+            assert!(
+                result.bran_strict.diagnostics.iter().any(|d| {
+                    d.path == "docs/index.md" && d.code == "fm-required" && d.message.contains(key)
+                }),
+                "expected fm-required naming {key} in {:?}",
+                result.bran_strict.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_index_missing_required_key_strict_names_key() {
+        let policy = canonical_strict_policy(vec!["docs/index.md".to_owned()], vec![]);
+        let mut fields = BTreeMap::new();
+        fields.insert("type".to_owned(), YamlValue::String("Concept".to_owned()));
+        fields.insert("title".to_owned(), YamlValue::String("A".to_owned()));
+        fields.insert(
+            "tags".to_owned(),
+            YamlValue::Sequence(vec![YamlValue::String("internal".to_owned())]),
+        );
+        let raw = "---\ntype: Concept\ntitle: A\ntags:\n  - internal\n---\n";
+        let body = "# A\n";
+        let doc = Doc::new(
+            "docs/index.md",
+            format!("{raw}{body}"),
+            body,
+            Frontmatter::from_parsed(raw, fields),
+        );
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        assert_eq!(result.bran_strict.status, ValidationStatus::Fail);
+        assert!(
+            result.bran_strict.diagnostics.iter().any(|d| {
+                d.path == "docs/index.md"
+                    && d.code == "fm-required"
+                    && d.message.contains("okf_status")
+            }),
+            "expected fm-required naming okf_status in {:?}",
+            result.bran_strict.diagnostics
+        );
+    }
+
+    #[test]
+    fn canonical_concept_absent_frontmatter_reports_missing_frontmatter() {
+        let policy = canonical_strict_policy(vec!["docs/a.md".to_owned()], vec![]);
+        let body = "# A\n\nNo frontmatter.\n";
+        let doc = Doc::new("docs/a.md", body, body, Frontmatter::empty());
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        assert_eq!(result.bran_strict.status, ValidationStatus::Fail);
+        let codes: Vec<_> = result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .filter(|d| d.path == "docs/a.md")
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"missing-frontmatter"),
+            "expected missing-frontmatter in {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"missing-type"),
+            "missing-type must be replaced by missing-frontmatter in {codes:?}"
+        );
+    }
+
+    #[test]
+    fn noncanonical_index_absent_frontmatter_strict_skips() {
+        let policy = canonical_strict_policy(vec![], vec!["docs/index.md".to_owned()]);
+        let body = "# A\n\nNo frontmatter.\n";
+        let doc = Doc::new("docs/index.md", body, body, Frontmatter::empty());
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        assert_eq!(result.bran_strict.status, ValidationStatus::Pass);
+        assert!(
+            result
+                .bran_strict
+                .diagnostics
+                .iter()
+                .all(|d| d.path != "docs/index.md"),
+            "non-canonical index.md must keep today's skip behavior, got {:?}",
+            result.bran_strict.diagnostics
+        );
+    }
+
+    #[test]
+    fn okf_v0_1_absent_frontmatter_still_missing_type() {
+        let policy = canonical_strict_policy(vec!["docs/a.md".to_owned()], vec![]);
+        let body = "# A\n\nNo frontmatter.\n";
+        let doc = Doc::new("docs/a.md", body, body, Frontmatter::empty());
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, OKF_V0_1, Some(&policy));
+        assert_eq!(result.okf_compatibility.status, ValidationStatus::Fail);
+        let codes: Vec<_> = result
+            .okf_compatibility
+            .diagnostics
+            .iter()
+            .filter(|d| d.path == "docs/a.md")
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"missing-type"),
+            "OKF v0.1 must keep missing-type, got {codes:?}"
+        );
+        assert!(
+            !result
+                .okf_compatibility
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "missing-frontmatter"),
+            "OKF v0.1 must not report missing-frontmatter, got {:?}",
+            result.okf_compatibility.diagnostics
+        );
+    }
+
+    #[test]
+    fn canonical_log_absent_frontmatter_strict_fails() {
+        let policy = canonical_strict_policy(vec!["docs/log.md".to_owned()], vec![]);
+        let body = "# Log\n\nNo frontmatter.\n";
+        let doc = Doc::new("docs/log.md", body, body, Frontmatter::empty());
+        let bundle = Bundle::from_documents([doc]).expect("unique");
+        let result = ProfileValidator::validate_with_policy(&bundle, BRAN_STRICT, Some(&policy));
+        assert_eq!(result.bran_strict.status, ValidationStatus::Fail);
+        let codes: Vec<_> = result
+            .bran_strict
+            .diagnostics
+            .iter()
+            .filter(|d| d.path == "docs/log.md")
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"missing-frontmatter"),
+            "expected missing-frontmatter in {codes:?}"
         );
     }
 }
