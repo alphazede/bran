@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[path = "pptx/decks.rs"]
+mod pptx_decks;
+
 // Recorded budgets. Runtime budgets are debug-build wall-clock ceilings for
 // the whole tier; they gate the test suite, never an import outcome.
 const FAST_RUNTIME_BUDGET: Duration = Duration::from_secs(10);
@@ -535,9 +538,12 @@ fn variants(row: &str, format: Format) -> Vec<Vec<u8>> {
         return Vec::new();
     }
     let tier_limits = limits(Tier::Fast);
-    let original = build(row, format, Tier::Fast, &tier_limits);
+    reencode(&build(row, format, Tier::Fast, &tier_limits))
+}
+
+fn reencode(original: &[u8]) -> Vec<Vec<u8>> {
     let entries =
-        zip::read(&original, &tier_limits, &Cancel::default()).expect("admitted row reads");
+        zip::read(original, &limits(Tier::Fast), &Cancel::default()).expect("admitted row reads");
     let parts = Parts(
         entries
             .into_iter()
@@ -601,18 +607,60 @@ fn run_corpus(tier: Tier) -> Report {
         report.checked += 1;
     }
     for (format, row) in ADAPTER_ROWS {
-        if conformance::registered()
-            .iter()
-            .all(|adapter| adapter.format() != *format)
-        {
+        let adapters: Vec<&dyn Adapter> = conformance::registered()
+            .into_iter()
+            .filter(|adapter| adapter.format() == *format)
+            .collect();
+        if adapters.is_empty() {
             report
                 .unavailable
                 .push((*format, row, format.adapter_issue()));
-        } else {
-            panic!("{format:?} adapter registered: replace {row} with an executable row");
+            continue;
+        }
+        let (input, expect) = adapter_row(*format, row).unwrap_or_else(|| {
+            panic!("{format:?} adapter registered: replace {row} with an executable row")
+        });
+        let variants = match (&expect, tier) {
+            (Expect::Admit(_), Tier::Fast) => reencode(&input),
+            _ => Vec::new(),
+        };
+        for adapter in adapters {
+            let outcome = conformance::check(
+                adapter,
+                &input,
+                &variants,
+                &expect,
+                &limits,
+                &Cancel::default(),
+            )
+            .unwrap_or_else(|error| panic!("{format:?}/{row}: {error}"));
+            assert!(
+                outcome.round_trip || !row.ends_with("round-trip-anchors"),
+                "{format:?}/{row}: the adapter must export and round-trip"
+            );
+            report.checked += 1;
         }
     }
     report
+}
+
+/// Executable adapter rows, supplied by each registered adapter's test module.
+fn adapter_row(format: Format, row: &str) -> Option<(Vec<u8>, Expect)> {
+    match format {
+        Format::Pptx => pptx_decks::row(row),
+        _ => None,
+    }
+}
+
+fn unregistered_adapter_rows() -> usize {
+    let registered: Vec<Format> = conformance::registered()
+        .iter()
+        .map(|adapter| adapter.format())
+        .collect();
+    ADAPTER_ROWS
+        .iter()
+        .filter(|(format, _)| !registered.contains(format))
+        .count()
 }
 
 /// The ordinary package's canonical projection matches the recorded digest.
@@ -667,7 +715,7 @@ fn enterprise_conformance_fast() {
     for (format, row, issue) in &report.unavailable {
         println!("unavailable {format:?}/{row}: needs adapter #{issue}");
     }
-    assert_eq!(report.unavailable.len(), ADAPTER_ROWS.len());
+    assert_eq!(report.unavailable.len(), unregistered_adapter_rows());
     assert!(
         elapsed <= FAST_RUNTIME_BUDGET,
         "fast tier exceeded its runtime budget: {elapsed:?}"
