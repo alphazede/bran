@@ -1,0 +1,52 @@
+# BRAN stage-1 deployment profile: docs/deployment-profile.md
+# One read-only `bran check` of /srv/bran/repos/<instance>. Instance names are
+# repository directory names matching [a-z0-9-]+. Install the exact release
+# binary at /usr/local/bin/bran, root-owned, mode 0555.
+[Unit]
+Description=BRAN read-only repository check for %i
+Documentation=https://github.com/alphazede/bran/blob/main/docs/deployment-profile.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bran check /srv/bran/repos/%i bran-strict
+Environment=BRAN_REGISTERED_ROOTS=/srv/bran/repos/%i
+TimeoutStartSec=300
+DynamicUser=yes
+UMask=0077
+WorkingDirectory=/
+# Only the instance repository is visible, read-only.
+TemporaryFileSystem=/srv/bran/repos:ro
+BindReadOnlyPaths=/srv/bran/repos/%i
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateUsers=yes
+# No network: no interfaces, no addresses, no socket families.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=none
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=1G
+TasksMax=16
+LimitNOFILE=1024

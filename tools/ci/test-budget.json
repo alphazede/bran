@@ -390,6 +390,17 @@
       "support_fixtures": []
     },
     {
+      "stable_id": "P8-DEPLOYMENT-CONTRACT",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "python",
+      "name": "tools/ci/deployment_contract_check.py",
+      "category": "security",
+      "classification": "new",
+      "source": "tools/ci/deployment_contract_check.py",
+      "support_fixtures": []
+    },
+    {
       "stable_id": "P8-DEPLOYMENT-PROFILE",
       "phase": 8,
       "slice": "8.7",

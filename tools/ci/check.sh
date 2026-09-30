@@ -83,6 +83,10 @@ run_google_attestation_contract() {
     python3 "$bran_root/tools/ci/google_attestation_contract_check.py"
 }
 
+run_deployment_contract() {
+    python3 "$bran_root/tools/ci/deployment_contract_check.py"
+}
+
 run_export() {
     printf '%s\n' 'EXPORT: running Slice 3.3 Obsidian export gate.'
     run_budget
@@ -123,6 +127,7 @@ run_fast() {
     run_release_contract
     run_enterprise_contract
     run_google_attestation_contract
+    run_deployment_contract
     run_public_boundary
     run_public_export
 
