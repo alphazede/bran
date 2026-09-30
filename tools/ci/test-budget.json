@@ -357,6 +357,10 @@
       "support_fixtures": [
         "fixtures/enterprise-documents/conformance/pptx-design.parts",
         "fixtures/enterprise-documents/conformance/pptx-ordinary.parts",
+        "fixtures/enterprise-documents/pptx-review/compressible-text.deflate.hex",
+        "fixtures/enterprise-documents/pptx-review/png-metadata-canary.deflate.hex",
+        "fixtures/enterprise-documents/pptx-review/shared-notes-amplification.deflate.hex",
+        "fixtures/enterprise-documents/pptx-review/undeclared-r.deflate.hex",
         "fixtures/enterprise-documents/conformance/pptx-slides.parts"
       ]
     },

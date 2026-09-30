@@ -113,6 +113,8 @@ pub fn import(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Imported
         legacy_authors: BTreeMap::new(),
         modern_authors: BTreeMap::new(),
         anchors: Vec::new(),
+        remaining_bytes: limits.max_total_bytes,
+        remaining_nodes: limits.max_xml_nodes,
         slide: (0, 0),
         z: 0,
         shape_ids: BTreeSet::new(),
@@ -207,7 +209,9 @@ impl Dom {
                                         Some(format!("r:{local}"))
                                     }
                                     Some(_) if prefix == "r" => Some(format!("r-foreign:{local}")),
-                                    _ => None,
+                                    Some(_) => None,
+                                    None if prefix == "xml" => None,
+                                    None => return Err(Refusal::MalformedXml),
                                 }
                             }
                             _ => None,
@@ -312,6 +316,9 @@ struct Deck<'a> {
     modern_authors: Authors,
     /// (anchor id, text, envelope-shaped anchor)
     anchors: Vec<(String, String, Json)>,
+    // One cumulative budget for relationship expansion and projection copies.
+    remaining_bytes: u64,
+    remaining_nodes: usize,
     /// (slide number, slide id) of the slide being read.
     slide: (i64, i64),
     z: i64,
@@ -328,9 +335,27 @@ impl<'a> Deck<'a> {
         part
     }
 
-    fn dom(&self, part: &Part) -> Result<Dom, Refusal> {
+    fn reserve(&mut self, bytes: u64, nodes: usize) -> Result<(), Refusal> {
+        self.remaining_bytes = self
+            .remaining_bytes
+            .checked_sub(bytes)
+            .ok_or(Refusal::Oversized)?;
+        self.remaining_nodes = self
+            .remaining_nodes
+            .checked_sub(nodes)
+            .ok_or(Refusal::XmlNodeLimit)?;
+        Ok(())
+    }
+
+    fn dom(&mut self, part: &Part) -> Result<Dom, Refusal> {
         self.cancel.check()?;
-        Dom::parse(&part.data, self.limits, self.cancel)
+        // Count every traversal, including a shared notes/comments target.
+        self.reserve(part.data.len() as u64, 0)?;
+        let mut limits = self.limits.clone();
+        limits.max_xml_nodes = self.remaining_nodes;
+        let dom = Dom::parse(&part.data, &limits, self.cancel)?;
+        self.reserve(0, dom.0.len())?;
+        Ok(dom)
     }
 
     fn relationship(&self, source: &str, id: &str) -> Option<&'a Relationship> {
@@ -403,6 +428,10 @@ impl<'a> Deck<'a> {
         for (index, (id, name)) in slides.iter().enumerate() {
             out.push(self.slide(index as i64 + 1, *id, name)?);
         }
+        let asset_bytes = self.assets.values().fold(0u64, |total, part| {
+            total.saturating_add((part.data.len() as u64).saturating_mul(4))
+        });
+        self.reserve(asset_bytes, self.assets.len())?;
         let assets = self
             .assets
             .iter()
@@ -417,6 +446,10 @@ impl<'a> Deck<'a> {
             })
             .collect();
         self.anchors.sort_by(|a, b| a.0.cmp(&b.0));
+        let anchor_bytes = self.anchors.iter().fold(0u64, |total, (_, text, _)| {
+            total.saturating_add(text.len() as u64)
+        });
+        self.reserve(anchor_bytes, self.anchors.len())?;
         Ok(obj([
             (
                 "anchors",
@@ -597,7 +630,7 @@ impl<'a> Deck<'a> {
                         Some("subTitle") => "heading",
                         _ => "paragraph",
                     };
-                    self.anchor(&placed, "", role, text);
+                    self.anchor(&placed, "", role, text)?;
                     shape.insert("text_box".to_owned(), Json::Bool(text_box));
                     shape.insert("paragraphs".to_owned(), paragraphs);
                     shape
@@ -700,7 +733,7 @@ impl<'a> Deck<'a> {
             .and_then(|p| dom.child(p, "prstGeom"))
             .and_then(|g| dom.attr(g, "prst"));
         if let Some(alt) = attr("descr").filter(|alt| !alt.trim().is_empty()) {
-            self.anchor(&placed, ":alt", "shape", alt.to_owned());
+            self.anchor(&placed, ":alt", "shape", alt.to_owned())?;
         }
         let shape = BTreeMap::from([
             ("alt_text".to_owned(), opt(attr("descr"))),
@@ -720,10 +753,17 @@ impl<'a> Deck<'a> {
         Ok((shape, placed))
     }
 
-    fn anchor(&mut self, placed: &Placed, suffix: &str, role: &str, text: String) {
+    fn anchor(
+        &mut self,
+        placed: &Placed,
+        suffix: &str,
+        role: &str,
+        text: String,
+    ) -> Result<(), Refusal> {
         if text.trim().is_empty() {
-            return;
+            return Ok(());
         }
+        self.reserve((text.len() as u64).saturating_mul(2), 1)?;
         let (number, slide) = self.slide;
         let id = format!("anc:pptx:slide-{slide}:{}{suffix}", placed.key);
         let locator = obj([
@@ -741,6 +781,7 @@ impl<'a> Deck<'a> {
             ("text_digest", s(&sha256_hex(text.as_bytes()))),
         ]);
         self.anchors.push((id, text, anchor));
+        Ok(())
     }
 
     /// Paragraphs of a text body, and their text joined for the anchor.
@@ -786,12 +827,18 @@ impl<'a> Deck<'a> {
                     .child(item, "rPr")
                     .and_then(|properties| dom.child(properties, "hlinkClick"));
                 let link = self.link(dom, source, link)?;
+                // Run text and the joined paragraph both allocate a copy.
+                self.reserve((text.len() as u64).saturating_mul(2), 1)?;
                 line.push_str(text);
                 runs.push(obj([("link", link), ("text", s(text))]));
             }
             lines.push(line);
             paragraphs.push(obj([("level", int(level)), ("runs", Json::Arr(runs))]));
         }
+        let joined_bytes = lines.iter().fold(0u64, |total, line| {
+            total.saturating_add(line.len() as u64 + 1)
+        });
+        self.reserve(joined_bytes, paragraphs.len())?;
         Ok((Json::Arr(paragraphs), lines.join("\n")))
     }
 
@@ -817,6 +864,7 @@ impl<'a> Deck<'a> {
                 self.codes.insert("link-target-omitted");
             }
         }
+        self.reserve(url.map_or(0, |url| url.len() as u64), 1)?;
         Ok(obj([
             ("action", opt(action)),
             ("slide", slide.map_or(Json::Null, int)),
@@ -892,7 +940,7 @@ impl<'a> Deck<'a> {
                 ("height", int(dom.num(row, "h")?)),
             ]));
         }
-        self.anchor(&placed, "", "table", lines.join("\n"));
+        self.anchor(&placed, "", "table", lines.join("\n"))?;
         shape.insert("columns".to_owned(), Json::Arr(columns));
         shape.insert("rows".to_owned(), Json::Arr(rows));
         Ok(Some(shape))
@@ -934,7 +982,7 @@ impl<'a> Deck<'a> {
             shape: id.unwrap_or(0),
             z: 0,
         };
-        self.anchor(&placed, "", "notes", text);
+        self.anchor(&placed, "", "notes", text)?;
         Ok(obj([
             ("paragraphs", paragraphs),
             ("shape", id.map_or(Json::Null, int)),
@@ -980,7 +1028,13 @@ impl<'a> Deck<'a> {
                     shape: comments.len() as i64 + 1,
                     z: 0,
                 };
-                self.anchor(&placed, "", "notes", text.clone());
+                self.reserve(
+                    (text.len() as u64)
+                        .saturating_add(author.len() as u64)
+                        .saturating_add(initials.as_ref().map_or(0, |s| s.len() as u64)),
+                    1,
+                )?;
+                self.anchor(&placed, "", "notes", text.clone())?;
                 comments.push(obj([
                     ("author", s(&author)),
                     ("initials", opt(initials.as_deref())),
@@ -1877,17 +1931,19 @@ impl Writer {
             "[Content_Types].xml".to_owned(),
             format!("{DECL}{types}").into_bytes(),
         );
-        let emitted = self.texts.iter().map(String::as_str).chain(
-            self.parts
-                .values()
-                .map(|data| std::str::from_utf8(data).unwrap_or_default()),
-        );
-        for text in emitted {
-            match validate_emitted_string(text) {
-                Err(ExportError::DlpViolation(_)) => return Err(Refusal::DlpFindings),
-                Err(_) => return Err(Refusal::PublicBoundary),
-                Ok(()) => {}
-            }
+        let mut findings = BTreeSet::new();
+        for text in &self.texts {
+            opc::dlp_scan(text.as_bytes(), &mut findings);
+        }
+        for (name, data) in &self.parts {
+            opc::dlp_scan(name.as_bytes(), &mut findings);
+            opc::dlp_scan(data, &mut findings);
+        }
+        if findings.contains("dlp-findings") {
+            return Err(Refusal::DlpFindings);
+        }
+        if findings.contains("public-boundary-violation") {
+            return Err(Refusal::PublicBoundary);
         }
         // `[Content_Types].xml` sorts first; readers that expect it first get it.
         let entries: Vec<WriteEntry<'_>> = self
@@ -1901,7 +1957,11 @@ impl Writer {
                 dos_date: 0x0021,
             })
             .collect();
-        Ok(zip::write(&entries))
+        let limits = Limits::default();
+        let bytes = zip::write_bounded(&entries, &limits)?;
+        // Generated XML must satisfy the same node/depth budgets as intake.
+        opc::open(&bytes, &limits, &Cancel::default())?;
+        Ok(bytes)
     }
 }
 

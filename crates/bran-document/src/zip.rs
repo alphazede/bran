@@ -259,11 +259,39 @@ fn inflate_counted(raw: &[u8], size: u64) -> (Result<Vec<u8>, Refusal>, u64) {
 /// Writes entries in the given order with exactly the given names and
 /// timestamps. Export callers pass sorted names and one fixed timestamp.
 pub fn write(entries: &[WriteEntry<'_>]) -> Vec<u8> {
+    write_inner(entries, None).expect("unbounded in-memory ZIP write")
+}
+
+/// Export policy: enforce intake budgets and store entries whose deflate
+/// ratio would make them inadmissible on re-import.
+pub(crate) fn write_bounded(
+    entries: &[WriteEntry<'_>],
+    limits: &Limits,
+) -> Result<Vec<u8>, Refusal> {
+    if entries.len() > limits.max_parts || entries.len() >= u16::MAX as usize {
+        return Err(Refusal::TooManyParts);
+    }
+    let mut remaining = limits.max_total_bytes;
+    for entry in entries {
+        if entry.name.len() > u16::MAX as usize
+            || entry.data.len() as u64 > limits.max_part_bytes
+            || entry.data.len() >= u32::MAX as usize
+        {
+            return Err(Refusal::Oversized);
+        }
+        remaining = remaining
+            .checked_sub(entry.data.len() as u64)
+            .ok_or(Refusal::Oversized)?;
+    }
+    write_inner(entries, Some(limits))
+}
+
+fn write_inner(entries: &[WriteEntry<'_>], limits: Option<&Limits>) -> Result<Vec<u8>, Refusal> {
     use std::io::Write;
     let mut out = Vec::new();
     let mut central = Vec::new();
     for entry in entries {
-        let data = if entry.deflate {
+        let mut data = if entry.deflate {
             let mut encoder =
                 flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
             encoder.write_all(entry.data).expect("in-memory write");
@@ -271,7 +299,27 @@ pub fn write(entries: &[WriteEntry<'_>]) -> Vec<u8> {
         } else {
             entry.data.to_vec()
         };
-        let method: u16 = if entry.deflate { 8 } else { 0 };
+        let mut method: u16 = if entry.deflate { 8 } else { 0 };
+        if entry.deflate
+            && limits.is_some_and(|limits| {
+                entry.data.len() as u64 > limits.max_ratio.saturating_mul(data.len().max(1) as u64)
+            })
+        {
+            data = entry.data.to_vec();
+            method = 0;
+        }
+        // Include both headers, both names, and the final end record before
+        // growing either output buffer.
+        let package_size = (out.len() as u64)
+            .saturating_add(central.len() as u64)
+            .saturating_add(76 + 2 * entry.name.len() as u64)
+            .saturating_add(data.len() as u64)
+            .saturating_add(22);
+        if limits.is_some_and(|limits| {
+            package_size > limits.max_package_bytes || package_size >= u32::MAX as u64
+        }) {
+            return Err(Refusal::Oversized);
+        }
         let crc = crc32fast::hash(entry.data);
         let local = out.len() as u32;
         let name = entry.name.as_bytes();
@@ -309,7 +357,7 @@ pub fn write(entries: &[WriteEntry<'_>]) -> Vec<u8> {
     out.extend_from_slice(&(central.len() as u32).to_le_bytes());
     out.extend_from_slice(&cd_offset.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes()); // comment length
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use bran_document::canonical::{sha256_hex, Json};
 use bran_document::conformance::{self, Adapter, Expect, Imported, PackageIntake};
 use bran_document::pptx::{self, Pptx};
 use bran_document::{export, opc, Cancel, Format, Limits, Refusal};
+use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::process::Command;
@@ -102,6 +103,125 @@ fn canary() -> &'static str {
         .lines()
         .find(|line| !line.is_empty())
         .expect("synthetic canary")
+}
+
+// Exact reviewer ZIPs, deflated and hex-encoded to keep the corpus text-only.
+fn review_deck(encoded: &str, digest: &str) -> Vec<u8> {
+    let hex: String = encoded.split_whitespace().collect();
+    let compressed: Vec<u8> = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let mut bytes = Vec::new();
+    flate2::read::DeflateDecoder::new(compressed.as_slice())
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(sha256_hex(&bytes), digest, "original reviewer input");
+    bytes
+}
+
+#[test]
+fn pptx_review_binary_dlp_rescan() {
+    let bytes = review_deck(
+        include_str!(
+            "../../../fixtures/enterprise-documents/pptx-review/png-metadata-canary.deflate.hex"
+        ),
+        "072d0358bba5850397e1867fbfb46c077e5d576a09f6c8ed7bdb0e730aeaf19f",
+    );
+    let mut imported = import_bytes(&bytes).unwrap();
+    assert!(
+        has(&imported, "dlp-findings"),
+        "intake detects PNG metadata"
+    );
+    assert_eq!(Pptx.export(&imported).err(), Some(Refusal::DlpFindings));
+    imported.receipt.clear();
+    assert_eq!(
+        Pptx.export(&imported).err(),
+        Some(Refusal::DlpFindings),
+        "export independently scans binary metadata"
+    );
+}
+
+#[test]
+fn pptx_review_shared_notes_budget() {
+    if std::env::var_os("BRAN_PPTX_BUDGET_CHILD").is_none() {
+        let exe = std::env::current_exe().unwrap();
+        let mut command = if cfg!(target_os = "linux") {
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "ulimit -v 524288; ulimit -c 0; exec \"$@\"",
+                "pptx-budget",
+            ]);
+            command.arg(&exe);
+            command
+        } else {
+            Command::new(&exe)
+        };
+        let output = command
+            .args([
+                "--exact",
+                "pptx_review_shared_notes_budget",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BRAN_PPTX_BUDGET_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "bounded child {}: {} {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    // Positive control under the identical address-space limit.
+    import(&Deck::ordinary());
+    let bytes = review_deck(
+        include_str!("../../../fixtures/enterprise-documents/pptx-review/shared-notes-amplification.deflate.hex"),
+        "d757b0217a09e3ddb6b327ef23ce4c19e5d6240dd143e025adf6868ff0d91075",
+    );
+    assert_eq!(import_bytes(&bytes).err(), Some(Refusal::Oversized));
+}
+
+#[test]
+fn pptx_review_compressible_text_round_trip() {
+    let bytes = review_deck(
+        include_str!(
+            "../../../fixtures/enterprise-documents/pptx-review/compressible-text.deflate.hex"
+        ),
+        "a9aab4eb18bd3274ad86dc5a821938c709753495c3705169f0b80aec3285b94e",
+    );
+    let first = import_bytes(&bytes).unwrap();
+    let exported = Pptx.export(&first).unwrap();
+    assert_eq!(Pptx.export(&first).unwrap(), exported);
+    let again = import_bytes(&exported).expect("export obeys the same intake limits");
+    assert_eq!(again.canonical, first.canonical);
+    assert_eq!(again.anchors, first.anchors);
+}
+
+#[test]
+fn pptx_review_unbound_relationship_prefix() {
+    import(&Deck::ordinary());
+    let bytes = review_deck(
+        include_str!("../../../fixtures/enterprise-documents/pptx-review/undeclared-r.deflate.hex"),
+        "27a310d94d2e43aaa5416c8972ad3047874c25bc1a214ee9609aba7b75e2a6b3",
+    );
+    assert_eq!(import_bytes(&bytes).err(), Some(Refusal::MalformedXml));
+    // Empty bindings and undeclared element prefixes are also malformed.
+    for (from, to) in [
+        (format!("xmlns:r=\"{REL}\""), "xmlns:r=\"\""),
+        (
+            "xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"".to_owned(),
+            "",
+        ),
+    ] {
+        let deck = Deck::ordinary().edit("ppt/presentation.xml", &from, to);
+        assert_eq!(import_bytes(&deck.zip()).err(), Some(Refusal::MalformedXml));
+    }
 }
 
 #[test]

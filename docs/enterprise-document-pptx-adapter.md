@@ -38,6 +38,9 @@ adds PPTX rules:
 | Slide id outside 256 to 2147483647, or a non-numeric shape id | `malformed-xml` |
 | Run or shape link whose relationship id does not exist | `malformed-container` |
 | Groups nested more than 64 deep | `xml-depth-limit` |
+| Relationship expansion, projected text copies, or anchors exhaust the cumulative `max_total_bytes` budget | `oversized` |
+| Repeated XML traversal or projection exhausts the cumulative `max_xml_nodes` budget | `xml-node-limit` |
+| Unbound element or attribute prefix, including an empty prefix binding | `malformed-xml` |
 
 Nothing is fetched, executed, or played. External hyperlinks are recorded as
 text and receipted as `hyperlink-not-fetched` by the intake.
@@ -47,6 +50,9 @@ relationship attributes (`id`, `embed`, `link`) by namespace, not by prefix:
 any prefix bound to the Transitional or Strict relationship namespace reads as
 `r:`, and `r` bound to another namespace is not a relationship attribute. A
 producer's prefix choice therefore cannot hide a link or an image.
+The shared reader rejects unbound prefixes in every XML part. Projection
+budgets count each traversal of a shared target and reserve text and anchor
+copies before materializing them; ZIP size alone does not bound this work.
 
 ## Canonical content
 
@@ -129,13 +135,18 @@ content digest, the import receipt, the export codes
 Before returning bytes, export refuses when the import receipt has
 `dlp-findings` or `public-boundary-violation`, then runs the shared check on
 every paragraph's joined text, every name, alt text, URL, and comment, and
-every generated part. It also refuses content that is not
+every generated part's name and bytes, including binary image metadata, using
+the intake's byte scan. It also refuses content that is not
 `bran.pptx.content/1` (`export-unsupported`), malformed content
 (`malformed-container`), and shapes without an id (`export-unsupported`).
 Writing to disk goes through `export::write_new`: explicit format, contained
 destination, no overwrite.
 
-The output is deterministic: sorted part names, one fixed timestamp, deflate.
+The output is deterministic: sorted part names, one fixed timestamp, deflate
+unless a part would exceed the default intake compression ratio, in which
+case it is stored. Part count, part bytes, total expanded bytes, and package
+bytes are checked before ZIP buffers grow; the generated package then passes
+the shared OPC intake, including XML node and depth limits.
 Import, export, and import again give byte-identical canonical content for the
 synthetic decks.
 
@@ -157,10 +168,18 @@ Tests are in `crates/bran-document/tests/pptx.rs`; the corpus rows are in
 | `pptx_export_refuses_dlp_before_writing` | split canary and boundary marker refused before any bytes |
 | `pptx_export_refuses_malformed_or_foreign_content` | typed export refusals |
 | `pptx_mutated_decks_never_panic` | 240 seeded container and content mutations; admitted decks round-trip |
+| `pptx_review_binary_dlp_rescan` | exact reviewer PNG metadata canary refused even with the import receipt cleared |
+| `pptx_review_shared_notes_budget` | exact reviewer shared-notes deck returns `oversized` under a 512 MiB address-space limit on Linux; ordinary deck succeeds under the same limit |
+| `pptx_review_compressible_text_round_trip` | exact reviewer 100,000-character run exports deterministically and re-imports with the same content and anchors |
+| `pptx_review_unbound_relationship_prefix` | exact reviewer undeclared `r` deck and related empty-binding/unbound-element inputs return `malformed-xml` |
 | `pptx_export_opens_in_independent_readers` | opt-in, see below |
 
 The corpus also runs every package row (macro-enabled decks, external media,
 path escape, decompression bombs, and the rest) through the adapter.
+The four reviewer ZIPs are preserved in `fixtures/enterprise-documents/pptx-review/`
+as raw-deflate hex text. Tests decode them and verify SHA-256 against the
+original input before exercising the adapter. They are separate from the
+8 KiB conformance fixture directory; its existing budget is unchanged.
 
 ### Independent readers
 
