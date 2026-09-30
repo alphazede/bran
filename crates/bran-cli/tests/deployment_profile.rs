@@ -85,6 +85,52 @@ fn set_modes(root: &Path, directory: u32, file: u32) {
     fs::set_permissions(root, fs::Permissions::from_mode(directory)).unwrap();
 }
 
+/// Runs real git with no user or system config and no hooks.
+fn git(directory: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(directory)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", directory)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "BRAN test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "BRAN test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(["-c", "init.defaultBranch=main"])
+        .args(args)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// The envelope without its registered-root `source_revisions` field.
+fn without_revisions(envelope: &str) -> String {
+    let start = envelope
+        .find(",\"source_revisions\":[")
+        .expect("source revisions");
+    let end = start + envelope[start..].find(']').unwrap() + 1;
+    format!("{}{}", &envelope[..start], &envelope[end..])
+}
+
+fn unavailable_revision(root: &str, reason: &str) -> String {
+    format!(
+        "{{\"root\":\"{root}\",\"kind\":\"git-head\",\"status\":\"unavailable\",\"ref\":null,\"value\":null,\"reason\":\"{reason}\"}}"
+    )
+}
+
 fn strace_available(scratch: &Path) -> bool {
     Command::new("strace")
         .arg("-o")
@@ -147,9 +193,59 @@ fn p8_deployment_profile() {
     }
     // In-repository symlinks never pull outside content in.
     assert!(!query.contains(CANARY) && !packet.contains(CANARY));
-    // Registered-root mode changes no admitted result.
-    let (_, default_packet) = run(&state, None, &["packet", repo_path, "ledger", "rotation"]);
-    assert_eq!(packet, default_packet);
+    // Registered-root mode adds only the source revision; a root that is not
+    // a git checkout is reported unavailable, never guessed.
+    let not_git = format!(
+        "\"source_revisions\":[{}]",
+        unavailable_revision(repo_path, "not_a_git_checkout")
+    );
+    for envelope in [&output, &query, &packet] {
+        assert!(envelope.contains(&not_git), "{envelope}");
+    }
+    for (envelope, args) in [
+        (&output, vec!["check", repo_path, "bran-strict"]),
+        (&query, vec!["query", repo_path, "ledger", "rotation"]),
+        (&packet, vec!["packet", repo_path, "ledger", "rotation"]),
+    ] {
+        let (_, default_output) = run(&state, None, &args);
+        assert!(!default_output.contains("source_revisions"));
+        assert_eq!(without_revisions(envelope), default_output);
+    }
+
+    // A registered git checkout reports the commit its HEAD names, read from
+    // git metadata without running git.
+    let tracked = repos.join("tracked");
+    policy_repository(&tracked, "Tracked ledger rotation");
+    git(&tracked, &["init", "-q"]);
+    git(&tracked, &["add", "."]);
+    git(&tracked, &["commit", "-q", "-m", "tracked"]);
+    let commit = git(&tracked, &["rev-parse", "HEAD"]);
+    let tracked_path = tracked.to_str().unwrap();
+    let tracked_registry = format!("{repo_path}:{tracked_path}");
+    let attested = format!(
+        "{{\"root\":\"{tracked_path}\",\"kind\":\"git-head\",\"status\":\"attested\",\"ref\":\"refs/heads/main\",\"value\":\"{commit}\",\"reason\":null}}"
+    );
+    let (code, output) = run(
+        &state,
+        Some(&tracked_registry),
+        &["check", tracked_path, "bran-strict"],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains(&format!("\"source_revisions\":[{attested}]")),
+        "{output}"
+    );
+    let (code, output) = run(
+        &state,
+        Some(&tracked_registry),
+        &["query", repo_path, "--add-dir", tracked_path, "ledger"],
+    );
+    assert_eq!(code, 0, "{output}");
+    let both = format!(
+        "\"source_revisions\":[{},{attested}]",
+        unavailable_revision(repo_path, "not_a_git_checkout")
+    );
+    assert!(output.contains(&both), "{output}");
 
     let rejected = |registry: Option<&str>, args: &[&str], code: i32, failure: &str| {
         let (actual, output) = run(&state, registry, args);

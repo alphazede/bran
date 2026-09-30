@@ -410,6 +410,17 @@
       "classification": "new",
       "source": "crates/bran-cli/tests/deployment_profile.rs",
       "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-SOURCE-REVISION",
+      "phase": 8,
+      "slice": "8.7",
+      "runner": "rust",
+      "name": "p8_source_revision",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-cli/src/source_revision.rs",
+      "support_fixtures": []
     }
   ]
 }

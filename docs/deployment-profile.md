@@ -90,8 +90,58 @@ In registered-root mode:
 The scanner already refuses to follow symlinks inside a root, so a link in a
 registered repository that points outside it contributes nothing.
 
-Registered-root mode changes no ranking, packet, or validation result. For
-an admitted request, the output is byte-identical to default mode.
+### Source revision
+
+In registered-root mode, every `check`, `query`, and `packet` result adds
+`provenance.source_revisions`. It holds one entry per requested root, in
+request order: the primary root, then each `--add-dir` root.
+
+```json
+{"root":"/repos/example","kind":"git-head","status":"attested",
+ "ref":"refs/heads/main","value":"<full commit id>","reason":null}
+```
+
+BRAN reads the commit that the root's git `HEAD` names from git metadata
+directly. It never runs git, so no hook, config, or filter executes. It reads
+only these files:
+
+- `.git` in the root: a directory, or a `gitdir:` file for a linked worktree
+  or submodule
+- `HEAD` and `commondir` in that git directory
+- the loose ref, then `packed-refs`, in the common directory
+
+Each read is bounded: 4 KiB per file and 64 MiB for `packed-refs`. BRAN
+follows at most five symbolic refs, counting `HEAD`, and only names under
+`refs/` without empty, `.`, or `..` components. `value` is a full lowercase
+SHA-1 or SHA-256 object id. `ref` is `null` for a detached `HEAD`.
+
+When BRAN cannot resolve the commit, `status` is `unavailable`, `value` is
+`null`, and `reason` says why. BRAN never guesses.
+
+| `reason` | Meaning |
+|---|---|
+| `not_a_git_checkout` | The root has no `.git` |
+| `git_metadata_invalid` | `.git` is a symlink or a malformed `gitdir:` file, or `commondir` is malformed |
+| `reftable_unsupported` | The repository uses the reftable ref store |
+| `head_unreadable` | `HEAD` is missing or cannot be read |
+| `head_corrupt` | `HEAD` is neither `ref: refs/...` nor a full object id |
+| `ref_unsafe` | `HEAD` or a symbolic ref names something outside `refs/` |
+| `ref_unresolved` | The branch has no loose or packed ref, for example before the first commit |
+| `ref_corrupt` | A loose ref or its `packed-refs` line holds no full object id |
+| `ref_unreadable` | A ref file or `packed-refs` cannot be read |
+| `ref_cycle` | Symbolic refs go deeper than five |
+
+The revision is the commit `HEAD` named when the request ran. It does not
+attest that the files match that commit: uncommitted edits, untracked files,
+and concurrent updates are not reflected. BRAN does not open the commit
+object, so it does not prove that the object exists. A linked worktree's git
+directory lies outside its root. Mount that directory read-only too;
+otherwise `HEAD` is unreadable and the revision is `unavailable`.
+
+Default mode never reads git metadata and never emits `source_revisions`.
+Apart from that field, a registered-root result is byte-identical to the
+default-mode result, and registered-root mode changes no ranking, packet, or
+validation result.
 
 ## Runtime boundary
 
@@ -103,7 +153,7 @@ an admitted request, the output is byte-identical to default mode.
 | Network egress disabled | `--network none`; `PrivateNetwork=yes`, `IPAddressDeny=any`, `RestrictAddressFamilies=none` |
 | Explicit capability configuration for connected agents and adapters | Connected agents (`-p`) are unavailable in registered-root mode. No database, object-storage, or other network adapter exists. |
 | Item, byte, TTL, timeout, cancellation, concurrency limits | Existing scanner limits (10,000 files, 1 MiB per file, 64 MiB total), packet limits, and the request limit above. Timeout, cancellation, and concurrency belong to the runner (`TimeoutStartSec=`, `timeout`, job-runner concurrency). |
-| No mutation of repositories, Git state, hooks, or host configuration | Read-only mounts, mutating commands refused, `ProtectSystem=strict` |
+| No mutation of repositories, Git state, hooks, or host configuration | Read-only mounts, mutating commands refused, `ProtectSystem=strict`; git metadata is parsed for the source revision, and git is never run |
 | No credentials in arguments, bodies, logs, metrics, receipts, or job metadata | Request DLP screen, no echo on rejection, no credential-bearing environment in the image |
 
 ## Deployment artifacts
@@ -167,6 +217,31 @@ docker run --rm --read-only --network none --user 65532:65532 \
 ```
 
 Reference the image by digest, never by tag.
+
+### Building on a real base
+
+This repository's checks do not build an image on a real base. The base
+must be pulled over the network by digest, and the gate runs offline. The
+contract check therefore builds only on a synthetic base. An operator with
+registry access runs these commands; they were not run here:
+
+```sh
+skopeo copy --override-os linux --override-arch amd64 \
+  docker://gcr.io/distroless/cc-debian12@sha256:<pinned digest> oci:base-oci
+python3 -c 'import json; print(json.load(open("base-oci/index.json"))["manifests"][0]["digest"])'
+python3 deploy/oci/build_image.py build \
+  --release-archive dist/bran-v0.1.1-x86_64-unknown-linux-gnu.tar.gz \
+  --release-manifest dist/bran-release-manifest.json \
+  --base-layout base-oci/ \
+  --base-manifest-digest <digest printed above> \
+  --out bran-oci/
+python3 deploy/oci/build_image.py verify bran-oci/
+skopeo copy oci:bran-oci docker-daemon:bran:0.1.1
+```
+
+Pin the platform manifest digest that `index.json` lists, not a
+multi-platform index digest. `build` rejects any other digest. Review the
+base image's licence notices before first use.
 
 ### systemd on a single VM
 
@@ -250,6 +325,7 @@ stored-state migration then requires restoring the pre-upgrade backup.
 | Host filesystem | A request names a path outside the approved repositories | Registered-root exact match before any file access; container and unit see only mounted repositories |
 | Repository contents | A request mutates a repository, Git state, or hooks | Read-only mounts; mutating commands refused in registered-root mode |
 | Repository contents | A symlink inside a repository points at host files | The scanner does not follow symlinks |
+| Repository metadata | Reading the source revision runs a repository's git hooks, config, or filters | BRAN parses `HEAD`, `commondir`, and refs itself with bounded reads and never runs git; it emits only full object ids, safe `refs/` names, and fixed reason codes |
 | Credentials | A credential passed in a request is echoed into output or logs | DLP screen rejects the request without echo; the image holds no credentials; errors never echo roots or request text |
 | Network | BRAN is used for exfiltration or as a pivot | No listener or socket API in the workspace sources, no network crate in `Cargo.lock`, `--network none` or `PrivateNetwork=yes` |
 | Host resources | A large repository or request exhausts memory or time | Scanner and packet limits, request limit, runner timeouts, and container or unit memory and task limits |
@@ -291,7 +367,8 @@ side channels between co-located containers.
   invocation (command, registered root, exit status), and the SHA-256 of the
   envelope. The request text may be recorded only under the runner's own
   data policy. BRAN envelopes carry controls, limits, selected locators,
-  derivation (`why_selected`, rankings), and DLP status. BRAN does not log.
+  derivation (`why_selected`, rankings), DLP status, and in registered-root
+  mode the source revision of each root. BRAN does not log.
 - **Resource limits.** BRAN enforces scanner, packet, and request limits.
   CPU, memory, PIDs, and wall time are container or unit limits. BRAN has no
   decompression or model workloads in stage 1.
@@ -323,8 +400,8 @@ keeps zero dependencies.
 | Smoke test runs check, query, and packet against a mounted synthetic repository | Done for stage 1 | `p8_deployment_profile`: registered, read-only synthetic repository, cleared environment, read-only working directory, repository digest unchanged |
 | Negative tests | Partial | `p8_deployment_profile` covers unregistered roots, path traversal, symlink escape (root alias, registry entry, in-repository link), cross-namespace access (a root registered to another process), oversized requests, quota overflow (a repository over the 10,000-file scanner quota fails with exit 3), and secret reflection. Not done: expired authentication, because stage 1 has no BRAN authentication (SSH or the runner authenticates). Cancellation races are also not done for stage 1: it has no BRAN cancellation interface, and the runner ends the process. The connected cancel-versus-publish race is covered by the existing `p3_headless_cli_and_maintain_lifecycle`. |
 | Restart recovery never reports a partial job as successful | Partial | Stage 1 has no BRAN job state, and exit status is authoritative. The bounded result store discards staged writes on the next open and keeps prior results when publication fails (existing `p3_headless_cli_and_maintain_lifecycle`). Job records are stage 2. |
-| Results retain source revision, packet, DLP, derivation, and storage provenance | Partial | Envelopes carry the packet, DLP status, and derivation. BRAN does not emit a source revision, and stage 1 stores nothing, so storage provenance does not apply. Scan identities are explicitly non-cryptographic, so the runner records the mounted revision until a revision field is designed. |
-| OCI image contents, user, entrypoint, ports, writable paths, capabilities, and licences verified deterministically | Partial | `deployment_contract_check.py` builds twice from a synthetic base and archive, compares digests, and checks that `verify` rejects each contract violation. No image from a real base has been built or verified: that needs a digest-pinned base image pulled from a registry. |
+| Results retain source revision, packet, DLP, derivation, and storage provenance | Done for stage 1 | [Source revision](#source-revision), added in registered-root mode by owner decision of 2026-09-30. `p8_source_revision` covers a loose-ref checkout, detached `HEAD` (SHA-1 and SHA-256), packed ref, linked worktree (absolute and relative `gitdir:`), non-git root, and corrupt, unsafe, unresolved, cyclic, and reftable metadata. It also cross-checks loose, packed, worktree, and detached results against real git. `p8_deployment_profile` checks an attested revision through the CLI for a real git checkout and `unavailable` for a non-git root. It also checks packet, DLP, and derivation fields, and that the output is byte-identical to default mode apart from `source_revisions`. Storage provenance does not apply: stage 1 stores nothing. |
+| OCI image contents, user, entrypoint, ports, writable paths, capabilities, and licences verified deterministically | Partial | `deployment_contract_check.py` builds twice from a synthetic base and archive, compares digests, and checks that `verify` rejects each contract violation. **Not done:** no image on a real base has been built or verified. That needs a network pull of a digest-pinned base image, and this repository's checks run offline. By owner decision of 2026-09-30 this stays not done. The operator commands are in [Building on a real base](#building-on-a-real-base). |
 | Server can use the bounded local state store first; database state follows #27 | Done by design | Stage 1 stores nothing; [Stage 2 entry conditions](#stage-2-entry-conditions) |
 | Upgrade and rollback path binds image digest, version, schema versions, and state migration | Done | [Upgrade and rollback](#upgrade-and-rollback); image labels |
 | Hosted-provider infrastructure optional and outside the portable core | Done | `deployment_contract_check.py` checks that `bran-core` has no dependencies; nothing provider-specific ships |

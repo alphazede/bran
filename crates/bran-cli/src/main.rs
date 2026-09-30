@@ -1,3 +1,6 @@
+mod source_revision;
+
+use source_revision::SourceRevision;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -187,6 +190,46 @@ fn make_registered_mode_error(detail: &str) -> String {
     make_envelope("", "error", "null", &[], &[detail.to_owned()], "{}", "{}")
 }
 
+/// Each root's git HEAD, in request order, as registered-root provenance.
+fn source_revisions_json<'a>(roots: impl IntoIterator<Item = &'a String>) -> String {
+    let entries = roots
+        .into_iter()
+        .map(|root| {
+            let (status, reference, value, reason) = match source_revision::read(Path::new(root)) {
+                SourceRevision::Attested { reference, commit } => (
+                    "attested",
+                    reference.map_or("null".to_owned(), |name| {
+                        format!("\"{}\"", json_escape(&name))
+                    }),
+                    format!("\"{commit}\""),
+                    "null".to_owned(),
+                ),
+                SourceRevision::Unavailable(reason) => (
+                    "unavailable",
+                    "null".to_owned(),
+                    "null".to_owned(),
+                    format!("\"{reason}\""),
+                ),
+            };
+            format!(
+                "{{\"root\":\"{}\",\"kind\":\"git-head\",\"status\":\"{status}\",\"ref\":{reference},\"value\":{value},\"reason\":{reason}}}",
+                json_escape(root)
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", entries.join(","))
+}
+
+/// Registered-root mode appends `source_revisions` to provenance; without it
+/// the envelope is unchanged.
+fn registered_provenance(provenance: &str, revisions: Option<&str>) -> String {
+    match (revisions, provenance.strip_suffix('}')) {
+        (Some(list), Some("{")) => format!("{{\"source_revisions\":{list}}}"),
+        (Some(list), Some(body)) => format!("{body},\"source_revisions\":{list}}}"),
+        _ => provenance.to_owned(),
+    }
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     let registry = std::env::var_os(REGISTERED_ROOTS_ENV);
@@ -342,6 +385,9 @@ impl CliApp {
                         return CliResult::usage(make_query_error(detail));
                     }
                 }
+                let revisions = registered
+                    .as_ref()
+                    .map(|_| source_revisions_json(std::iter::once(&root).chain(&added)));
                 let result = if added.is_empty() {
                     do_query(root, qtext, record)
                 } else {
@@ -357,7 +403,7 @@ impl CliApp {
                             &data,
                             &warns,
                             &fails,
-                            &provenance,
+                            &registered_provenance(&provenance, revisions.as_deref()),
                             &metrics,
                         ))
                     }
@@ -399,10 +445,19 @@ impl CliApp {
                         return CliResult::usage(make_packet_error(detail));
                     }
                 }
+                let revisions = registered.as_ref().map(|_| source_revisions_json([&root]));
                 match do_packet(root, qtext, &controls) {
-                    Ok((data, warns, fails, provenance, metrics)) => CliResult::success(
-                        make_envelope("packet", "ok", &data, &warns, &fails, &provenance, &metrics),
-                    ),
+                    Ok((data, warns, fails, provenance, metrics)) => {
+                        CliResult::success(make_envelope(
+                            "packet",
+                            "ok",
+                            &data,
+                            &warns,
+                            &fails,
+                            &registered_provenance(&provenance, revisions.as_deref()),
+                            &metrics,
+                        ))
+                    }
                     Err(failure) => CliResult::operation(make_envelope(
                         "packet",
                         "error",
@@ -530,6 +585,7 @@ impl CliApp {
                     }
                     None => return CliResult::usage(make_check_error("missing_root")),
                 };
+                let revisions = registered.as_ref().map(|_| source_revisions_json([&root]));
                 match do_check(root, profile.0, &profile.1, policy_source) {
                     Ok((data, warns, fails, exitc, status, provenance, metrics)) => {
                         let mut r = CliResult::success(make_envelope(
@@ -538,7 +594,7 @@ impl CliApp {
                             &data,
                             &warns,
                             &fails,
-                            &provenance,
+                            &registered_provenance(&provenance, revisions.as_deref()),
                             &metrics,
                         ));
                         r.exit_code = exitc;
