@@ -179,9 +179,10 @@ packet. `admitted` does not authorize export: ingest must still honor
 not treat `unavailable` parser or revision claims as attested.
 
 Today `bran query` and `bran packet` still rank repository files. They do not
-read this envelope. That ingest is follow-up work, not this issue. Native
-Office/PDF adapters (#21, #22, #23, #26) stay conditional on a proven gap in
-managed parser output. The shared conformance suite is #25.
+read this envelope. That ingest is follow-up work, not this issue. The owner
+has approved native local Office/PDF adapters (#21, #22, #23, #26). They
+build on the shared conformance suite from #25, described in
+[`enterprise-document-conformance.md`](enterprise-document-conformance.md).
 
 ## Fixtures
 

@@ -347,8 +347,9 @@ fn has_public_boundary_canary(value: &str) -> bool {
 }
 
 /// Shared emitted-string validator for important_boundary + DLP (canary) policy.
+/// Public so enterprise-document import and export apply the same policy.
 /// Applied to every node/edge identity, source, target, link, path, body, fm key+value.
-fn validate_emitted_string(value: &str) -> Result<(), ExportError> {
+pub fn validate_emitted_string(value: &str) -> Result<(), ExportError> {
     if has_public_boundary_canary(value) {
         return Err(ExportError::DlpViolation("synthetic canary".to_owned()));
     }
