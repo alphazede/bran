@@ -983,7 +983,10 @@ impl<'a> Reader<'a> {
         let name = required(&root, "name")?;
         let display = attr(&root, "displayName").unwrap_or(name);
         let reference = required(&root, "ref")?;
-        let ((top, left), (_, right)) = range(reference).ok_or(Refusal::MalformedContainer)?;
+        let ((top, left), (bottom, right)) = range(reference).ok_or(Refusal::MalformedContainer)?;
+        if bottom < top || right < left {
+            return Err(Refusal::MalformedContainer);
+        }
         let header = attr(&root, "headerRowCount") != Some("0");
         let totals = attr(&root, "totalsRowCount").is_some_and(|count| count != "0");
         if columns.len() as u32 != right.saturating_sub(left) + 1
@@ -1871,9 +1874,13 @@ fn comment_parts(comments: &[Json], number: usize) -> Result<(String, String), R
 fn table_xml(table: &Json) -> Result<String, Refusal> {
     let id = int(table, "id")?;
     let reference = text(table, "ref")?;
-    let ((_, left), (_, right)) = range(reference).ok_or(Refusal::ExportUnsupported)?;
+    let ((top, left), (bottom, right)) = range(reference).ok_or(Refusal::ExportUnsupported)?;
     let columns = list(table, "columns")?;
-    if !(1..=i64::from(u32::MAX)).contains(&id) || columns.len() as u32 != right - left + 1 {
+    if !(1..=i64::from(u32::MAX)).contains(&id)
+        || bottom < top
+        || right < left
+        || columns.len() as u32 != right - left + 1
+    {
         return Err(Refusal::ExportUnsupported);
     }
     let mut xml = format!(

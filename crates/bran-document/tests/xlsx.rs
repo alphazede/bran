@@ -838,6 +838,31 @@ fn xlsx_export_checks_receipt_content_for_dlp_and_boundary() {
     );
 }
 
+/// A table whose range corners run backwards (`B1:A3`) is refused on
+/// import, and a projection edited to one is refused on export: neither
+/// path may reach table arithmetic that underflows.
+#[test]
+fn xlsx_reversed_table_range_is_refused() {
+    let bytes = Parts::parse(FEATURES)
+        .edit("xl/tables/table1.xml", r#"ref="A1:B3""#, r#"ref="B1:A3""#)
+        .edit(
+            "xl/tables/table1.xml",
+            r#"<tableColumns count="2"><tableColumn id="1" name="Metric"/><tableColumn id="2" name="Value"/></tableColumns>"#,
+            r#"<tableColumns count="1"><tableColumn id="1" name="Metric"/></tableColumns>"#,
+        )
+        .zip();
+    assert_eq!(import(&bytes), Err(Refusal::MalformedContainer));
+
+    let mut tampered = features();
+    let canonical = text(&tampered).replace(r#""ref":"A1:B3""#, r#""ref":"B1:A3""#);
+    assert_ne!(text(&tampered), canonical, "tamper anchor moved");
+    tampered.canonical = canonical.into_bytes();
+    assert_eq!(
+        xlsx::export(&tampered).err(),
+        Some(Refusal::ExportUnsupported)
+    );
+}
+
 /// Opt-in: writes exported workbooks for independent readers. Set
 /// `BRAN_XLSX_READER_DIR` to a writable directory; the readers themselves
 /// (LibreOffice, openpyxl) run outside this crate. Without the variable the
