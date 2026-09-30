@@ -28,9 +28,18 @@ not need Microsoft Word, LibreOffice, or a network service.
   escape, duplicate parts, bombs, budgets, macro and OLE content types,
   external relationships other than hyperlinks, DTDs, and entities. The
   adapter adds its own refusals only for the parts it reads.
-- The shared XML reader keeps attribute prefixes as written, so the adapter
-  reads `w:val`, `r:id`, and `r:embed` by prefix. A part that binds those
-  namespaces under other prefixes is refused rather than misread.
+- The shared XML reader validates the part before `quick-xml` resolves each
+  element and attribute through its in-scope namespace bindings. Transitional
+  and Strict WordprocessingML accept arbitrary prefixes and default element
+  namespaces; unprefixed attributes have no namespace. Foreign elements never
+  become Word content, and foreign roots are refused.
+- Cumulative run payload and metadata copies (including transient templates)
+  are bounded by `Limits::max_total_bytes`. The importer returns `oversized`
+  before a copy would exceed that budget, including repeated tracked-change
+  authors and hyperlink targets.
+- Markup compatibility alternatives (`mc:AlternateContent`) in a read part
+  are explicitly refused. The adapter does not claim to select an eligible
+  `Choice` or `Fallback`.
 - Nothing is fetched or executed. Fields keep their cached result and their
   code is dropped. Hyperlink targets are recorded, never dereferenced.
 - Content the model does not carry is skipped and recorded in the fidelity
@@ -39,7 +48,9 @@ not need Microsoft Word, LibreOffice, or a network service.
 | Input | Refusal |
 |---|---|
 | Main part is not WordprocessingML (for example a workbook) | `unsupported-container` |
-| A part binds the WordprocessingML or relationships namespace to a prefix other than `w` or `r`, or binds `w` or `r` to another namespace | `unsupported-container` |
+| A read part has a foreign root namespace or `mc:AlternateContent` | `unsupported-container` |
+| Cumulative run payload and metadata copies exceed `Limits::max_total_bytes` | `oversized` |
+| Undeclared prefixes or duplicate attributes with the same expanded name | `malformed-xml` |
 | No `officeDocument` relationship, missing main part, or no `body` | `malformed-container` |
 | Malformed XML or an undeclared entity in any part the adapter reads | `malformed-xml` |
 | A DTD in any part the adapter reads | `xml-dtd-refused` |
@@ -126,7 +137,10 @@ diagnostics, or any emitted string carries a finding, so no file is written.
 The export is deterministic: parts are sorted, every entry has the same
 timestamp, and styles and numbering are regenerated from the model. Importing
 an export gives the same model, the same anchors, and, exported again, the
-same bytes.
+same bytes. Entries whose deflate representation would exceed the default
+intake compression ratio are stored instead. Attribute tabs, newlines, and
+carriage returns are escaped as character references, preserving metadata
+through XML attribute normalization.
 
 The receipt is canonical JSON with `schema_version`, `format`,
 `source_canonical_sha256`, `output_sha256`, `output_byte_length`,
@@ -160,7 +174,10 @@ footnote, and endnote. Microsoft Word was not available and was not tested.
   `docx-unsupported-benign-fidelity`, and `docx-round-trip-anchors` rows.
 - Fixtures: `fixtures/enterprise-documents/docx/representative.parts` and
   `unsupported-benign.parts`, synthetic, with the one-pixel PNG inline in the
-  tests.
+  tests. The `docx/review/` text fixtures hold the original synthetic reviewer
+  packages and memory-ceiling controls as deflate bytes in hex, with original
+  lengths and SHA-256 digests checked after decoding. The shape fixture
+  uses a direct drawing; compatibility wrappers have a separate refusal test.
 
 ## Not done here
 

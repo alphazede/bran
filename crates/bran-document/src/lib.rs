@@ -93,6 +93,7 @@ pub struct Limits {
     pub max_package_bytes: u64,
     pub max_parts: usize,
     pub max_part_bytes: u64,
+    /// Total inflated package bytes; also bounds DOCX run payload and metadata copies.
     pub max_total_bytes: u64,
     /// Largest allowed uncompressed/compressed size ratio for one part.
     pub max_ratio: u64,

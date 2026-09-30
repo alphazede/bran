@@ -274,6 +274,15 @@
       "source": "crates/bran-document/tests/docx.rs",
       "support_fixtures": [
         "fixtures/enterprise-documents/docx/representative.parts",
+        "fixtures/enterprise-documents/docx/review/amplify-small.fixture",
+        "fixtures/enterprise-documents/docx/review/amplify.fixture",
+        "fixtures/enterprise-documents/docx/review/attribute-newline.fixture",
+        "fixtures/enterprise-documents/docx/review/choice.fixture",
+        "fixtures/enterprise-documents/docx/review/foreign.fixture",
+        "fixtures/enterprise-documents/docx/review/high-compression.fixture",
+        "fixtures/enterprise-documents/docx/review/ordinary.fixture",
+        "fixtures/enterprise-documents/docx/review/prefix-control.fixture",
+        "fixtures/enterprise-documents/docx/review/prefix.fixture",
         "fixtures/enterprise-documents/docx/unsupported-benign.parts"
       ]
     },

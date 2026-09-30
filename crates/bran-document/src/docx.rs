@@ -457,6 +457,7 @@ pub fn read(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Document, 
         bookmark_names: BTreeSet::new(),
         fields: Vec::new(),
         document: Document::default(),
+        model_bytes: 0,
     };
     importer.survey(&main.name);
     if let Some(styles) = importer.related(&main.name, "styles") {
@@ -489,46 +490,106 @@ pub fn read(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Document, 
     Ok(document)
 }
 
-/// Namespaces whose attributes the adapter reads, under the prefix it reads
-/// them by. Transitional and Strict share a prefix.
-const PREFIXES: [(&str, &str); 4] = [
-    (
-        "w",
-        "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-    ),
-    ("w", "http://purl.oclc.org/ooxml/wordprocessingml/main"),
-    (
-        "r",
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-    ),
-    (
-        "r",
-        "http://purl.oclc.org/ooxml/officeDocument/relationships",
-    ),
-];
-
-/// Attribute keys keep their prefix as written, so `w:` and `r:` attributes
-/// are read by those prefixes. A part that binds either namespace to another
-/// prefix, or either prefix to another namespace, would be misread, so it is
-/// refused instead.
-fn check_prefixes(events: &[Event]) -> Result<(), Refusal> {
-    for event in events {
-        let Event::Open { attributes, .. } = event else {
-            continue;
-        };
-        for (key, uri) in attributes {
-            let Some(prefix) = key.strip_prefix("xmlns:") else {
-                continue;
-            };
-            let misbound = PREFIXES.iter().any(|(known, namespace)| {
-                (namespace == uri && *known != prefix) || (*known == prefix && namespace != uri)
-            }) && !PREFIXES.contains(&(prefix, uri.as_str()));
-            if misbound {
-                return Err(Refusal::UnsupportedContainer);
+/// Canonical dispatch names from expanded XML names, independent of the written
+/// prefix. Only WordprocessingML elements use bare local names; foreign names
+/// can never enter that dispatch. Default namespaces do not apply to attributes
+/// (Namespaces in XML 1.0, sections 6.1–6.3).
+fn namespace_name(uri: Option<&str>, local: &str, attribute: bool) -> String {
+    let prefix = match uri {
+        Some(
+            "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            | "http://purl.oclc.org/ooxml/wordprocessingml/main",
+        ) => {
+            if attribute {
+                "w"
+            } else {
+                return local.to_owned();
             }
         }
+        Some(
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            | "http://purl.oclc.org/ooxml/officeDocument/relationships",
+        ) => "r",
+        Some(
+            "http://schemas.openxmlformats.org/drawingml/2006/main"
+            | "http://purl.oclc.org/ooxml/drawingml/main",
+        ) => "a",
+        Some(
+            "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            | "http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing",
+        ) => "wp",
+        Some(
+            "http://schemas.openxmlformats.org/officeDocument/2006/math"
+            | "http://purl.oclc.org/ooxml/officeDocument/math",
+        ) => "m",
+        Some(
+            "http://schemas.openxmlformats.org/drawingml/2006/chart"
+            | "http://purl.oclc.org/ooxml/drawingml/chart",
+        ) => "c",
+        Some(
+            "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+            | "http://purl.oclc.org/ooxml/drawingml/diagram",
+        ) => "dgm",
+        Some("http://schemas.microsoft.com/office/word/2010/wordprocessingShape") => "wps",
+        Some("http://schemas.microsoft.com/office/word/2010/wordprocessingGroup") => "wpg",
+        Some("http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas") => "wpc",
+        Some(
+            "http://schemas.openxmlformats.org/drawingml/2006/lockedCanvas"
+            | "http://purl.oclc.org/ooxml/drawingml/lockedCanvas",
+        ) => "lc",
+        Some("http://schemas.microsoft.com/office/drawing/2016/SVG/main") => "asvg",
+        Some("http://schemas.openxmlformats.org/markup-compatibility/2006") => "mc",
+        None if attribute => return local.to_owned(),
+        // No need to replicate a possibly huge foreign namespace URI into every
+        // event: these names are only dispatched to the unsupported handler.
+        _ => "?",
+    };
+    format!("{prefix}:{local}")
+}
+
+fn namespace_uri(result: quick_xml::name::ResolveResult<'_>) -> Result<Option<&str>, Refusal> {
+    use quick_xml::name::ResolveResult;
+    match result {
+        ResolveResult::Bound(uri) => Ok(Some(uri.into_inner())),
+        ResolveResult::Unbound => Ok(None),
+        ResolveResult::Unknown(_) => Err(Refusal::MalformedXml),
     }
-    Ok(())
+}
+
+/// The shared reader already validated XML and its budgets. Revisit only the
+/// opening tags with the installed parser's scoped namespace resolver; keep the
+/// shared event representation and all other adapters' parsing unchanged.
+fn resolve_names(bytes: &[u8], events: &mut [Event]) -> Result<(), Refusal> {
+    use quick_xml::events::Event as Q;
+    let mut reader = quick_xml::reader::NsReader::from_reader(bytes);
+    let mut opens = events.iter_mut().filter_map(|event| match event {
+        Event::Open { name, attributes } => Some((name, attributes)),
+        _ => None,
+    });
+    loop {
+        match reader.read_event().map_err(|_| Refusal::MalformedXml)? {
+            Q::Start(element) | Q::Empty(element) => {
+                let (name, attributes) = opens.next().ok_or(Refusal::MalformedXml)?;
+                let (uri, local) = reader.resolver().resolve_element(element.name());
+                *name = namespace_name(namespace_uri(uri)?, local.as_ref(), false);
+                let mut seen = BTreeSet::new();
+                for (raw, (key, _)) in element.attributes().zip(attributes.iter_mut()) {
+                    let raw = raw.map_err(|_| Refusal::MalformedXml)?;
+                    if key == "xmlns" || key.starts_with("xmlns:") {
+                        continue;
+                    }
+                    let (uri, local) = reader.resolver().resolve_attribute(raw.key);
+                    let uri = namespace_uri(uri)?;
+                    if !seen.insert((uri, local.into_inner())) {
+                        return Err(Refusal::MalformedXml);
+                    }
+                    *key = namespace_name(uri, local.as_ref(), true);
+                }
+            }
+            Q::Eof => return Ok(()),
+            _ => {}
+        }
+    }
 }
 
 fn part<'p>(package: &'p Package, name: &str) -> Option<&'p Part> {
@@ -658,9 +719,41 @@ struct Importer<'a> {
     /// Complex field stack of the current part; `true` while in the field code.
     fields: Vec<bool>,
     document: Document,
+    /// Cumulative run payload and metadata copies, independent of machine layout.
+    model_bytes: u64,
 }
 
 impl<'a> Importer<'a> {
+    fn reserve_model(&mut self, bytes: usize) -> Result<(), Refusal> {
+        self.model_bytes = self
+            .model_bytes
+            .checked_add(bytes as u64)
+            .filter(|bytes| *bytes <= self.limits.max_total_bytes)
+            .ok_or(Refusal::Oversized)?;
+        Ok(())
+    }
+
+    fn emit(
+        &mut self,
+        content: RunContent,
+        template: &Run,
+        inlines: &mut Vec<Inline>,
+    ) -> Result<(), Refusal> {
+        let payload = match &content {
+            RunContent::Text(text) => text.len(),
+            RunContent::Image(image) => {
+                image.asset.len() + image.name.len() + image.description.len()
+            }
+            _ => 0,
+        };
+        self.reserve_model(payload + metadata_bytes(template))?;
+        inlines.push(Inline::Run(Run {
+            content,
+            ..template.clone()
+        }));
+        Ok(())
+    }
+
     fn note(&mut self, feature: &str, status: Status) {
         let entry = self
             .document
@@ -716,10 +809,18 @@ impl<'a> Importer<'a> {
             .find(|rel| rel.source.eq_ignore_ascii_case(&self.source) && rel.id == id)
     }
 
-    fn parse(&self, part: &Part) -> Result<Vec<Event>, Refusal> {
+    fn parse(&self, part: &Part, root: &str) -> Result<Vec<Event>, Refusal> {
         self.cancel.check()?;
-        let events = xml::parse(&part.data, self.limits, self.cancel)?;
-        check_prefixes(&events)?;
+        let mut events = xml::parse(&part.data, self.limits, self.cancel)?;
+        resolve_names(&part.data, &mut events)?;
+        if !matches!(events.first(), Some(Event::Open { name, .. }) if name == root)
+            || events.iter().any(|event| {
+                matches!(event,
+                Event::Open { name, .. } if name == "mc:AlternateContent")
+            })
+        {
+            return Err(Refusal::UnsupportedContainer);
+        }
         Ok(events)
     }
 
@@ -761,7 +862,7 @@ impl<'a> Importer<'a> {
 
     fn read_styles(&mut self, part: &Part) -> Result<(), Refusal> {
         self.note("styles", Status::Normalized);
-        let events = self.parse(part)?;
+        let events = self.parse(part, "styles")?;
         let mut cursor = Cursor {
             events: &events,
             at: 1,
@@ -805,7 +906,7 @@ impl<'a> Importer<'a> {
     }
 
     fn read_numbering(&mut self, part: &Part) -> Result<(), Refusal> {
-        let events = self.parse(part)?;
+        let events = self.parse(part, "numbering")?;
         let mut cursor = Cursor {
             events: &events,
             at: 1,
@@ -843,7 +944,7 @@ impl<'a> Importer<'a> {
 
     fn body(&mut self, part: &Part) -> Result<Vec<Block>, Refusal> {
         self.enter(&part.name);
-        let events = self.parse(part)?;
+        let events = self.parse(part, "document")?;
         let mut cursor = Cursor {
             events: &events,
             at: 1,
@@ -867,7 +968,7 @@ impl<'a> Importer<'a> {
             "endnotes"
         };
         self.enter(&part.name);
-        let events = self.parse(part)?;
+        let events = self.parse(part, &format!("{item}s"))?;
         let mut cursor = Cursor {
             events: &events,
             at: 1,
@@ -901,7 +1002,7 @@ impl<'a> Importer<'a> {
 
     fn comments(&mut self, part: &Part) -> Result<Vec<Comment>, Refusal> {
         self.enter(&part.name);
-        let events = self.parse(part)?;
+        let events = self.parse(part, "comments")?;
         let mut cursor = Cursor {
             events: &events,
             at: 1,
@@ -985,7 +1086,7 @@ impl<'a> Importer<'a> {
                     self.note("content-controls", Status::Normalized);
                     blocks.extend(self.blocks(cursor, depth + 1, body)?);
                 }
-                "sdtContent" | "customXml" | "AlternateContent" | "Choice" => {
+                "sdtContent" | "customXml" => {
                     blocks.extend(self.blocks(cursor, depth + 1, body)?);
                 }
                 "sectPr" => {
@@ -1004,10 +1105,11 @@ impl<'a> Importer<'a> {
                     self.note("tables", Status::Normalized);
                     cursor.skip()?;
                 }
-                "oMath" | "oMathPara" => self.unsupported(cursor, "math")?,
+                "m:oMath" | "m:oMathPara" => self.unsupported(cursor, "math")?,
                 "altChunk" => self.unsupported(cursor, "embedded-documents")?,
-                "sdtPr" | "sdtEndPr" | "customXmlPr" | "Fallback" | "proofErr" | "permStart"
-                | "permEnd" => cursor.skip()?,
+                "sdtPr" | "sdtEndPr" | "customXmlPr" | "proofErr" | "permStart" | "permEnd" => {
+                    cursor.skip()?
+                }
                 _ => self.unsupported(cursor, "unrecognized-content")?,
             }
         }
@@ -1138,8 +1240,9 @@ impl<'a> Importer<'a> {
                     self.note("content-controls", Status::Normalized);
                     frames.push(Frame::Plain);
                 }
-                "sdtContent" | "smartTag" | "customXml" | "dir" | "bdo" | "AlternateContent"
-                | "Choice" => frames.push(Frame::Plain),
+                "sdtContent" | "smartTag" | "customXml" | "dir" | "bdo" => {
+                    frames.push(Frame::Plain)
+                }
                 "bookmarkStart" => {
                     match (attr(attributes, "w:id"), attr(attributes, "w:name")) {
                         (Some(id), Some(name)) if self.bookmark_names.insert(name.to_owned()) => {
@@ -1169,10 +1272,10 @@ impl<'a> Importer<'a> {
                     }
                     cursor.skip()?;
                 }
-                "oMath" | "oMathPara" => self.unsupported(cursor, "math")?,
-                "sdtPr" | "sdtEndPr" | "smartTagPr" | "customXmlPr" | "Fallback" | "proofErr"
-                | "permStart" | "permEnd" | "moveFromRangeStart" | "moveFromRangeEnd"
-                | "moveToRangeStart" | "moveToRangeEnd" => cursor.skip()?,
+                "m:oMath" | "m:oMathPara" => self.unsupported(cursor, "math")?,
+                "sdtPr" | "sdtEndPr" | "smartTagPr" | "customXmlPr" | "proofErr" | "permStart"
+                | "permEnd" | "moveFromRangeStart" | "moveFromRangeEnd" | "moveToRangeStart"
+                | "moveToRangeEnd" => cursor.skip()?,
                 _ => self.unsupported(cursor, "unrecognized-content")?,
             }
         }
@@ -1317,38 +1420,30 @@ impl<'a> Importer<'a> {
         frames: &[Frame],
         inlines: &mut Vec<Inline>,
     ) -> Result<(), Refusal> {
+        let link = frames
+            .iter()
+            .rev()
+            .find_map(|frame| match frame {
+                Frame::Link(link) => Some(link.as_ref()),
+                _ => None,
+            })
+            .flatten();
+        let change = frames.iter().rev().find_map(|frame| match frame {
+            Frame::Change(change) => Some(change),
+            _ => None,
+        });
+        self.reserve_model(link_bytes(link) + change_bytes(change))?;
         let mut template = Run {
             content: RunContent::Text(String::new()),
             bold: false,
             italic: false,
             underline: false,
-            link: frames
-                .iter()
-                .rev()
-                .find_map(|frame| match frame {
-                    Frame::Link(link) => Some(link.clone()),
-                    _ => None,
-                })
-                .flatten(),
-            change: frames.iter().rev().find_map(|frame| match frame {
-                Frame::Change(change) => Some(change.clone()),
-                _ => None,
-            }),
+            link: link.cloned(),
+            change: change.cloned(),
         };
         let mut text = String::new();
-        let mut open = 0;
-        let emit = |content: RunContent, template: &Run, inlines: &mut Vec<Inline>| {
-            inlines.push(Inline::Run(Run {
-                content,
-                ..template.clone()
-            }));
-        };
         loop {
             let (name, attributes) = match cursor.next()? {
-                Event::Close if open > 0 => {
-                    open -= 1;
-                    continue;
-                }
                 Event::Close => break,
                 Event::Text(_) => continue,
                 Event::Open { name, attributes } => (name.as_str(), attributes.as_slice()),
@@ -1413,38 +1508,37 @@ impl<'a> Importer<'a> {
                     let image = self.drawing(cursor)?;
                     if let (Some(image), false) = (image, hidden) {
                         if !text.is_empty() {
-                            emit(
+                            self.emit(
                                 RunContent::Text(std::mem::take(&mut text)),
                                 &template,
                                 inlines,
-                            );
+                            )?;
                         }
-                        emit(RunContent::Image(image), &template, inlines);
+                        self.emit(RunContent::Image(image), &template, inlines)?;
                     }
                 }
                 "footnoteReference" | "endnoteReference" | "commentReference" => {
                     if let (Some(id), false) = (number(attr(attributes, "w:id")), hidden) {
                         if !text.is_empty() {
-                            emit(
+                            self.emit(
                                 RunContent::Text(std::mem::take(&mut text)),
                                 &template,
                                 inlines,
-                            );
+                            )?;
                         }
                         let content = match name {
                             "footnoteReference" => RunContent::FootnoteRef(id),
                             "endnoteReference" => RunContent::EndnoteRef(id),
                             _ => RunContent::CommentRef(id),
                         };
-                        emit(content, &template, inlines);
+                        self.emit(content, &template, inlines)?;
                     }
                     cursor.skip()?;
                 }
-                "AlternateContent" | "Choice" => open += 1,
                 "pict" => self.unsupported(cursor, "vml")?,
                 "object" => self.unsupported(cursor, "embedded-objects")?,
                 "sym" => self.unsupported(cursor, "symbols")?,
-                "oMath" | "oMathPara" => self.unsupported(cursor, "math")?,
+                "m:oMath" | "m:oMathPara" => self.unsupported(cursor, "math")?,
                 "instrText"
                 | "delInstrText"
                 | "footnoteRef"
@@ -1452,13 +1546,12 @@ impl<'a> Importer<'a> {
                 | "annotationRef"
                 | "lastRenderedPageBreak"
                 | "separator"
-                | "continuationSeparator"
-                | "Fallback" => cursor.skip()?,
+                | "continuationSeparator" => cursor.skip()?,
                 _ => self.unsupported(cursor, "unrecognized-content")?,
             }
         }
         if !text.is_empty() {
-            emit(RunContent::Text(text), &template, inlines);
+            self.emit(RunContent::Text(text), &template, inlines)?;
         }
         Ok(())
     }
@@ -1468,20 +1561,22 @@ impl<'a> Importer<'a> {
         let (mut width, mut height, mut name, mut description) = (None, None, "", "");
         for (depth, element, attributes) in cursor.elements()? {
             match (depth, element) {
-                (1, "anchor") => floating = true,
-                (2, "extent") => {
+                (1, "wp:anchor") => floating = true,
+                (2, "wp:extent") => {
                     width = number::<i64>(attr(attributes, "cx"));
                     height = number::<i64>(attr(attributes, "cy"));
                 }
-                (2, "docPr") => {
+                (2, "wp:docPr") => {
                     name = attr(attributes, "name").unwrap_or_default();
                     description = attr(attributes, "descr").unwrap_or_default();
                 }
-                (_, "blip") => blip = blip.or(attr(attributes, "r:embed")),
-                (_, "svgBlip") => self.note("svg-images", Status::Normalized),
-                (_, "chart") => other = Some("charts"),
-                (_, "relIds") => other = Some("smartart"),
-                (_, "wsp" | "wgp" | "wpc" | "txbx" | "lockedCanvas") => other = Some("shapes"),
+                (_, "a:blip") => blip = blip.or(attr(attributes, "r:embed")),
+                (_, "asvg:svgBlip") => self.note("svg-images", Status::Normalized),
+                (_, "c:chart") => other = Some("charts"),
+                (_, "dgm:relIds") => other = Some("smartart"),
+                (_, "wps:wsp" | "wpg:wgp" | "wpc:wpc" | "wps:txbx" | "lc:lockedCanvas") => {
+                    other = Some("shapes")
+                }
                 _ => {}
             }
         }
@@ -1573,6 +1668,21 @@ impl<'a> Importer<'a> {
             self.note("references", Status::Normalized);
         }
     }
+}
+
+fn link_bytes(link: Option<&Link>) -> usize {
+    match link {
+        Some(Link::External(target) | Link::Internal(target)) => target.len(),
+        None => 0,
+    }
+}
+
+fn change_bytes(change: Option<&Change>) -> usize {
+    change.map_or(0, |change| change.author.len() + change.date.len())
+}
+
+fn metadata_bytes(run: &Run) -> usize {
+    link_bytes(run.link.as_ref()) + change_bytes(run.change.as_ref())
 }
 
 fn named_kind(name: &str) -> Option<Kind> {
@@ -2417,6 +2527,9 @@ fn escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\t', "&#9;")
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
 }
 
 /// Relationships of one part, numbered in first-use order.
@@ -2571,7 +2684,7 @@ fn write_docx(content: &Content) -> Vec<u8> {
             dos_date: 0x0021,
         })
         .collect();
-    zip::write(&entries)
+    zip::write_with_ratio(&entries, Limits::default().max_ratio)
 }
 
 /// Adds a notes or comments part, its content type, and its relationships.

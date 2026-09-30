@@ -1,6 +1,6 @@
 //! DOCX adapter (issue #21): import, fidelity receipts, export, and round trips.
 //!
-//! Every package is built in memory from the reviewable `.parts` fixtures in
+//! Ordinary packages are built in memory from the reviewable `.parts` fixtures in
 //! `fixtures/enterprise-documents/docx/`. The only binary is a one-pixel PNG,
 //! kept inline below so readers can decode the image part.
 
@@ -373,7 +373,7 @@ fn docx_citation_anchors_are_stable_locators() {
 }
 
 #[test]
-fn docx_reads_attributes_only_under_their_prefix() {
+fn docx_reads_attributes_only_in_their_namespace() {
     let parts = edit(
         representative(),
         MAIN,
@@ -583,17 +583,6 @@ fn docx_refuses_hostile_packages() {
             Refusal::ActiveContent,
         ),
         (
-            "WordprocessingML namespace bound to another prefix",
-            package(&edit(
-                base.clone(),
-                MAIN,
-                "<w:document ",
-                "<w:document xmlns:x=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" ",
-            )),
-            &default,
-            Refusal::UnsupportedContainer,
-        ),
-        (
             "w prefix bound to a foreign namespace",
             package(&edit(
                 base.clone(),
@@ -777,6 +766,225 @@ fn docx_export_file_needs_explicit_docx_destination_and_never_overwrites() {
         Some(Refusal::ExportFormatMismatch)
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+// Original, synthetic inputs from the independent review of 523b7b9.
+fn review_input(name: &str) -> Vec<u8> {
+    use std::io::Read;
+    let fixture = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/enterprise-documents/docx/review")
+            .join(format!("{name}.fixture")),
+    )
+    .expect("review fixture");
+    assert!(fixture.len() <= MAX_FIXTURE_FILE_BYTES);
+    let mut lines = fixture.lines();
+    let digest = lines.next().unwrap();
+    let size: u64 = lines.next().unwrap().parse().unwrap();
+    let hex = lines.collect::<String>();
+    let compressed: Vec<u8> = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let mut bytes = Vec::new();
+    flate2::read::DeflateDecoder::new(compressed.as_slice())
+        .take(size + 1)
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes.len() as u64, size);
+    assert_eq!(sha256_hex(&bytes), digest, "original review input bytes");
+    bytes
+}
+
+#[test]
+fn docx_review_metadata_expansion_is_bounded() {
+    // Run the real importer under the reviewer's 384 MiB address-space ceiling.
+    // A separate process lets an allocation abort fail the test without killing
+    // the suite. The gates already require Python; no extra dependency is needed.
+    if std::env::var_os("BRAN_DOCX_MEMORY_CHILD").is_none() {
+        let output = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import os, resource, sys\nresource.setrlimit(resource.RLIMIT_AS, (384*1024*1024,)*2)\nresource.setrlimit(resource.RLIMIT_CORE, (0, 0))\nos.execv(sys.argv[1], sys.argv[1:])",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", "docx_review_metadata_expansion_is_bounded", "--nocapture"])
+            .env("BRAN_DOCX_MEMORY_CHILD", "1")
+            .output()
+            .expect("bounded test child");
+        assert!(
+            output.status.success(),
+            "child {}: {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    for control in ["ordinary", "amplify-small"] {
+        assert!(read(&review_input(control)).is_ok(), "{control} control");
+    }
+    assert_eq!(
+        read(&review_input("amplify")).err(),
+        Some(Refusal::Oversized)
+    );
+}
+
+#[test]
+fn docx_review_high_compression_round_trips() {
+    let first = imported(&review_input("high-compression"));
+    let exported = docx::export(&first).unwrap();
+    let second = Docx
+        .import(&exported.bytes, &Limits::default(), &Cancel::default())
+        .expect("export must pass its own intake limits");
+    assert_eq!(second.anchors, first.anchors);
+    assert_eq!(
+        Document::from_canonical(&second.canonical).unwrap().content,
+        Document::from_canonical(&first.canonical).unwrap().content
+    );
+    assert_eq!(docx::export(&second).unwrap().bytes, exported.bytes);
+}
+
+#[test]
+fn docx_review_namespace_alias_matches_control() {
+    let control = read(&review_input("prefix-control")).unwrap();
+    assert_eq!(paragraph(&control, "Review text").kind, Kind::Heading(1));
+    let alias = read(&review_input("prefix")).expect("valid namespace alias");
+    assert_eq!(alias, control);
+    let redundant = edit(
+        representative(),
+        MAIN,
+        "<w:document ",
+        "<w:document xmlns:x=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" ",
+    );
+    assert_eq!(
+        read(&package(&redundant)).unwrap(),
+        read(&package(&representative())).unwrap()
+    );
+    // The same original input with default element names and a local alias
+    // checks both element and attribute namespace scopes.
+    let mut base = zip::read(
+        &review_input("prefix"),
+        &Limits::default(),
+        &Cancel::default(),
+    )
+    .unwrap()
+    .into_iter()
+    .map(|entry| (entry.name, entry.data))
+    .collect::<Parts>();
+    let xml = String::from_utf8(
+        base.iter()
+            .find(|(name, _)| name == MAIN)
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .unwrap();
+    for variant in [
+        xml.replace("xmlns:x=", "xmlns=").replace("<x:", "<").replace("</x:", "</")
+            .replace("x:val=", "y:val=").replace("<outlineLvl ",
+                "<outlineLvl xmlns:y=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" "),
+        xml.replace("<x:outlineLvl x:val=", "<x:outlineLvl xmlns:y=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" y:val="),
+    ] {
+        base.iter_mut().find(|(name, _)| name == MAIN).unwrap().1 = variant.into_bytes();
+        assert_eq!(read(&package(&base)).unwrap(), control);
+    }
+    // Every story, style, numbering, image, and relationship attribute may use
+    // a different prefix. The representative assertions still bind their model.
+    let aliased: Parts = representative()
+        .into_iter()
+        .map(|(name, bytes)| {
+            if !name.ends_with(".xml") {
+                return (name, bytes);
+            }
+            let mut xml = String::from_utf8(bytes).unwrap();
+            for (from, to) in [
+                ("wp", "position"),
+                ("w", "word"),
+                ("r", "relationship"),
+                ("a", "drawing"),
+            ] {
+                xml = xml
+                    .replace(&format!("xmlns:{from}="), &format!("xmlns:{to}="))
+                    .replace(&format!("<{from}:"), &format!("<{to}:"))
+                    .replace(&format!("</{from}:"), &format!("</{to}:"))
+                    .replace(&format!(" {from}:"), &format!(" {to}:"));
+            }
+            (name, xml.into_bytes())
+        })
+        .collect();
+    assert_eq!(
+        read(&package(&aliased)).unwrap(),
+        read(&package(&representative())).unwrap()
+    );
+    let exported = docx::export(&alias.imported()).unwrap();
+    assert_eq!(read(&exported.bytes).unwrap().content, control.content);
+}
+
+#[test]
+fn docx_review_foreign_namespace_is_not_word() {
+    assert_eq!(
+        read(&review_input("foreign")).err(),
+        Some(Refusal::UnsupportedContainer)
+    );
+    let base = zip::read(
+        &review_input("prefix-control"),
+        &Limits::default(),
+        &Cancel::default(),
+    )
+    .unwrap()
+    .into_iter()
+    .map(|entry| (entry.name, entry.data))
+    .collect::<Parts>();
+    let foreign_child = edit(base.clone(), MAIN, "<w:p>", "<w:p xmlns:w=\"urn:foreign\">");
+    let document = read(&package(&foreign_child)).unwrap();
+    assert!(document.content.blocks.is_empty());
+    assert_eq!(
+        document.fidelity["sections"],
+        Status::Normalized,
+        "binding restored after the child"
+    );
+    assert_eq!(
+        document.fidelity["unrecognized-content"],
+        Status::Unsupported
+    );
+    // A foreign attribute under the familiar prefix must not set a heading;
+    // an unprefixed attribute is also outside WordprocessingML.
+    for attributes in ["xmlns:w=\"urn:foreign\" w:val=\"0\"", "val=\"0\""] {
+        let parts = edit(base.clone(), MAIN, "w:val=\"0\"", attributes);
+        assert_eq!(
+            paragraph(&read(&package(&parts)).unwrap(), "Review text").kind,
+            Kind::Body
+        );
+    }
+}
+
+#[test]
+fn docx_review_compatibility_alternatives_are_explicitly_refused() {
+    assert_eq!(
+        read(&review_input("choice")).err(),
+        Some(Refusal::UnsupportedContainer)
+    );
+}
+
+#[test]
+fn docx_review_attribute_whitespace_round_trips() {
+    let first = read(&review_input("attribute-newline")).unwrap();
+    assert_eq!(
+        runs(paragraph(&first, "new"))[0]
+            .change
+            .as_ref()
+            .unwrap()
+            .author,
+        "First\nLast"
+    );
+    assert_eq!(first.fidelity["tracked-changes"], Status::Exact);
+    let exported = docx::export(&first.imported()).unwrap();
+    let second = read(&exported.bytes).unwrap();
+    assert_eq!(second.content, first.content);
+    assert_eq!(second.citations(), first.citations());
+    assert_eq!(second.fidelity["tracked-changes"], Status::Exact);
 }
 
 // ---- Opt-in independent-reader check (never part of the normal gate). ----
