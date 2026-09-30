@@ -143,6 +143,25 @@ pub fn read(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Vec<Entry>
         if u32_at(bytes, record.local)? != LOCAL {
             return Err(Refusal::MalformedContainer);
         }
+        // The local header must agree with the central record. With a data
+        // descriptor (flag bit 3) local CRC and sizes may be zero, so only
+        // the central values are trusted then.
+        let local_flags = u16_at(bytes, record.local + 6)?;
+        if local_flags & 0x0041 != 0 {
+            return Err(Refusal::Encrypted);
+        }
+        if u16_at(bytes, record.local + 8)? != record.method
+            || (local_flags ^ record.flags) & 0x0008 != 0
+        {
+            return Err(Refusal::MalformedContainer);
+        }
+        if record.flags & 0x0008 == 0
+            && (u32_at(bytes, record.local + 14)? != record.crc
+                || u32_at(bytes, record.local + 18)? as usize != record.compressed
+                || u32_at(bytes, record.local + 22)? as u64 != record.size)
+        {
+            return Err(Refusal::MalformedContainer);
+        }
         let name_len = u16_at(bytes, record.local + 26)? as usize;
         let extra_len = u16_at(bytes, record.local + 28)? as usize;
         if slice(bytes, record.local + 30, name_len)? != record.name.as_bytes() {
@@ -201,18 +220,40 @@ pub fn read(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Vec<Entry>
     Ok(entries)
 }
 
-/// Inflates at most `size + 1` bytes; any other length is a size lie.
-fn inflate(raw: impl std::io::Read, size: u64) -> Result<Vec<u8>, Refusal> {
-    use std::io::Read;
-    let mut data = Vec::with_capacity(size as usize);
-    flate2::read::DeflateDecoder::new(raw)
-        .take(size + 1)
-        .read_to_end(&mut data)
-        .map_err(|_| Refusal::MalformedContainer)?;
-    if data.len() as u64 != size {
-        return Err(Refusal::MalformedContainer);
-    }
-    Ok(data)
+/// Inflates a raw deflate stream that must end exactly at its last
+/// compressed byte and produce exactly `size` bytes. Output stops one byte
+/// past `size`, so a size lie costs at most that much work.
+fn inflate(raw: &[u8], size: u64) -> Result<Vec<u8>, Refusal> {
+    inflate_counted(raw, size).0
+}
+
+/// `inflate`, also returning how many compressed bytes it consumed.
+fn inflate_counted(raw: &[u8], size: u64) -> (Result<Vec<u8>, Refusal>, u64) {
+    use flate2::{Decompress, FlushDecompress, Status};
+    let mut decoder = Decompress::new(false);
+    let mut data = Vec::with_capacity(size as usize + 1);
+    let result = loop {
+        let (consumed, produced) = (decoder.total_in(), decoder.total_out());
+        let input = &raw[consumed as usize..];
+        match decoder.decompress_vec(input, &mut data, FlushDecompress::None) {
+            Err(_) => break Err(Refusal::MalformedContainer),
+            Ok(Status::StreamEnd) => {
+                let exact = decoder.total_in() == raw.len() as u64 && data.len() as u64 == size;
+                break if exact {
+                    Ok(data)
+                } else {
+                    Err(Refusal::MalformedContainer)
+                };
+            }
+            Ok(_) if data.len() as u64 > size => break Err(Refusal::MalformedContainer),
+            // No progress without a stream end: the stream is truncated.
+            Ok(_) if decoder.total_in() == consumed && decoder.total_out() == produced => {
+                break Err(Refusal::MalformedContainer)
+            }
+            Ok(_) => {}
+        }
+    };
+    (result, decoder.total_in())
 }
 
 /// Writes entries in the given order with exactly the given names and
@@ -273,18 +314,15 @@ pub fn write(entries: &[WriteEntry<'_>]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::inflate;
+    use super::{inflate, inflate_counted};
     use crate::Refusal;
-    use std::io::{Read, Write};
+    use std::io::Write;
 
-    struct Counting<'a>(&'a [u8], usize);
-
-    impl Read for Counting<'_> {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            let read = self.0.read(buffer)?;
-            self.1 += read;
-            Ok(read)
-        }
+    fn deflate(data: &[u8]) -> Vec<u8> {
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
     }
 
     #[test]
@@ -298,20 +336,31 @@ mod tests {
                 state as u8
             })
             .collect();
-        let mut encoder =
-            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
-        encoder.write_all(&noise).unwrap();
-        let compressed = encoder.finish().unwrap();
-        let mut counting = Counting(&compressed, 0);
-        assert_eq!(
-            inflate(&mut counting, 1000),
-            Err(Refusal::MalformedContainer)
-        );
+        let compressed = deflate(&noise);
+        let (result, consumed) = inflate_counted(&compressed, 1000);
+        assert_eq!(result, Err(Refusal::MalformedContainer));
         assert!(
-            counting.1 < compressed.len() / 4,
-            "a size lie must stop inflation early: read {} of {} compressed bytes",
-            counting.1,
+            consumed < compressed.len() as u64 / 4,
+            "a size lie must stop inflation early: read {consumed} of {} compressed bytes",
             compressed.len()
         );
+    }
+
+    #[test]
+    fn inflation_requires_a_complete_exact_stream() {
+        let compressed = deflate(b"<a>Hello</a>");
+        assert_eq!(
+            inflate(&compressed, 12).as_deref(),
+            Ok(b"<a>Hello</a>".as_slice())
+        );
+        assert_eq!(
+            inflate(&compressed[..compressed.len() - 1], 12),
+            Err(Refusal::MalformedContainer)
+        );
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        assert_eq!(inflate(&trailing, 12), Err(Refusal::MalformedContainer));
+        assert_eq!(inflate(&[], 0), Err(Refusal::MalformedContainer));
+        assert_eq!(inflate(&deflate(b""), 0), Ok(Vec::new()));
     }
 }
