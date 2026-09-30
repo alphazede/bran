@@ -29,7 +29,7 @@ pub fn parse(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Vec<Event
     if !text.chars().all(is_xml_char) {
         return Err(Refusal::MalformedXml);
     }
-    let mut reader = quick_xml::Reader::from_str(text);
+    let mut reader = quick_xml::reader::NsReader::from_str(text);
     reader.config_mut().check_comments = true;
     let mut events = Vec::new();
     let (mut depth, mut nodes, mut roots) = (0usize, 0usize, 0usize);
@@ -38,6 +38,12 @@ pub fn parse(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Vec<Event
         let empty = matches!(event, Q::Empty(_));
         match event {
             Q::Start(element) | Q::Empty(element) => {
+                if matches!(
+                    reader.resolver().resolve_element(element.name()).0,
+                    quick_xml::name::ResolveResult::Unknown(_)
+                ) {
+                    return Err(Refusal::MalformedXml);
+                }
                 if depth == 0 {
                     roots += 1;
                 }
@@ -54,6 +60,12 @@ pub fn parse(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Vec<Event
                 let mut attributes = Vec::new();
                 for attribute in element.attributes() {
                     let attribute = attribute.map_err(|_| Refusal::MalformedXml)?;
+                    if matches!(
+                        reader.resolver().resolve_attribute(attribute.key).0,
+                        quick_xml::name::ResolveResult::Unknown(_)
+                    ) {
+                        return Err(Refusal::MalformedXml);
+                    }
                     let key: &str = attribute.key.as_ref();
                     if !is_qualified_name(key) || attribute.value.contains('<') {
                         return Err(Refusal::MalformedXml);

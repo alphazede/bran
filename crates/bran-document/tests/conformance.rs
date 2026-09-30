@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[path = "pptx/decks.rs"]
+mod pptx_decks;
+
 // Recorded budgets. Runtime budgets are debug-build wall-clock ceilings for
 // the whole tier; they gate the test suite, never an import outcome.
 const FAST_RUNTIME_BUDGET: Duration = Duration::from_secs(10);
@@ -534,9 +537,12 @@ fn variants(row: &str, format: Format) -> Vec<Vec<u8>> {
         return Vec::new();
     }
     let tier_limits = limits(Tier::Fast);
-    let original = build(row, format, Tier::Fast, &tier_limits);
+    reencode(&build(row, format, Tier::Fast, &tier_limits))
+}
+
+fn reencode(original: &[u8]) -> Vec<Vec<u8>> {
     let entries =
-        zip::read(&original, &tier_limits, &Cancel::default()).expect("admitted row reads");
+        zip::read(original, &limits(Tier::Fast), &Cancel::default()).expect("admitted row reads");
     let parts = Parts(
         entries
             .into_iter()
@@ -757,6 +763,19 @@ fn adapter_row(adapter: &dyn Adapter, row: &str, limits: &Limits) -> Result<(), 
                 &cancel,
             )?;
             if !outcome.round_trip {
+                return Err("export refused, so no round trip was exercised".to_owned());
+            }
+            Ok(())
+        }
+        "pptx-ordinary-projection"
+        | "pptx-unsupported-benign-fidelity"
+        | "pptx-round-trip-anchors" => {
+            let (input, expect) = pptx_decks::row(row).ok_or_else(|| {
+                format!("adapter registered: replace {row} with an executable row")
+            })?;
+            let outcome =
+                conformance::check(adapter, &input, &reencode(&input), &expect, limits, &cancel)?;
+            if row.ends_with("round-trip-anchors") && !outcome.round_trip {
                 return Err("export refused, so no round trip was exercised".to_owned());
             }
             Ok(())

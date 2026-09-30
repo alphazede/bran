@@ -406,6 +406,25 @@
       "support_fixtures": []
     },
     {
+      "stable_id": "P3-PPTX-ADAPTER",
+      "phase": 3,
+      "slice": "3.4",
+      "runner": "rust",
+      "name": "pptx_round_trip_preserves_structure",
+      "category": "conformance",
+      "classification": "new",
+      "source": "crates/bran-document/tests/pptx.rs",
+      "support_fixtures": [
+        "fixtures/enterprise-documents/conformance/pptx-design.parts",
+        "fixtures/enterprise-documents/conformance/pptx-ordinary.parts",
+        "fixtures/enterprise-documents/pptx-review/compressible-text.deflate.hex",
+        "fixtures/enterprise-documents/pptx-review/png-metadata-canary.deflate.hex",
+        "fixtures/enterprise-documents/pptx-review/shared-notes-amplification.deflate.hex",
+        "fixtures/enterprise-documents/pptx-review/undeclared-r.deflate.hex",
+        "fixtures/enterprise-documents/conformance/pptx-slides.parts"
+      ]
+    },
+    {
       "stable_id": "P4-SEALED-RELEASE",
       "phase": 4,
       "slice": "4.2",

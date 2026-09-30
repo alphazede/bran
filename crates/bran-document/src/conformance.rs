@@ -32,6 +32,7 @@ pub fn registered() -> Vec<&'static dyn Adapter> {
     vec![
         &crate::docx::Docx,
         &crate::xlsx::Xlsx,
+        &crate::pptx::Pptx,
         &crate::pdf::PdfAdapter,
     ]
 }

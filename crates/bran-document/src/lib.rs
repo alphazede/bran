@@ -14,6 +14,7 @@ pub mod opc;
 pub mod pdf;
 mod pdf_syntax;
 mod pdf_text;
+pub mod pptx;
 pub mod xlsx;
 pub mod xml;
 pub mod zip;
