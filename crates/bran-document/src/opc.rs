@@ -177,7 +177,7 @@ pub fn open(bytes: &[u8], limits: &Limits, cancel: &Cancel) -> Result<Package, R
     Ok(package)
 }
 
-fn dlp_scan(bytes: &[u8], findings: &mut BTreeSet<&'static str>) {
+pub(crate) fn dlp_scan(bytes: &[u8], findings: &mut BTreeSet<&'static str>) {
     match validate_emitted_string(&String::from_utf8_lossy(bytes)) {
         Err(ExportError::DlpViolation(_)) => findings.insert("dlp-findings"),
         Err(_) => findings.insert("public-boundary-violation"),

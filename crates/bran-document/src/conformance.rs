@@ -29,7 +29,12 @@ pub trait Adapter: Sync {
 /// Adapters register here. The shared corpus runs every row of a format
 /// against every adapter registered for that format.
 pub fn registered() -> Vec<&'static dyn Adapter> {
-    vec![&crate::xlsx::Xlsx, &crate::pdf::PdfAdapter]
+    vec![
+        &crate::docx::Docx,
+        &crate::xlsx::Xlsx,
+        &crate::pptx::Pptx,
+        &crate::pdf::PdfAdapter,
+    ]
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
