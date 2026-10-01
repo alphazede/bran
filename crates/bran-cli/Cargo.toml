@@ -11,7 +11,7 @@ bran-tui = { path = "../bran-tui", version = "0.1.0" }
 crossterm = { version = "=0.29.0", default-features = false, features = ["events", "windows"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "=0.2.186"
+libc = "=0.2.189"
 
 [[bin]]
 name = "bran"
