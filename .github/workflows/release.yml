@@ -28,7 +28,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
@@ -36,7 +36,7 @@ jobs:
       # /bin/sh shim is needed on any runner.
       - name: Build release archive
         run: cargo run --locked -p xtask -- package --target "${{ matrix.target }}" --tag "${{ github.ref_name }}" --dist dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: artifact-${{ matrix.target }}
           path: dist/
@@ -49,8 +49,8 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: artifact-*
           path: dist
@@ -81,7 +81,7 @@ jobs:
               lines.append(f"{digest}  {name}")
           (dist / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign SHA256SUMS with cosign keyless
         run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore dist/SHA256SUMS
       - name: Emit bran-release-manifest.json
@@ -220,7 +220,7 @@ jobs:
               raise SystemExit(1)
           print("PASS generated manifest satisfies the release contract")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-files
           path: dist/
