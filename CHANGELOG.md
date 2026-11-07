@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-06
+
+### Fixed
+
+- The release workflow builds the macOS archives on the `macos-15` runner,
+  because GitHub no longer supports the `macos-14` runner.
+  ([#59](https://github.com/alphazede/bran/pull/59))
+
 ## [0.2.1] - 2026-11-06
+
+Tagged but not published, because its macOS builds could not start. Its
+changes ship in 0.2.2.
 
 ### Changed
 
@@ -24,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 See the [0.2.0 release notes](https://github.com/alphazede/bran/releases/tag/bran-v0.2.0).
 
-[Unreleased]: https://github.com/alphazede/bran/compare/bran-v0.2.1...HEAD
+[Unreleased]: https://github.com/alphazede/bran/compare/bran-v0.2.2...HEAD
+[0.2.2]: https://github.com/alphazede/bran/compare/bran-v0.2.1...bran-v0.2.2
 [0.2.1]: https://github.com/alphazede/bran/compare/bran-v0.2.0...bran-v0.2.1
 [0.2.0]: https://github.com/alphazede/bran/releases/tag/bran-v0.2.0
