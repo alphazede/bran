@@ -22,7 +22,7 @@
       "items": { "$ref": "#/$defs/diagnostic" }
     },
     "file_count": { "type": "integer", "minimum": 0, "maximum": 10000 },
-    "total_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+    "total_bytes": { "type": "integer", "minimum": 0, "maximum": 268435456 },
     "observed_bytes": {
       "type": "array",
       "maxItems": 10000,

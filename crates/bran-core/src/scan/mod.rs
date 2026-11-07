@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 const DEFAULT_MAX_FILES: usize = 10_000;
 const DEFAULT_MAX_FILE_BYTES: usize = 1024 * 1024;
-const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 64;
 const BRANIGNORE_FILENAME: &str = ".branignore";
 const LEGACY_OKFIGNORE_FILENAME: &str = ".okfignore";
@@ -1435,6 +1435,36 @@ mod tests {
             matches!(diagnostic, ScanDiagnostic::OversizedInput { path, .. } if path == "canonical.md")
         }));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn default_total_limit_accepts_256_mib_and_rejects_more() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        const MIB: usize = 1024 * 1024;
+        let root = Cleanup(root());
+        // A full 256 MiB tree takes over 15 s in debug builds, so the upper
+        // boundary is checked on the default scanner's byte budget directly.
+        let chunk = vec![b'x'; MIB];
+        for index in 0..65 {
+            write(&root.0, &format!("data/{index:03}.txt"), &chunk);
+        }
+        let scanner = RepositoryScanner::new(&root.0, ScanConfig::default()).unwrap();
+        let snapshot = scanner.scan().unwrap();
+        assert_eq!(snapshot.file_count, 65);
+        assert_eq!(snapshot.total_bytes, 65 * MIB);
+
+        assert_eq!(ScanConfig::default().max_total_bytes, 256 * MIB);
+        assert!(scanner.check_bytes("last.txt", MIB, 255 * MIB).is_ok());
+        assert!(matches!(
+            scanner.check_bytes("over.txt", 1, 256 * MIB),
+            Err(ScanFailure::LimitExceeded { actual, limit, .. })
+                if actual == 256 * MIB + 1 && limit == 256 * MIB
+        ));
     }
 
     #[test]

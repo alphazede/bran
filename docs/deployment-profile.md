@@ -165,7 +165,7 @@ validation result.
 | Bounded writable volume for BRAN state | Not needed. `check`, `query`, and `packet` write nothing, and registered-root mode refuses every command that writes. Stage 1 mounts no writable volume. |
 | Network egress disabled | `--network none`; `PrivateNetwork=yes`, `IPAddressDeny=any`, `RestrictAddressFamilies=none` |
 | Explicit capability configuration for connected agents and adapters | Connected agents (`-p`) are unavailable in registered-root mode. No database, object-storage, or other network adapter exists. |
-| Item, byte, TTL, timeout, cancellation, concurrency limits | Existing scanner limits (10,000 files, 1 MiB per file, 64 MiB total), packet limits, and the request limit above. Timeout, cancellation, and concurrency belong to the runner (`TimeoutStartSec=`, `timeout`, job-runner concurrency). |
+| Item, byte, TTL, timeout, cancellation, concurrency limits | Existing scanner limits (10,000 files, 1 MiB per file, 256 MiB total), packet limits, and the request limit above. Timeout, cancellation, and concurrency belong to the runner (`TimeoutStartSec=`, `timeout`, job-runner concurrency). |
 | No mutation of repositories, Git state, hooks, or host configuration | Read-only mounts, mutating commands refused, `ProtectSystem=strict`; git metadata is parsed for the source revision, and git is never run |
 | No credentials in arguments, bodies, logs, metrics, receipts, or job metadata | Request DLP screen, no echo on rejection, no credential-bearing environment in the image |
 
