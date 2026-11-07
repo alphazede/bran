@@ -35,7 +35,7 @@ ranked, with the reason attached.
 | Reports a miss | n/a | rarely | yes, explicitly |
 | Offline | yes | rarely | yes |
 
-## What is new in 0.2.1
+## What is new in 0.2.2
 
 - The default total scan limit is now 256 MiB (was 64 MiB), so repositories with more than 64 MiB of scannable text no longer fail with `scan_error: LimitExceeded`. The 1 MiB per-file and 10,000-file limits are unchanged. Existing derived indexes rebuild once because the scan configuration changed.
 
@@ -52,13 +52,13 @@ ranked, with the reason attached.
 Prebuilt archives for Linux, macOS, and Windows are attached to each release:
 
 ```sh
-https://github.com/alphazede/bran/releases/download/bran-v0.2.1/
+https://github.com/alphazede/bran/releases/download/bran-v0.2.2/
 ```
 
 Or build from source:
 
 ```sh
-cargo install --git https://github.com/alphazede/bran --tag bran-v0.2.1 bran-cli
+cargo install --git https://github.com/alphazede/bran --tag bran-v0.2.2 bran-cli
 ```
 
 ## Quickstart
@@ -275,7 +275,7 @@ manage or leak. Verify a download:
 ```sh
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore \
-  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.2.1" \
+  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.2.2" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 sha256sum -c SHA256SUMS --ignore-missing
 ```
