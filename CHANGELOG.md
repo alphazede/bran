@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Raised the default total scan limit from 64 MiB to 256 MiB. Repositories
   with more than 64 MiB of scannable text previously failed with
   `scan_error: LimitExceeded`. The 1 MiB per-file and 10,000-file limits are
-  unchanged.
+  unchanged. ([#58](https://github.com/alphazede/bran/pull/58))
 - The repository scan snapshot schema now allows `total_bytes` up to 256 MiB to
   match the new default.
 - The scan configuration feeds the scan input fingerprint, so existing derived
