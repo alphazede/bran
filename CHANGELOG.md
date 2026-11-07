@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The release workflow builds the macOS archives on the `macos-15` runner,
   because GitHub no longer supports the `macos-14` runner.
+  ([#59](https://github.com/alphazede/bran/pull/59))
 
 ## [0.2.1] - 2026-11-06
 
