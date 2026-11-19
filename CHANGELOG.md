@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--brief` ranks with a fielded lexical index: filename, enclosing path,
+  body and a short description field, Snowball stemming on both sides, and
+  BM25-style per-field scoring with documented generic weights. A rare
+  defining word now competes with several incidental mentions, so coverage
+  alone no longer fixes the order. Test files gain weight for test questions
+  and lose it otherwise; quantity and frequency questions can raise a
+  configuration file that a relevant source names. Tiers from
+  `.bran/ranking.yaml` still sort first. The index is rebuilt from each
+  query's scan, so results are never stale. `reason` values are now
+  `exact|partial:` followed by `filename`, `path`, `body`, `description` or
+  `reference`. Details in `docs/brief-ranking.md`.
+
 ### Added
+
+- Optional `.bran/descriptions.jsonl` sidecar: one
+  `{"path", "sha256", "description"}` object per line adds a description to
+  a file's description field while the hash matches the file. Size limits,
+  in-tree paths only; bad lines are skipped with one
+  `descriptions_ignored` warning and never fail the query.
 
 - Brief-mode advisor: optional `send_fields` value `excerpt` sends a bounded
   (900-byte, UTF-8) excerpt of each candidate file, and the advisor may answer
