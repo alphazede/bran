@@ -366,7 +366,7 @@ fn strip_yaml_comment(line: &str) -> Result<&str, String> {
                 } else if in_flow && b == b']' {
                     in_flow = false;
                 }
-                let line_start = line[..i].trim().is_empty();
+                let line_start = bytes[..i].iter().all(u8::is_ascii_whitespace);
                 scalar_start = (b == b':' && next_is_space)
                     || (b == b'-' && line_start && next_is_space)
                     || (in_flow && (b == b'[' || b == b','));
@@ -1316,6 +1316,18 @@ mod tests {
         let only_stops = compute_brief_score(&stop_only_hit, &rarity, false, 0, 0, 0, 0);
         assert_eq!(with_content, (0, 0, 0, 0));
         assert!(only_stops > (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn parser_handles_non_ascii_and_apostrophes_inside_plain_scalars() {
+        let cfg = RankingConfig::parse_from_str(
+            "classes:\n  - name: caf\u{e9}'s-d\u{f6}cs \u{2013} team's\n    tier: 1\n    globs: [\"**/*.txt\", d\u{e9}j\u{e0}'s/**]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.classify("d\u{e9}j\u{e0}'s/x.md"),
+            (1, Some("caf\u{e9}'s-d\u{f6}cs \u{2013} team's"))
+        );
     }
 
     #[test]
