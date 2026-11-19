@@ -790,6 +790,30 @@
       "classification": "new",
       "source": "crates/bran-core/src/database/state.rs",
       "support_fixtures": []
+    },
+    {
+      "stable_id": "P8-RECALL-CHECK",
+      "phase": 8,
+      "slice": "8.8",
+      "runner": "python",
+      "name": "tools/recall/test_recall_check.py",
+      "category": "contract",
+      "classification": "new",
+      "source": "tools/recall/test_recall_check.py",
+      "support_fixtures": [
+        "fixtures/recall/policy.yaml",
+        "fixtures/recall/questions.jsonl",
+        "fixtures/recall/tree/archive/old-watering-schedule.md",
+        "fixtures/recall/tree/docs/frost-protection.md",
+        "fixtures/recall/tree/docs/soil-moisture-sensor.md",
+        "fixtures/recall/tree/docs/valve-wiring.md",
+        "fixtures/recall/tree/docs/watering-schedule.md",
+        "fixtures/recall/tree/notes/glossary.md",
+        "fixtures/recall/tree/reference/rain-delay.md",
+        "fixtures/recall/tree/reference/zone-naming.md",
+        "fixtures/recall/tree/runbooks/pump-pressure-alarm.md",
+        "fixtures/recall/tree/runbooks/winterize-pipes.md"
+      ]
     }
   ]
 }

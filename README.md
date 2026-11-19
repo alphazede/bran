@@ -63,7 +63,44 @@ cargo install --git https://github.com/alphazede/bran --tag bran-v0.2.2 bran-cli
 
 ## Quickstart
 
-Rank the sources for a question:
+Start with a short query to get ranked exact paths within a 2,000-character budget:
+
+```sh
+bran query . --brief "valid_sha256"
+```
+
+```json
+{
+  "schema_version": "1.0.0",
+  "command": "query",
+  "status": "ok",
+  "data": {
+    "query_outcome": "grounded",
+    "query_coverage": { "matched_terms": ["valid_sha256"], "unmatched_terms": [] },
+    "coverage_basis": "sources",
+    "result_id": "sha256:...",
+    "selection": { "source": "rule" },
+    "results": [
+      { "rank": 1, "path": "crates/bran-core/src/agent/runtime.rs", "reason": "exact:body" },
+      { "rank": 2, "path": "crates/bran-core/src/agent/delegate.rs", "reason": "exact:body" },
+      { "rank": 3, "path": "crates/bran-core/src/adapters/connected.rs", "reason": "exact:body" }
+    ]
+  }
+}
+```
+
+Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`). `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
+
+Expand a stored result from the query root:
+
+```sh
+bran get <result-id>          # stored brief summary, question, and ranked paths
+bran get <result-id> --full   # full default query for the stored root and question
+```
+
+`bran get <result-id> --full` adds `"stale: true"` to `warnings` when the repository revision changed since the brief query ran. When `.bran/` is absent or in registered-root mode, `--brief` still succeeds with `result_id: null` and a warning. Consuming repositories should add `.bran/results/` to `.gitignore` so brief queries leave `git status` clean.
+
+For a full follow-up directly (dependency closure, SCIP symbols, enterprise document evidence, and byte metrics):
 
 ```sh
 bran query . "valid_sha256" | jq '{status, source_rankings: .data.source_rankings[:3], metrics}'
@@ -86,8 +123,7 @@ bran query . "valid_sha256" | jq '{status, source_rankings: .data.source_ranking
 }
 ```
 
-That is 2.7 MB of candidate sources narrowed to 134 KB. Trim the output with
-`jq` so BRAN saves context instead of consuming it.
+In default `bran query` output, `selected_locators` stays alphabetical (it is the dependency-closed set); relevance order is `source_rankings` in default `query` and `results` in `query --brief`. That is 2.7 MB of candidate sources narrowed to 134 KB.
 
 ## A miss looks like a miss
 
@@ -114,13 +150,14 @@ Command success is not evidence coverage. Empty results are a feature.
 
 | Command | Purpose |
 |---|---|
-| `bran query <root> <request>` | Rank the sources for a request |
+| `bran query <root> --brief [--top N] <request>` | Compact ranked paths (`<=2,000` chars target) and a `result_id` |
+| `bran query <root> <request>` | Full ranked sources, dependency closure, and evidence |
 | `bran packet <root> <request>` | Assemble a bounded context packet |
 | `bran check <root> <profile>` | Validate against `okf-v0.1`, `okf-v0.2`, or `bran-strict` |
 | `bran maintain <propose\|apply\|revalidate>` | Bounded repair under explicit authority |
 | `bran tui` | Browse the repository offline |
 | `bran doctor --onboarding\|--agent` | Read-only local readiness check |
-| `bran get <result-id>` | Retrieve a stored result |
+| `bran get <result-id> [--full]` | Retrieve a stored result, or re-run the full query with `--full` |
 
 Every command emits versioned JSON. `query`, `packet`, `check`, and `tui` need
 no account and make no network calls.
