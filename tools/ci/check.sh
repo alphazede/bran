@@ -130,6 +130,8 @@ run_tui() {
 
 run_fast() {
     printf '%s\n' 'FAST: running Phase 1 through Slice 3.4 gates.'
+    az_lint="${AZ_LINT:-$(git -C "$bran_root" rev-parse --path-format=absolute --git-common-dir)/../../Alphazedehq/tools/lint/az-lint}"
+    "$az_lint" --repo "$bran_root" --changed origin/main
 
     run_budget
     cargo fmt --manifest-path "$bran_root/Cargo.toml" --all -- --check
