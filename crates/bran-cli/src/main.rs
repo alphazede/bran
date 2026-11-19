@@ -2651,6 +2651,20 @@ fn selected_sources_json(selected: &[(String, &'static str)]) -> (String, String
 }
 
 fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult {
+    let timings_enabled =
+        std::env::var_os("BRAN_TIMINGS").is_some_and(|v| !v.is_empty() && v != "0");
+    let query_start = timings_enabled.then(std::time::Instant::now);
+    let mut step_start = query_start;
+    let mut log_timing = |label: &str| {
+        if let Some(start) = step_start.as_mut() {
+            let now = std::time::Instant::now();
+            eprintln!(
+                "BRAN_TIMINGS step={label} ms={:.3}",
+                now.duration_since(*start).as_secs_f64() * 1000.0
+            );
+            *start = now;
+        }
+    };
     let root_path: &Path = Path::new(&root);
     let scanner = RepositoryScanner::new(root_path, ScanConfig::default())
         .map_err(|e| format!("scan_error: {:?}", e))?;
@@ -2674,7 +2688,9 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
             "{\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}".to_owned(),
         ));
     }
+    log_timing("policy_check");
     let snapshot = scanner.scan().map_err(|e| format!("scan_error: {:?}", e))?;
+    log_timing("scan");
     let graph_input = snapshot
         .graph_input()
         .map_err(|e| format!("graph_input_error: {:?}", e))?;
@@ -2682,15 +2698,19 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     let edge_count = graph_input.edges().len().max(1);
     let limits =
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
+    log_timing("graph_input");
     let (rankings, mut matched_terms) =
         source_rankings(&graph_input, &snapshot, &query_text, QUERY_RESULT_LIMIT);
+    log_timing("score");
     let spec = query_view_spec(&rankings, QUERY_RESULT_LIMIT);
     let graph =
         KnowledgeGraph::build(graph_input, limits).map_err(|e| format!("graph_error: {:?}", e))?;
+    log_timing("graph_build");
 
     let compiled = ViewCompiler::new()
         .compile(&spec, &graph)
         .map_err(|e| format!("view_error: {:?}", e))?;
+    log_timing("view_compile");
     let dependency_limits = DependencyClosureLimits::new(DEPENDENCY_DEPTH_LIMIT, 256)
         .map_err(|e| format!("dep_limits: {:?}", e))?;
     let selected_ids = PacketAssembler::evidence_ids(&compiled, &graph, dependency_limits)
@@ -2711,6 +2731,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     let candidate_bytes = snapshot.total_bytes;
     let estimated = selected_bytes / 4 + usize::from(!selected_bytes.is_multiple_of(4));
     let context_bytes_avoided = candidate_bytes.saturating_sub(selected_bytes);
+    log_timing("packet_assemble");
 
     let mut warns: Vec<String> = snapshot
         .diagnostics
@@ -2731,6 +2752,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
                 .is_some_and(|documents| !documents.matched_terms.is_empty()),
     );
     warns.extend(unmatched_query_warnings(&unmatched));
+    log_timing("document_evidence");
 
     let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text, &rankings);
     let retained = navigation.retained(&selected);
@@ -2772,6 +2794,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         "{{\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}}",
         candidate_bytes, selected_bytes, context_bytes_avoided, estimated
     );
+    log_timing("symbol_resolve");
     let evidence = query_evidence_record(
         query_text,
         vec![root],
@@ -2781,6 +2804,13 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     );
     if record {
         persist_query_evidence(&evidence)?;
+    }
+    log_timing("record");
+    if let Some(start) = query_start {
+        eprintln!(
+            "BRAN_TIMINGS step=total ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
     Ok(("ok", data, warns, vec![], provenance, metrics))
 }
