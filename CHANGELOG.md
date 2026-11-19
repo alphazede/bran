@@ -22,8 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/recall/recall_check.py` and the synthetic recall fixture in
   `fixtures/recall/`, plus opt-in `BRAN_TIMINGS=1` per-step stderr timings in
   single-root and multi-root `bran query`. ([#63](https://github.com/alphazede/bran/pull/63))
+- Optional `.bran/ranking.yaml` path-class tiers (`classes: [{name, tier, globs}]`,
+  tier `0..=9`, first matching class wins) for `bran query --brief`, keeping
+  default `bran query` output unchanged.
 
 ### Changed
+
+- `bran query --brief` now scores candidates with a single integer score that
+  prioritizes rarity-scaled term coverage, path and filename hits over capped
+  body repeats, and deterministic path tie-breaking, using copy-free ASCII
+  case-insensitive matching across candidate scoring.
 
 - Documented that default `bran query` `selected_locators` remains alphabetical
   while `source_rankings` and `query --brief` `results` are relevance-ordered,
