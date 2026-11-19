@@ -25,13 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filename substring no longer lowers a whole directory-token match.
 - `--brief` morphology normalizes query words and document tokens the same
   way, credits filename stems independently of body hits, scores a stem below
-  the exact token, and never matches a stem inside an unrelated word.
+  the exact token, and matches a stem inside an identifier only at a sub-word
+  start (`IndexBuilder`), never mid-word (`Install`).
 - `--brief` score components no longer saturate into ties on long queries.
 - `.bran/ranking.yaml` rejects a misaligned sibling key and accepts an
   apostrophe inside a plain scalar.
-- `--brief` output now stays within 2,000 characters: when exact paths alone
-  do not fit, trailing results are dropped and a `brief_truncated` warning
-  reports how many.
+- `--brief` output now stays within its budget: 2,000 characters for up to 8
+  results plus 250 per result an explicit `--top` adds. When exact paths
+  alone do not fit, trailing results are dropped and a `brief_truncated`
+  warning reports how many.
 
 ## [0.3.0](https://github.com/alphazede/bran/releases/tag/bran-v0.3.0) - 2026-11-19
 

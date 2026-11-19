@@ -140,6 +140,19 @@ fn stem_does_not_match_inside_an_unrelated_word() {
     assert!(repo.paths(&[], "stalled").is_empty());
 }
 
+/// Row 4: a stem still matches at a sub-word start inside a compound or
+/// camel-case identifier, as 0.3.0 did.
+#[test]
+fn stem_matches_at_a_compound_identifier_subword() {
+    let repo = Repo::with(&[
+        ("setup.txt", "Install the tool\n"),
+        ("monitor.txt", "Enable StallDetector here\n"),
+        ("IndexBuilder.txt", ""),
+    ]);
+    assert_eq!(repo.paths(&[], "stalled"), ["monitor.txt"]);
+    assert_eq!(repo.paths(&[], "indexed"), ["IndexBuilder.txt"]);
+}
+
 /// Row 4: a stem match scores below the exact token in the same location.
 #[test]
 fn stem_match_scores_below_exact_token() {
@@ -197,32 +210,36 @@ fn ranking_parser_accepts_apostrophe_in_plain_scalar() {
     assert!(stdout.contains("[team's-docs]"), "{stdout}");
 }
 
-/// Row 7: brief output stays within its character budget, keeping whole
-/// results from the top and reporting how many were omitted.
+/// Row 7: brief output stays within its character budget (2,000 for the
+/// default 8 results plus 250 per further result an explicit `--top` asks
+/// for), keeping whole results from the top and reporting any omission.
 #[test]
 fn brief_output_respects_budget_and_reports_truncation() {
-    let stem = format!("very-{}", "long-".repeat(15));
-    let files: Vec<(String, &str)> = (1..=32)
-        .map(|i| (format!("{stem}{i:02}.txt"), "unicorn\n"))
-        .collect();
-    let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), *t)).collect();
-    let repo = Repo::with(&refs);
-    let (code, stdout) = repo.query(&["--top", "32"], "unicorn");
-    assert_eq!(code, 0, "{stdout}");
-    assert!(
-        stdout.chars().count() <= LIMIT_CHARS,
-        "{} chars: {stdout}",
-        stdout.chars().count()
-    );
-    let paths = result_paths(&stdout);
-    assert!(!paths.is_empty() && paths.len() < 32, "{paths:?}");
-    let expected: Vec<String> = (1..=paths.len())
-        .map(|i| format!("{stem}{i:02}.txt"))
-        .collect();
-    assert_eq!(paths, expected, "whole results from the top");
-    let omitted = format!(
-        "brief_truncated: {} of 32 results omitted",
-        32 - paths.len()
-    );
+    let budget = LIMIT_CHARS + 24 * 250;
+    // `dirs` repeats the long name as directories to pass the file name limit.
+    let run = |repeat: usize, dirs: usize| {
+        let stem = format!("very-{}", "long-".repeat(repeat));
+        let prefix = format!("{stem}/").repeat(dirs);
+        let path = |i: usize| format!("{prefix}{stem}{i:02}.txt");
+        let files: Vec<(String, &str)> = (1..=32).map(|i| (path(i), "unicorn\n")).collect();
+        let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), *t)).collect();
+        let repo = Repo::with(&refs);
+        let (code, stdout) = repo.query(&["--top", "32"], "unicorn");
+        assert_eq!(code, 0, "{stdout}");
+        let chars = stdout.chars().count();
+        assert!(chars <= budget, "{chars} chars: {stdout}");
+        let paths = result_paths(&stdout);
+        let expected: Vec<String> = (1..=paths.len()).map(path).collect();
+        assert_eq!(paths, expected, "whole results from the top");
+        (paths.len(), stdout)
+    };
+    // The table input: 32 results fit the budget an explicit --top 32 sets.
+    let (kept, stdout) = run(15, 0);
+    assert_eq!(kept, 32, "{stdout}");
+    assert!(!stdout.contains("brief_truncated"), "{stdout}");
+    // Paths too long for even that budget: trailing results are omitted.
+    let (kept, stdout) = run(15, 3);
+    assert!(kept > 0 && kept < 32, "{stdout}");
+    let omitted = format!("brief_truncated: {} of 32 results omitted", 32 - kept);
     assert!(stdout.contains(&omitted), "{stdout}");
 }

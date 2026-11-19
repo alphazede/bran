@@ -37,7 +37,9 @@ const BRIEF_KEYS: [&str; 6] = [
     "selection",
 ];
 const ALL_FIELDS: &str = "[question, path, reason, rank]";
-const QUESTION: &str = "heron lantern";
+// Three words: a weak one-word body mention scores below 0.30 of the strong
+// documents, which match all three (two in path and title, one in body).
+const QUESTION: &str = "heron lantern wick";
 
 fn advisor_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -815,7 +817,7 @@ fn advisor_incomplete_stdin_write_keeps_rule_answer() {
 fn advisor_multi_root_identity_and_ambiguous_reply_fallback() {
     let root_a = Repo::new("multi-id-a");
     let root_b = Repo::new("multi-id-b");
-    let doc_path = "docs/shared-lantern.md";
+    let doc_path = "docs/shared-heron-lantern.md";
     let strong = "The heron lantern guides night boats. Heron lantern wicks need trimming; the heron lantern glass needs cleaning. Extra heron lantern beacon.";
     for repo in [&root_a, &root_b] {
         fs::remove_file(repo.root.join(NORTH)).unwrap();
