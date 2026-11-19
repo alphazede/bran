@@ -473,6 +473,7 @@ impl RepositoryScanner {
                 .max_files
                 .saturating_sub(limits.files)
                 .saturating_add(1);
+            let remaining_bytes = self.config.max_total_bytes.saturating_sub(limits.bytes);
             let step = self.walk_batch(
                 &mut stack,
                 &matcher,
@@ -480,9 +481,17 @@ impl RepositoryScanner {
                 &mut limits.paths,
                 &mut batch,
                 batch_limit,
+                remaining_bytes,
             );
             if !batch.is_empty() {
-                self.process_file_batch(&batch, prior, changed_paths, &mut snapshot, &mut limits)?;
+                self.process_file_batch(
+                    &batch,
+                    prior,
+                    changed_paths,
+                    remaining_bytes,
+                    &mut snapshot,
+                    &mut limits,
+                )?;
                 batch.clear();
             }
             match step {
@@ -637,6 +646,7 @@ impl RepositoryScanner {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn walk_batch(
         &self,
         stack: &mut Vec<DirFrame>,
@@ -645,12 +655,14 @@ impl RepositoryScanner {
         path_count: &mut usize,
         batch: &mut Vec<CandidateFile>,
         batch_limit: usize,
+        remaining_bytes: usize,
     ) -> WalkStep {
         let path_limit = self
             .config
             .max_files
             .saturating_mul(4)
             .saturating_add(MAX_SCAN_DEPTH);
+        let mut batch_bytes = 0usize;
         while let Some(frame) = stack.last_mut() {
             if frame.next_idx >= frame.entries.len() {
                 stack.pop();
@@ -702,11 +714,17 @@ impl RepositoryScanner {
                 }
             } else if file_type.is_file() {
                 if self.accepts_file(&relative) {
+                    let estimated_bytes = entry
+                        .metadata()
+                        .map(|meta| usize::try_from(meta.len()).unwrap_or(usize::MAX))
+                        .unwrap_or(0)
+                        .min(self.config.max_file_bytes.saturating_add(1));
+                    batch_bytes = batch_bytes.saturating_add(estimated_bytes);
                     batch.push(CandidateFile {
                         path: entry.path(),
                         relative,
                     });
-                    if batch.len() >= batch_limit {
+                    if batch.len() >= batch_limit || batch_bytes > remaining_bytes {
                         return WalkStep::BatchFull;
                     }
                 }
@@ -722,6 +740,7 @@ impl RepositoryScanner {
         batch: &[CandidateFile],
         previous: Option<&ScanSnapshot>,
         changed_paths: &BTreeSet<String>,
+        remaining_bytes: usize,
         snapshot: &mut ScanSnapshot,
         limits: &mut ScanLimits,
     ) -> Result<(), ScanFailure> {
@@ -735,7 +754,8 @@ impl RepositoryScanner {
         };
         if workers <= 1 {
             for candidate in batch {
-                let outcome = self.read_file_outcome(candidate, previous, changed_paths);
+                let outcome =
+                    self.read_file_outcome(candidate, previous, changed_paths, remaining_bytes);
                 self.apply_file_outcome(outcome, snapshot, limits)?;
             }
             return Ok(());
@@ -746,7 +766,7 @@ impl RepositoryScanner {
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(workers);
             for _ in 0..workers {
-                handles.push(scope.spawn(|| {
+                let spawned = std::thread::Builder::new().spawn_scoped(scope, || {
                     let mut local = Vec::new();
                     loop {
                         let index = next_index.fetch_add(1, Ordering::Relaxed);
@@ -755,25 +775,34 @@ impl RepositoryScanner {
                         };
                         local.push((
                             index,
-                            self.read_file_outcome(candidate, previous, changed_paths),
+                            self.read_file_outcome(
+                                candidate,
+                                previous,
+                                changed_paths,
+                                remaining_bytes,
+                            ),
                         ));
                     }
                     local
-                }));
+                });
+                match spawned {
+                    Ok(handle) => handles.push(handle),
+                    Err(_) => break,
+                }
             }
             for handle in handles {
-                let local = handle.join().expect("scanner worker panicked");
-                for (index, outcome) in local {
-                    outcomes[index] = Some(outcome);
+                if let Ok(local) = handle.join() {
+                    for (index, outcome) in local {
+                        outcomes[index] = Some(outcome);
+                    }
                 }
             }
         });
-        for outcome in outcomes {
-            self.apply_file_outcome(
-                outcome.expect("every candidate file must produce an outcome"),
-                snapshot,
-                limits,
-            )?;
+        for (candidate, outcome) in batch.iter().zip(outcomes) {
+            let outcome = outcome.unwrap_or_else(|| {
+                self.read_file_outcome(candidate, previous, changed_paths, remaining_bytes)
+            });
+            self.apply_file_outcome(outcome, snapshot, limits)?;
         }
         Ok(())
     }
@@ -789,6 +818,18 @@ impl RepositoryScanner {
             FileOutcome::Diagnostic(diag) => {
                 snapshot.diagnostics.push(diag);
                 Ok(())
+            }
+            FileOutcome::ByteLimitCandidate { relative, bytes } => {
+                limits.files = limits.files.saturating_add(1);
+                if limits.files > self.config.max_files {
+                    return Err(limit(&relative, limits.files, self.config.max_files));
+                }
+                self.check_bytes(&relative, bytes, limits.bytes)?;
+                Err(limit(
+                    &relative,
+                    limits.bytes.saturating_add(bytes),
+                    self.config.max_total_bytes,
+                ))
             }
             FileOutcome::Entry {
                 relative,
@@ -813,6 +854,7 @@ impl RepositoryScanner {
         candidate: &CandidateFile,
         previous: Option<&ScanSnapshot>,
         changed_paths: &BTreeSet<String>,
+        remaining_bytes: usize,
     ) -> FileOutcome {
         let path = &candidate.path;
         let relative = &candidate.relative;
@@ -878,6 +920,12 @@ impl RepositoryScanner {
                 actual: source.len(),
                 limit: self.config.max_file_bytes,
             });
+        }
+        if source.len() > remaining_bytes {
+            return FileOutcome::ByteLimitCandidate {
+                relative: relative.clone(),
+                bytes: source.len(),
+            };
         }
         let identity = ContentIdentity::from_bytes(&source);
         let reused = previous
@@ -1023,6 +1071,10 @@ enum WalkStep {
 enum FileOutcome {
     Error(ScanFailure),
     Diagnostic(ScanDiagnostic),
+    ByteLimitCandidate {
+        relative: String,
+        bytes: usize,
+    },
     Entry {
         relative: String,
         bytes: usize,
@@ -1628,6 +1680,67 @@ mod tests {
             scanner.check_bytes("over.txt", 1, 256 * MIB),
             Err(ScanFailure::LimitExceeded { actual, limit, .. })
                 if actual == 256 * MIB + 1 && limit == 256 * MIB
+        ));
+
+        // Exercise small aggregate byte-budget enforcement across parallel batches
+        // (40 files >= MIN_PARALLEL_FILES) and multi-batch continuation past skipped inputs.
+        let small_root = Cleanup(self::root());
+        for index in 0..40 {
+            write(&small_root.0, &format!("data/{index:03}.txt"), &[b'a'; 20]);
+        }
+        let small_scanner =
+            RepositoryScanner::new(&small_root.0, ScanConfig::new(100, 1024, 400)).unwrap();
+        assert!(matches!(
+            small_scanner.scan(),
+            Err(ScanFailure::LimitExceeded {
+                ref path,
+                actual: 420,
+                limit: 400,
+            }) if path == "data/020.txt"
+        ));
+
+        let mixed_root = Cleanup(self::root());
+        for index in 0..10 {
+            write(&mixed_root.0, &format!("data/a{index:02}.bin"), &[0xff; 20]);
+        }
+        for index in 0..20 {
+            write(&mixed_root.0, &format!("data/b{index:02}.txt"), &[b'b'; 20]);
+        }
+        let mixed_scanner =
+            RepositoryScanner::new(&mixed_root.0, ScanConfig::new(100, 1024, 400)).unwrap();
+        let mixed_ok = mixed_scanner.scan().unwrap();
+        assert_eq!(mixed_ok.file_count, 20);
+        assert_eq!(mixed_ok.total_bytes, 400);
+        assert_eq!(mixed_ok.diagnostics.len(), 10);
+
+        write(&mixed_root.0, "data/b20.txt", &[b'b'; 20]);
+        assert!(matches!(
+            mixed_scanner.scan(),
+            Err(ScanFailure::LimitExceeded {
+                ref path,
+                actual: 420,
+                limit: 400,
+            }) if path == "data/b20.txt"
+        ));
+
+        let single_over_root = Cleanup(self::root());
+        for index in 0..20 {
+            write(
+                &single_over_root.0,
+                &format!("data/s{index:02}.txt"),
+                &[b'c'; 20],
+            );
+        }
+        write(&single_over_root.0, "data/s20.txt", &[b'c'; 500]);
+        let single_over_scanner =
+            RepositoryScanner::new(&single_over_root.0, ScanConfig::new(100, 1024, 400)).unwrap();
+        assert!(matches!(
+            single_over_scanner.scan(),
+            Err(ScanFailure::LimitExceeded {
+                ref path,
+                actual: 900,
+                limit: 400,
+            }) if path == "data/s20.txt"
         ));
     }
 
