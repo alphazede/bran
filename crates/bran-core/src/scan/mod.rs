@@ -18,12 +18,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, DirEntry};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const DEFAULT_MAX_FILES: usize = 10_000;
 const DEFAULT_MAX_FILE_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 64;
+const MIN_PARALLEL_FILES: usize = 16;
+const MAX_PARALLEL_THREADS: usize = 16;
 const BRANIGNORE_FILENAME: &str = ".branignore";
 const LEGACY_OKFIGNORE_FILENAME: &str = ".okfignore";
 const GITIGNORE_FILENAME: &str = ".gitignore";
@@ -455,17 +458,48 @@ impl RepositoryScanner {
             ..ScanSnapshot::default()
         };
         let reusable = previous.is_some_and(|prior| prior.inputs == snapshot.inputs);
+        let prior = reusable.then_some(previous).flatten();
         let mut limits = ScanLimits::default();
-        self.walk(
-            &self.root,
-            "",
-            0,
-            &matcher,
-            reusable.then_some(previous).flatten(),
-            changed_paths,
-            &mut snapshot,
-            &mut limits,
-        )?;
+        let mut stack = Vec::new();
+        if let Some(root_frame) =
+            self.open_dir_frame(&self.root, "", 0, &mut snapshot.diagnostics)?
+        {
+            stack.push(root_frame);
+        }
+        let mut batch = Vec::new();
+        loop {
+            let batch_limit = self
+                .config
+                .max_files
+                .saturating_sub(limits.files)
+                .saturating_add(1);
+            let remaining_bytes = self.config.max_total_bytes.saturating_sub(limits.bytes);
+            let step = self.walk_batch(
+                &mut stack,
+                &matcher,
+                &mut snapshot.diagnostics,
+                &mut limits.paths,
+                &mut batch,
+                batch_limit,
+                remaining_bytes,
+            );
+            if !batch.is_empty() {
+                self.process_file_batch(
+                    &batch,
+                    prior,
+                    changed_paths,
+                    remaining_bytes,
+                    &mut snapshot,
+                    &mut limits,
+                )?;
+                batch.clear();
+            }
+            match step {
+                WalkStep::Done => break,
+                WalkStep::BatchFull => continue,
+                WalkStep::Failed(failure) => return Err(failure),
+            }
+        }
         snapshot.file_count = snapshot.observed_bytes.len();
         snapshot.total_bytes = snapshot.observed_bytes.values().sum();
         snapshot.diagnostics.sort();
@@ -549,18 +583,13 @@ impl RepositoryScanner {
         Ok((matcher, ContentIdentity::from_bytes(&input)))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn walk(
+    fn open_dir_frame(
         &self,
         directory: &Path,
         prefix: &str,
         depth: usize,
-        matcher: &IgnoreMatcher,
-        previous: Option<&ScanSnapshot>,
-        changed_paths: &BTreeSet<String>,
-        snapshot: &mut ScanSnapshot,
-        limits: &mut ScanLimits,
-    ) -> Result<(), ScanFailure> {
+        diagnostics: &mut Vec<ScanDiagnostic>,
+    ) -> Result<Option<DirFrame>, ScanFailure> {
         if depth > MAX_SCAN_DEPTH {
             return Err(ScanFailure::DepthExceeded {
                 path: prefix.to_owned(),
@@ -571,21 +600,27 @@ impl RepositoryScanner {
         let current = match fs::symlink_metadata(directory) {
             Ok(metadata) => metadata,
             Err(error) => {
-                unreadable(snapshot, prefix, error);
-                return Ok(());
+                diagnostics.push(ScanDiagnostic::Unreadable {
+                    path: prefix.to_owned(),
+                    reason: error.to_string(),
+                });
+                return Ok(None);
             }
         };
         if current.file_type().is_symlink() {
-            snapshot.diagnostics.push(ScanDiagnostic::Symlink {
+            diagnostics.push(ScanDiagnostic::Symlink {
                 path: prefix.to_owned(),
             });
-            return Ok(());
+            return Ok(None);
         }
         let canonical = match fs::canonicalize(directory) {
             Ok(path) => path,
             Err(error) => {
-                unreadable(snapshot, prefix, error);
-                return Ok(());
+                diagnostics.push(ScanDiagnostic::Unreadable {
+                    path: prefix.to_owned(),
+                    reason: error.to_string(),
+                });
+                return Ok(None);
             }
         };
         if !canonical.starts_with(&self.root) {
@@ -594,17 +629,53 @@ impl RepositoryScanner {
             });
         }
         let entries = match fs::read_dir(canonical) {
-            Ok(entries) => sorted_entries(entries, prefix, &mut snapshot.diagnostics),
+            Ok(entries) => sorted_entries(entries, prefix, diagnostics),
             Err(error) => {
-                unreadable(snapshot, prefix, error);
-                return Ok(());
+                diagnostics.push(ScanDiagnostic::Unreadable {
+                    path: prefix.to_owned(),
+                    reason: error.to_string(),
+                });
+                return Ok(None);
             }
         };
-        for entry in entries {
+        Ok(Some(DirFrame {
+            prefix: prefix.to_owned(),
+            depth,
+            entries,
+            next_idx: 0,
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk_batch(
+        &self,
+        stack: &mut Vec<DirFrame>,
+        matcher: &IgnoreMatcher,
+        diagnostics: &mut Vec<ScanDiagnostic>,
+        path_count: &mut usize,
+        batch: &mut Vec<CandidateFile>,
+        batch_limit: usize,
+        remaining_bytes: usize,
+    ) -> WalkStep {
+        let path_limit = self
+            .config
+            .max_files
+            .saturating_mul(4)
+            .saturating_add(MAX_SCAN_DEPTH);
+        let mut batch_bytes = 0usize;
+        while let Some(frame) = stack.last_mut() {
+            if frame.next_idx >= frame.entries.len() {
+                stack.pop();
+                continue;
+            }
+            let entry = &frame.entries[frame.next_idx];
+            frame.next_idx += 1;
+            let prefix = frame.prefix.as_str();
+            let depth = frame.depth;
             let name = match entry.file_name().into_string() {
                 Ok(name) => name,
                 Err(_) => {
-                    snapshot.diagnostics.push(ScanDiagnostic::NonUtf8Path {
+                    diagnostics.push(ScanDiagnostic::NonUtf8Path {
                         path: path_hint(prefix),
                     });
                     continue;
@@ -617,7 +688,10 @@ impl RepositoryScanner {
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
                 Err(error) => {
-                    unreadable(snapshot, &relative, error);
+                    diagnostics.push(ScanDiagnostic::Unreadable {
+                        path: relative,
+                        reason: error.to_string(),
+                    });
                     continue;
                 }
             };
@@ -625,130 +699,239 @@ impl RepositoryScanner {
                 || !file_type.is_file()
                 || self.accepts_file(&relative)
             {
-                limits.paths = limits.paths.saturating_add(1);
-                let path_limit = self
-                    .config
-                    .max_files
-                    .saturating_mul(4)
-                    .saturating_add(MAX_SCAN_DEPTH);
-                if limits.paths > path_limit {
-                    return Err(limit(&relative, limits.paths, path_limit));
+                *path_count = path_count.saturating_add(1);
+                if *path_count > path_limit {
+                    return WalkStep::Failed(limit(&relative, *path_count, path_limit));
                 }
             }
             if file_type.is_symlink() {
-                snapshot
-                    .diagnostics
-                    .push(ScanDiagnostic::Symlink { path: relative });
+                diagnostics.push(ScanDiagnostic::Symlink { path: relative });
             } else if file_type.is_dir() {
-                self.walk(
-                    &entry.path(),
-                    &relative,
-                    depth + 1,
-                    matcher,
-                    previous,
-                    changed_paths,
-                    snapshot,
-                    limits,
-                )?;
+                match self.open_dir_frame(&entry.path(), &relative, depth + 1, diagnostics) {
+                    Ok(Some(child)) => stack.push(child),
+                    Ok(None) => {}
+                    Err(failure) => return WalkStep::Failed(failure),
+                }
             } else if file_type.is_file() {
                 if self.accepts_file(&relative) {
-                    self.read_file(
-                        entry.path(),
+                    let estimated_bytes = entry
+                        .metadata()
+                        .map(|meta| usize::try_from(meta.len()).unwrap_or(usize::MAX))
+                        .unwrap_or(0)
+                        .min(self.config.max_file_bytes.saturating_add(1));
+                    batch_bytes = batch_bytes.saturating_add(estimated_bytes);
+                    batch.push(CandidateFile {
+                        path: entry.path(),
                         relative,
-                        previous,
-                        changed_paths,
-                        snapshot,
-                        limits,
-                    )?;
+                    });
+                    if batch.len() >= batch_limit || batch_bytes > remaining_bytes {
+                        return WalkStep::BatchFull;
+                    }
                 }
             } else {
-                snapshot
-                    .diagnostics
-                    .push(ScanDiagnostic::UnsupportedInput { path: relative });
+                diagnostics.push(ScanDiagnostic::UnsupportedInput { path: relative });
             }
+        }
+        WalkStep::Done
+    }
+
+    fn process_file_batch(
+        &self,
+        batch: &[CandidateFile],
+        previous: Option<&ScanSnapshot>,
+        changed_paths: &BTreeSet<String>,
+        remaining_bytes: usize,
+        snapshot: &mut ScanSnapshot,
+        limits: &mut ScanLimits,
+    ) -> Result<(), ScanFailure> {
+        let workers = if batch.len() < MIN_PARALLEL_FILES {
+            1
+        } else {
+            let hw = std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(4);
+            hw.min(MAX_PARALLEL_THREADS).min(batch.len() / 4).max(1)
+        };
+        if workers <= 1 {
+            for candidate in batch {
+                let outcome =
+                    self.read_file_outcome(candidate, previous, changed_paths, remaining_bytes);
+                self.apply_file_outcome(outcome, snapshot, limits)?;
+            }
+            return Ok(());
+        }
+
+        let mut outcomes: Vec<Option<FileOutcome>> = (0..batch.len()).map(|_| None).collect();
+        let next_index = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                let spawned = std::thread::Builder::new().spawn_scoped(scope, || {
+                    let mut local = Vec::new();
+                    loop {
+                        let index = next_index.fetch_add(1, Ordering::Relaxed);
+                        let Some(candidate) = batch.get(index) else {
+                            break;
+                        };
+                        local.push((
+                            index,
+                            self.read_file_outcome(
+                                candidate,
+                                previous,
+                                changed_paths,
+                                remaining_bytes,
+                            ),
+                        ));
+                    }
+                    local
+                });
+                match spawned {
+                    Ok(handle) => handles.push(handle),
+                    Err(_) => break,
+                }
+            }
+            for handle in handles {
+                if let Ok(local) = handle.join() {
+                    for (index, outcome) in local {
+                        outcomes[index] = Some(outcome);
+                    }
+                }
+            }
+        });
+        for (candidate, outcome) in batch.iter().zip(outcomes) {
+            let outcome = outcome.unwrap_or_else(|| {
+                self.read_file_outcome(candidate, previous, changed_paths, remaining_bytes)
+            });
+            self.apply_file_outcome(outcome, snapshot, limits)?;
         }
         Ok(())
     }
 
-    fn read_file(
+    fn apply_file_outcome(
         &self,
-        path: PathBuf,
-        relative: String,
-        previous: Option<&ScanSnapshot>,
-        changed_paths: &BTreeSet<String>,
+        outcome: FileOutcome,
         snapshot: &mut ScanSnapshot,
         limits: &mut ScanLimits,
     ) -> Result<(), ScanFailure> {
-        let metadata = match fs::symlink_metadata(&path) {
+        match outcome {
+            FileOutcome::Error(failure) => Err(failure),
+            FileOutcome::Diagnostic(diag) => {
+                snapshot.diagnostics.push(diag);
+                Ok(())
+            }
+            FileOutcome::ByteLimitCandidate { relative, bytes } => {
+                limits.files = limits.files.saturating_add(1);
+                if limits.files > self.config.max_files {
+                    return Err(limit(&relative, limits.files, self.config.max_files));
+                }
+                self.check_bytes(&relative, bytes, limits.bytes)?;
+                Err(limit(
+                    &relative,
+                    limits.bytes.saturating_add(bytes),
+                    self.config.max_total_bytes,
+                ))
+            }
+            FileOutcome::Entry {
+                relative,
+                bytes,
+                entry,
+            } => {
+                limits.files = limits.files.saturating_add(1);
+                if limits.files > self.config.max_files {
+                    return Err(limit(&relative, limits.files, self.config.max_files));
+                }
+                self.check_bytes(&relative, bytes, limits.bytes)?;
+                replace_observed(snapshot, &relative, bytes);
+                limits.bytes += bytes;
+                snapshot.entries.insert(relative, entry);
+                Ok(())
+            }
+        }
+    }
+
+    fn read_file_outcome(
+        &self,
+        candidate: &CandidateFile,
+        previous: Option<&ScanSnapshot>,
+        changed_paths: &BTreeSet<String>,
+        remaining_bytes: usize,
+    ) -> FileOutcome {
+        let path = &candidate.path;
+        let relative = &candidate.relative;
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                unreadable(snapshot, &relative, error);
-                return Ok(());
+                return FileOutcome::Diagnostic(ScanDiagnostic::Unreadable {
+                    path: relative.clone(),
+                    reason: error.to_string(),
+                });
             }
         };
         if metadata.file_type().is_symlink() {
-            snapshot
-                .diagnostics
-                .push(ScanDiagnostic::Symlink { path: relative });
-            return Ok(());
+            return FileOutcome::Diagnostic(ScanDiagnostic::Symlink {
+                path: relative.clone(),
+            });
         }
-        let canonical = match fs::canonicalize(&path) {
+        let canonical = match fs::canonicalize(path) {
             Ok(path) if path.starts_with(&self.root) => path,
-            Ok(_) => return Err(ScanFailure::RootEscape { path: relative }),
+            Ok(_) => {
+                return FileOutcome::Error(ScanFailure::RootEscape {
+                    path: relative.clone(),
+                });
+            }
             Err(error) => {
-                unreadable(snapshot, &relative, error);
-                return Ok(());
+                return FileOutcome::Diagnostic(ScanDiagnostic::Unreadable {
+                    path: relative.clone(),
+                    reason: error.to_string(),
+                });
             }
         };
         let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
         if size > self.config.max_file_bytes {
-            if let Some(diag) = self.probe_oversized(&canonical, &relative) {
-                snapshot.diagnostics.push(diag);
-                return Ok(());
+            if let Some(diag) = self.probe_oversized(&canonical, relative) {
+                return FileOutcome::Diagnostic(diag);
             }
         }
         let source = match fs::read(&canonical) {
             Ok(source) => source,
             Err(error) => {
-                unreadable(snapshot, &relative, error);
-                return Ok(());
+                return FileOutcome::Diagnostic(ScanDiagnostic::Unreadable {
+                    path: relative.clone(),
+                    reason: error.to_string(),
+                });
             }
         };
-        if fs::symlink_metadata(&path).is_ok_and(|item| item.file_type().is_symlink()) {
-            snapshot
-                .diagnostics
-                .push(ScanDiagnostic::Symlink { path: relative });
-            return Ok(());
+        if fs::symlink_metadata(path).is_ok_and(|item| item.file_type().is_symlink()) {
+            return FileOutcome::Diagnostic(ScanDiagnostic::Symlink {
+                path: relative.clone(),
+            });
         }
         let text = match std::str::from_utf8(&source) {
             Ok(text) => text,
             Err(_) => {
-                snapshot
-                    .diagnostics
-                    .push(ScanDiagnostic::UnsupportedInput { path: relative });
-                return Ok(());
+                return FileOutcome::Diagnostic(ScanDiagnostic::UnsupportedInput {
+                    path: relative.clone(),
+                });
             }
         };
         if source.len() > self.config.max_file_bytes {
-            snapshot.diagnostics.push(ScanDiagnostic::OversizedInput {
-                path: relative,
+            return FileOutcome::Diagnostic(ScanDiagnostic::OversizedInput {
+                path: relative.clone(),
                 actual: source.len(),
                 limit: self.config.max_file_bytes,
             });
-            return Ok(());
         }
-        limits.files = limits.files.saturating_add(1);
-        if limits.files > self.config.max_files {
-            return Err(limit(&relative, limits.files, self.config.max_files));
+        if source.len() > remaining_bytes {
+            return FileOutcome::ByteLimitCandidate {
+                relative: relative.clone(),
+                bytes: source.len(),
+            };
         }
-        self.check_bytes(&relative, source.len(), limits.bytes)?;
-        replace_observed(snapshot, &relative, source.len());
-        limits.bytes += source.len();
         let identity = ContentIdentity::from_bytes(&source);
         let reused = previous
-            .and_then(|prior| prior.entries.get(&relative))
+            .and_then(|prior| prior.entries.get(relative.as_str()))
             .filter(|prior| {
-                !changed_paths.contains(&relative)
+                !changed_paths.contains(relative.as_str())
                     && prior.identity == identity
                     && prior.source.as_ref() == source.as_slice()
             });
@@ -756,17 +939,18 @@ impl RepositoryScanner {
             prior.metadata.clone()
         } else {
             self.parser
-                .parse(&relative, text, &self.defaults_for(&relative))
+                .parse(relative, text, &self.defaults_for(relative))
         };
-        snapshot.entries.insert(
-            relative,
-            Arc::new(ScanEntry {
+        let bytes = source.len();
+        FileOutcome::Entry {
+            relative: relative.clone(),
+            bytes,
+            entry: Arc::new(ScanEntry {
                 identity,
                 source: Arc::from(source),
                 metadata,
             }),
-        );
-        Ok(())
+        }
     }
 
     fn check_bytes(&self, path: &str, size: usize, prior: usize) -> Result<(), ScanFailure> {
@@ -864,6 +1048,38 @@ struct ScanLimits {
     paths: usize,
     files: usize,
     bytes: usize,
+}
+
+struct DirFrame {
+    prefix: String,
+    depth: usize,
+    entries: Vec<DirEntry>,
+    next_idx: usize,
+}
+
+struct CandidateFile {
+    path: PathBuf,
+    relative: String,
+}
+
+enum WalkStep {
+    Done,
+    BatchFull,
+    Failed(ScanFailure),
+}
+
+enum FileOutcome {
+    Error(ScanFailure),
+    Diagnostic(ScanDiagnostic),
+    ByteLimitCandidate {
+        relative: String,
+        bytes: usize,
+    },
+    Entry {
+        relative: String,
+        bytes: usize,
+        entry: Arc<ScanEntry>,
+    },
 }
 
 fn safe_directory(directory: &str) -> Result<String, ScanFailure> {
@@ -1464,6 +1680,67 @@ mod tests {
             scanner.check_bytes("over.txt", 1, 256 * MIB),
             Err(ScanFailure::LimitExceeded { actual, limit, .. })
                 if actual == 256 * MIB + 1 && limit == 256 * MIB
+        ));
+
+        // Exercise small aggregate byte-budget enforcement across parallel batches
+        // (40 files >= MIN_PARALLEL_FILES) and multi-batch continuation past skipped inputs.
+        let small_root = Cleanup(self::root());
+        for index in 0..40 {
+            write(&small_root.0, &format!("data/{index:03}.txt"), &[b'a'; 20]);
+        }
+        let small_scanner =
+            RepositoryScanner::new(&small_root.0, ScanConfig::new(100, 1024, 400)).unwrap();
+        assert!(matches!(
+            small_scanner.scan(),
+            Err(ScanFailure::LimitExceeded {
+                ref path,
+                actual: 420,
+                limit: 400,
+            }) if path == "data/020.txt"
+        ));
+
+        let mixed_root = Cleanup(self::root());
+        for index in 0..10 {
+            write(&mixed_root.0, &format!("data/a{index:02}.bin"), &[0xff; 20]);
+        }
+        for index in 0..20 {
+            write(&mixed_root.0, &format!("data/b{index:02}.txt"), &[b'b'; 20]);
+        }
+        let mixed_scanner =
+            RepositoryScanner::new(&mixed_root.0, ScanConfig::new(100, 1024, 400)).unwrap();
+        let mixed_ok = mixed_scanner.scan().unwrap();
+        assert_eq!(mixed_ok.file_count, 20);
+        assert_eq!(mixed_ok.total_bytes, 400);
+        assert_eq!(mixed_ok.diagnostics.len(), 10);
+
+        write(&mixed_root.0, "data/b20.txt", &[b'b'; 20]);
+        assert!(matches!(
+            mixed_scanner.scan(),
+            Err(ScanFailure::LimitExceeded {
+                ref path,
+                actual: 420,
+                limit: 400,
+            }) if path == "data/b20.txt"
+        ));
+
+        let single_over_root = Cleanup(self::root());
+        for index in 0..20 {
+            write(
+                &single_over_root.0,
+                &format!("data/s{index:02}.txt"),
+                &[b'c'; 20],
+            );
+        }
+        write(&single_over_root.0, "data/s20.txt", &[b'c'; 500]);
+        let single_over_scanner =
+            RepositoryScanner::new(&single_over_root.0, ScanConfig::new(100, 1024, 400)).unwrap();
+        assert!(matches!(
+            single_over_scanner.scan(),
+            Err(ScanFailure::LimitExceeded {
+                ref path,
+                actual: 900,
+                limit: 400,
+            }) if path == "data/s20.txt"
         ));
     }
 
