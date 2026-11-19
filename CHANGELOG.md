@@ -28,11 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `bran query --brief` now scores candidates with a single integer score that
-  prioritizes rarity-scaled term coverage, path and filename hits over capped
-  body repeats, and deterministic path tie-breaking, using copy-free ASCII
-  case-insensitive matching across candidate scoring. ([#65](https://github.com/alphazede/bran/pull/65))
+- `bran query --brief` now scores candidates with a single integer score:
+  coverage of distinct query terms and path or filename hits come first, term
+  rarity orders candidates only within equal coverage, then capped body
+  repeats and a deterministic path tie-break, using copy-free ASCII
+  case-insensitive matching. ([#65](https://github.com/alphazede/bran/pull/65))
 
+- Parallelized repository file reads and metadata parsing in `RepositoryScanner`
+  using bounded `std::thread` workers while preserving deterministic traversal
+  order, scan limits, and output equivalence.
+  ([#64](https://github.com/alphazede/bran/pull/64))
 - Documented that default `bran query` `selected_locators` remains alphabetical
   while `source_rankings` and `query --brief` `results` are relevance-ordered,
   and updated `README.md`, `docs/integrations/agent-setup.md`, and
