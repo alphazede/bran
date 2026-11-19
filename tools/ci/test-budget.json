@@ -792,6 +792,22 @@
       "support_fixtures": []
     },
     {
+      "stable_id": "P8-BRIEF-RANKING",
+      "phase": 8,
+      "slice": "8.8",
+      "runner": "rust",
+      "name": "brief_ranking_tier_keeps_demoted_evidence_below_every_tier_zero_result",
+      "category": "contract",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/brief_ranking.rs",
+      "support_fixtures": [
+        "fixtures/recall/ranking-tree/evidence/lantern/run-0042.md",
+        "fixtures/recall/ranking-tree/evidence/runs/rotate-lantern-keys-run-0043.md",
+        "fixtures/recall/ranking-tree/tools/rotate-lantern-keys.sh",
+        "fixtures/recall/ranking.yaml"
+      ]
+    },
+    {
       "stable_id": "P8-RECALL-CHECK",
       "phase": 8,
       "slice": "8.8",

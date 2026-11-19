@@ -22,8 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/recall/recall_check.py` and the synthetic recall fixture in
   `fixtures/recall/`, plus opt-in `BRAN_TIMINGS=1` per-step stderr timings in
   single-root and multi-root `bran query`. ([#63](https://github.com/alphazede/bran/pull/63))
+- Optional `.bran/ranking.yaml` path-class tiers (`classes: [{name, tier, globs}]`,
+  tier `0..=9`, first matching class wins) for `bran query --brief`, keeping
+  default `bran query` output unchanged. ([#65](https://github.com/alphazede/bran/pull/65))
 
 ### Changed
+
+- `bran query --brief` now scores candidates with a single integer score:
+  coverage of distinct query terms and path or filename hits come first, term
+  rarity orders candidates only within equal coverage, then capped body
+  repeats and a deterministic path tie-break, using copy-free ASCII
+  case-insensitive matching. ([#65](https://github.com/alphazede/bran/pull/65))
 
 - Parallelized repository file reads and metadata parsing in `RepositoryScanner`
   using bounded `std::thread` workers while preserving deterministic traversal
