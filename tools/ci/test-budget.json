@@ -808,6 +808,19 @@
       ]
     },
     {
+      "stable_id": "P8-BRIEF-SELECT",
+      "phase": 8,
+      "slice": "8.8",
+      "runner": "rust",
+      "name": "advisor_faults_keep_the_rule_answer",
+      "category": "security",
+      "classification": "new",
+      "source": "crates/bran-cli/tests/brief_select.rs",
+      "support_fixtures": [
+        "fixtures/advisor/advisor.sh"
+      ]
+    },
+    {
       "stable_id": "P8-RECALL-CHECK",
       "phase": 8,
       "slice": "8.8",
