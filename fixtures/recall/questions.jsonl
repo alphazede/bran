@@ -1,0 +1,10 @@
+{"question": "how do I calibrate the soil moisture sensor", "expected": "docs/soil-moisture-sensor.md", "class": "doc"}
+{"question": "valve relay wiring", "expected": "docs/valve-wiring.md", "class": "doc"}
+{"question": "frost threshold temperature", "expected": "docs/frost-protection.md", "class": "doc"}
+{"question": "weekly watering schedule", "expected": "docs/watering-schedule.md", "class": "doc"}
+{"question": "winterize pipes before freeze", "expected": "runbooks/winterize-pipes.md", "class": "runbook"}
+{"question": "reset pump pressure alarm", "expected": "runbooks/pump-pressure-alarm.md", "class": "runbook"}
+{"question": "rain delay forecast", "expected": "reference/rain-delay.md", "class": "reference"}
+{"question": "zone naming labels", "expected": "reference/zone-naming.md"}
+{"question": "earlier watering table", "expected": "docs/watering-schedule.md", "class": "doc"}
+{"question": "panel display brightness", "expected": "docs/valve-wiring.md", "class": "doc"}
