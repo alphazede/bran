@@ -213,3 +213,62 @@ fn brief_query_with_malformed_ranking_file_fails_naming_the_file() {
         "the failure names the file: {stdout}{stderr}"
     );
 }
+
+#[test]
+fn brief_defining_script_outranks_rare_body_only_mention_without_ranking_file() {
+    // P2-R01 (TC-09, DES-04): coverage and path/filename precedence must hold
+    // over term rarity; a rare body-only mention of `quorum` must not outrank
+    // the defining script matching `lantern` and `keys` in its filename.
+    let repo = Repo::new("ranking-tree", None);
+    fs::remove_file(repo.0.join(PATH_EVIDENCE)).unwrap();
+    fs::create_dir_all(repo.0.join("notes")).unwrap();
+    for idx in 1..=3 {
+        fs::write(
+            repo.0.join(format!("notes/lantern-ref-{idx}.md")),
+            "---\ntype: concept\ntitle: Note\nokf_status: active\n---\n\n# Note\n\nMentions lantern keys in passing.\n",
+        )
+        .unwrap();
+    }
+    let quorum_note = "notes/quorum-note.md";
+    fs::write(
+        repo.0.join(quorum_note),
+        "---\ntype: concept\ntitle: Misc\nokf_status: active\n---\n\n# Misc\n\nMentions quorum once.\n",
+    )
+    .unwrap();
+
+    let paths = repo.brief_paths("lantern keys quorum");
+    assert_eq!(
+        paths[0], SCRIPT,
+        "2-term filename match must outrank 1-term rare body-only note: {paths:?}"
+    );
+    assert!(
+        position(&paths, SCRIPT) < position(&paths, quorum_note),
+        "{SCRIPT} must outrank {quorum_note}: {paths:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn brief_query_rejects_symlinked_ranking_sidecar_inside_repo_root() {
+    // P2-R02: `.bran/ranking.yaml` must stay confined to `.bran/`, rejecting a
+    // symlink even when its target lies elsewhere inside the same repository.
+    let repo = Repo::new("ranking-tree", None);
+    fs::create_dir_all(repo.0.join("docs")).unwrap();
+    fs::write(
+        repo.0.join("docs/sidecar.yaml"),
+        "classes:\n  - name: demote-tools\n    tier: 5\n    globs:\n      - \"tools/**\"\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../docs/sidecar.yaml", repo.0.join(".bran/ranking.yaml")).unwrap();
+
+    let root = repo.0.to_str().unwrap();
+    let (code, stdout, stderr) = repo.run(&["query", root, "--brief", LANTERN]);
+    assert_ne!(
+        code, 0,
+        "symlinked .bran/ranking.yaml must be rejected: {stdout}{stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains(".bran/ranking.yaml"),
+        "the failure names .bran/ranking.yaml: {stdout}{stderr}"
+    );
+}

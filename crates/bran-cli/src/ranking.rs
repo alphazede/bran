@@ -126,6 +126,8 @@ struct PathClass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CompiledGlob {
     segments: Vec<SegmentPattern>,
+    min_segments: usize,
+    has_double_star: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,28 +153,53 @@ impl CompiledGlob {
             return Err(format!("invalid glob pattern: {raw:?}"));
         }
         let mut segments = Vec::new();
+        let mut min_segments = 0usize;
+        let mut has_double_star = false;
         for seg in raw.split('/') {
             if seg.is_empty() || seg == "." || seg == ".." {
                 return Err(format!("invalid path segment in glob pattern: {raw:?}"));
             }
             if seg == "**" {
-                segments.push(SegmentPattern::DoubleStar);
+                has_double_star = true;
+                if !matches!(segments.last(), Some(SegmentPattern::DoubleStar)) {
+                    segments.push(SegmentPattern::DoubleStar);
+                }
             } else if seg.contains("**") {
                 return Err(format!(
                     "'**' must appear as a whole path segment in glob pattern: {raw:?}"
                 ));
             } else if seg.contains('*') {
+                min_segments += 1;
                 segments.push(SegmentPattern::Wildcard(seg.to_owned()));
             } else {
+                min_segments += 1;
                 segments.push(SegmentPattern::Literal(seg.to_owned()));
             }
         }
-        Ok(Self { segments })
+        Ok(Self {
+            segments,
+            min_segments,
+            has_double_star,
+        })
     }
 
-    fn matches(&self, rel_path: &str) -> bool {
-        let path_segs: Vec<&str> = rel_path.split('/').collect();
+    fn matches_segments(&self, path_segs: &[&str]) -> bool {
         let pat = &self.segments;
+        if (!self.has_double_star && path_segs.len() != pat.len())
+            || path_segs.len() < self.min_segments
+        {
+            return false;
+        }
+        if let Some(SegmentPattern::Literal(first)) = pat.first() {
+            if path_segs.first() != Some(&first.as_str()) {
+                return false;
+            }
+        }
+        if let Some(SegmentPattern::Literal(last)) = pat.last() {
+            if path_segs.last() != Some(&last.as_str()) {
+                return false;
+            }
+        }
         let (mut pi, mut si) = (0usize, 0usize);
         let mut star_pi: Option<usize> = None;
         let mut star_si = 0usize;
@@ -456,25 +483,56 @@ fn apply_class_field(
     Ok(())
 }
 
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
 impl RankingConfig {
     /// Load `.bran/ranking.yaml` from `root`. A missing file yields the default
     /// empty configuration (all paths tier 0). Any I/O, safety, or syntax error
     /// returns an error naming `.bran/ranking.yaml`.
     pub fn load(root: &Path) -> Result<Self, String> {
-        let ranking_path = root.join(RANKING_FILENAME);
-        match fs::symlink_metadata(&ranking_path) {
-            Ok(_) => {}
+        let bran_dir = root.join(".bran");
+        let ranking_path = bran_dir.join("ranking.yaml");
+        let ranking_meta = match fs::symlink_metadata(&ranking_path) {
+            Ok(meta) => meta,
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Self::default()),
             Err(err) => return Err(format!("{RANKING_FILENAME}: unreadable ({err})")),
+        };
+        let bran_meta = fs::symlink_metadata(&bran_dir)
+            .map_err(|err| format!("{RANKING_FILENAME}: unreadable .bran ({err})"))?;
+        if bran_meta.file_type().is_symlink() || !bran_meta.is_dir() {
+            return Err(format!("{RANKING_FILENAME}: .bran must be a directory"));
+        }
+        if ranking_meta.file_type().is_symlink() || !ranking_meta.file_type().is_file() {
+            return Err(format!("{RANKING_FILENAME}: expected a regular file"));
         }
         let canonical_root = fs::canonicalize(root)
             .map_err(|err| format!("{RANKING_FILENAME}: invalid repository root ({err})"))?;
+        let canonical_bran = fs::canonicalize(&bran_dir)
+            .map_err(|err| format!("{RANKING_FILENAME}: invalid .bran directory ({err})"))?;
+        if !canonical_bran.starts_with(&canonical_root) {
+            return Err(format!("{RANKING_FILENAME}: .bran escapes repository root"));
+        }
         let canonical_file = fs::canonicalize(&ranking_path)
             .map_err(|err| format!("{RANKING_FILENAME}: unreadable ({err})"))?;
-        if !canonical_file.starts_with(&canonical_root) {
-            return Err(format!("{RANKING_FILENAME}: path escapes repository root"));
+        if !canonical_file.starts_with(&canonical_bran) {
+            return Err(format!("{RANKING_FILENAME}: path escapes .bran directory"));
         }
-        let meta = fs::symlink_metadata(&canonical_file)
+        let file = open_no_follow(&canonical_file)
+            .map_err(|err| format!("{RANKING_FILENAME}: unreadable ({err})"))?;
+        let meta = file
+            .metadata()
             .map_err(|err| format!("{RANKING_FILENAME}: unreadable ({err})"))?;
         if !meta.file_type().is_file() {
             return Err(format!("{RANKING_FILENAME}: expected a regular file"));
@@ -484,8 +542,6 @@ impl RankingConfig {
                 "{RANKING_FILENAME}: file exceeds {MAX_RANKING_BYTES} bytes"
             ));
         }
-        let file = File::open(&canonical_file)
-            .map_err(|err| format!("{RANKING_FILENAME}: unreadable ({err})"))?;
         let mut bytes = Vec::new();
         file.take(MAX_RANKING_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
@@ -633,8 +689,32 @@ impl RankingConfig {
     /// Return `(tier, Some(class_name))` for the first matching class in
     /// declaration order, or `(0, None)` when no class matches.
     pub fn classify(&self, rel_path: &str) -> (u8, Option<&str>) {
+        if self.classes.is_empty() {
+            return (0, None);
+        }
+        let mut stack = [""; 32];
+        let mut count = 0usize;
+        let mut overflow: Option<Vec<&str>> = None;
+        for seg in rel_path.split('/') {
+            if let Some(vec) = overflow.as_mut() {
+                vec.push(seg);
+            } else if count < stack.len() {
+                stack[count] = seg;
+                count += 1;
+            } else {
+                let mut vec = Vec::with_capacity(64);
+                vec.extend_from_slice(&stack);
+                vec.push(seg);
+                overflow = Some(vec);
+            }
+        }
+        let path_segs: &[&str] = overflow.as_deref().unwrap_or(&stack[..count]);
         for class in &self.classes {
-            if class.globs.iter().any(|glob| glob.matches(rel_path)) {
+            if class
+                .globs
+                .iter()
+                .any(|glob| glob.matches_segments(path_segs))
+            {
                 return (class.tier, Some(class.name.as_str()));
             }
         }
@@ -642,75 +722,340 @@ impl RankingConfig {
     }
 }
 
+#[cfg(target_endian = "little")]
+#[inline]
+fn next_hit_lane(mask: &mut u64) -> usize {
+    let lane = (mask.trailing_zeros() >> 3) as usize;
+    *mask &= *mask - 1;
+    lane
+}
+
+#[cfg(target_endian = "big")]
+#[inline]
+fn next_hit_lane(mask: &mut u64) -> usize {
+    let lane = (mask.leading_zeros() >> 3) as usize;
+    *mask ^= 0x8000_0000_0000_0000u64 >> (lane * 8);
+    lane
+}
+
+#[inline]
+fn find_ascii_ci_from(h: &[u8], n: &[u8], mut i: usize) -> Option<usize> {
+    if n.is_empty() {
+        return (i <= h.len()).then_some(i);
+    }
+    if i + n.len() > h.len() {
+        return None;
+    }
+    let limit = h.len() - n.len();
+    let scan_end = limit + 1;
+    let first_lower = n[0].to_ascii_lowercase();
+    let first_upper = n[0].to_ascii_uppercase();
+    if first_lower == first_upper {
+        let target = u64::from_ne_bytes([first_lower; 8]);
+        while i + 8 <= scan_end {
+            let w = u64::from_ne_bytes(h[i..i + 8].try_into().unwrap());
+            let x = w ^ target;
+            let mut hit_mask = x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080;
+            while hit_mask != 0 {
+                let pos = i + next_hit_lane(&mut hit_mask);
+                if h[pos..pos + n.len()].eq_ignore_ascii_case(n) {
+                    return Some(pos);
+                }
+            }
+            i += 8;
+        }
+        while i <= limit {
+            if h[i] == first_lower && h[i..i + n.len()].eq_ignore_ascii_case(n) {
+                return Some(i);
+            }
+            i += 1;
+        }
+    } else if first_lower.is_ascii_lowercase() {
+        let mask = 0x2020_2020_2020_2020u64;
+        let target = u64::from_ne_bytes([first_lower; 8]);
+        while i + 8 <= scan_end {
+            let w = u64::from_ne_bytes(h[i..i + 8].try_into().unwrap());
+            let x = (w | mask) ^ target;
+            let mut hit_mask = x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080;
+            while hit_mask != 0 {
+                let pos = i + next_hit_lane(&mut hit_mask);
+                if h[pos..pos + n.len()].eq_ignore_ascii_case(n) {
+                    return Some(pos);
+                }
+            }
+            i += 8;
+        }
+        while i <= limit {
+            if (h[i] | 0x20) == first_lower && h[i..i + n.len()].eq_ignore_ascii_case(n) {
+                return Some(i);
+            }
+            i += 1;
+        }
+    } else {
+        while i <= limit {
+            let b = h[i];
+            if (b == first_lower || b == first_upper) && h[i..i + n.len()].eq_ignore_ascii_case(n) {
+                return Some(i);
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
+#[inline]
+fn is_alnum_word_boundary(haystack: &str, start: usize, end: usize) -> bool {
+    let left_ok = haystack[..start]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_alphanumeric());
+    left_ok
+        && haystack[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric())
+}
+
 /// Copy-free ASCII case-insensitive substring check. Equivalent to
 /// `haystack.to_ascii_lowercase().contains(needle)` when `needle` is already
 /// ASCII-lowercase.
 pub fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
-    let h = haystack.as_bytes();
-    let n = needle.as_bytes();
-    if n.is_empty() {
-        return true;
-    }
-    if n.len() > h.len() {
-        return false;
-    }
-    let first = n[0];
-    let first_upper = first.to_ascii_uppercase();
-    let limit = h.len() - n.len();
-    if first == first_upper {
-        for i in 0..=limit {
-            if h[i] == first && h[i..i + n.len()].eq_ignore_ascii_case(n) {
-                return true;
-            }
-        }
-    } else {
-        for i in 0..=limit {
-            let b = h[i];
-            if (b == first || b == first_upper) && h[i..i + n.len()].eq_ignore_ascii_case(n) {
-                return true;
-            }
-        }
-    }
-    false
+    find_ascii_ci_from(haystack.as_bytes(), needle.as_bytes(), 0).is_some()
 }
 
-/// Copy-free count of non-overlapping ASCII case-insensitive occurrences of
-/// `needle` in `haystack`, stopping as soon as `cap` matches are found.
-pub fn count_ascii_ci_capped(haystack: &str, needle: &str, cap: usize) -> usize {
-    if cap == 0 {
-        return 0;
-    }
-    let h = haystack.as_bytes();
-    let n = needle.as_bytes();
-    if n.is_empty() || n.len() > h.len() {
-        return 0;
-    }
-    let first = n[0];
-    let first_upper = first.to_ascii_uppercase();
-    let limit = h.len() - n.len();
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i <= limit {
-        let b = h[i];
-        if (b == first || b == first_upper) && h[i..i + n.len()].eq_ignore_ascii_case(n) {
-            count += 1;
-            if count >= cap {
-                return count;
+/// Precompiled Wu-Manber multi-pattern matcher for pre-lowercased text aligned
+/// byte-for-byte with the original body text. Processes patterns in batches of
+/// 32 so queries of any size are supported without caps.
+pub struct BodyMultiMatcher<'a> {
+    batches: Vec<WuManberBatch<'a>>,
+}
+
+struct WuManberBatch<'a> {
+    patterns: Vec<(&'a [u8], bool)>,
+    min_len: usize,
+    shift: [u8; 4096],
+    buckets: [u32; 4096],
+    fallback: bool,
+}
+
+#[inline]
+fn wm_hash2(b0: u8, b1: u8) -> usize {
+    (((b0 as usize) << 5) ^ (b1 as usize)) & 4095
+}
+
+impl<'a> BodyMultiMatcher<'a> {
+    pub fn new(specs: &[(&'a str, bool)]) -> Self {
+        let mut batches = Vec::new();
+        for chunk in specs.chunks(32) {
+            let patterns: Vec<(&[u8], bool)> = chunk
+                .iter()
+                .map(|&(s, check_word)| {
+                    let word_ok =
+                        check_word && !s.is_empty() && s.chars().all(char::is_alphanumeric);
+                    (s.as_bytes(), word_ok)
+                })
+                .collect();
+            let raw_min = patterns.iter().map(|(p, _)| p.len()).min().unwrap_or(0);
+            if raw_min < 2 {
+                batches.push(WuManberBatch {
+                    patterns,
+                    min_len: raw_min,
+                    shift: [0; 4096],
+                    buckets: [0; 4096],
+                    fallback: true,
+                });
+                continue;
             }
-            i += n.len();
-        } else {
-            i += 1;
+            let min_len = raw_min.min(256);
+            let default_shift = (min_len - 1) as u8;
+            let mut shift = [default_shift; 4096];
+            let mut buckets = [0u32; 4096];
+            for (idx, &(pat, _)) in patterns.iter().enumerate() {
+                for j in 0..=min_len - 2 {
+                    let hv = wm_hash2(pat[j], pat[j + 1]);
+                    let d = (min_len - 2 - j) as u8;
+                    if d < shift[hv] {
+                        shift[hv] = d;
+                    }
+                    if d == 0 {
+                        buckets[hv] |= 1u32 << idx;
+                    }
+                }
+            }
+            batches.push(WuManberBatch {
+                patterns,
+                min_len,
+                shift,
+                buckets,
+                fallback: false,
+            });
+        }
+        Self { batches }
+    }
+
+    pub fn match_body(
+        &self,
+        body: &str,
+        body_lower: &str,
+        cap: usize,
+        counts: &mut [u8],
+        words: &mut [bool],
+    ) {
+        if cap == 0 {
+            return;
+        }
+        let text = body_lower.as_bytes();
+        let end = text.len();
+        let mut offset = 0usize;
+        for batch in &self.batches {
+            let batch_len = batch.patterns.len();
+            if batch.fallback {
+                for (i, &(pat, check_word)) in batch.patterns.iter().enumerate() {
+                    let pat_str = std::str::from_utf8(pat).unwrap_or("");
+                    let (c, w) = count_and_word_lower(body, body_lower, pat_str, cap);
+                    counts[offset + i] = c as u8;
+                    words[offset + i] = if check_word { w } else { c > 0 };
+                }
+                offset += batch_len;
+                continue;
+            }
+            let min_len = batch.min_len;
+            if end < min_len {
+                offset += batch_len;
+                continue;
+            }
+            let mut active_mask: u32 = if batch_len == 32 {
+                u32::MAX
+            } else {
+                (1u32 << batch_len) - 1
+            };
+            let mut next_allowed = [0usize; 32];
+            let mut local_counts = [0usize; 32];
+            let mut local_words = [false; 32];
+            let mut pos = min_len - 2;
+            while pos + 1 < end {
+                let hv = wm_hash2(text[pos], text[pos + 1]);
+                let s = batch.shift[hv] as usize;
+                if s > 0 {
+                    pos += s;
+                    continue;
+                }
+                let start = pos + 2 - min_len;
+                let mut cand = batch.buckets[hv] & active_mask;
+                while cand != 0 {
+                    let bit = cand.trailing_zeros() as usize;
+                    cand &= cand - 1;
+                    let (pat, check_word) = batch.patterns[bit];
+                    let pat_end = start + pat.len();
+                    if start >= next_allowed[bit] && pat_end <= end && &text[start..pat_end] == pat
+                    {
+                        if local_counts[bit] < cap {
+                            local_counts[bit] += 1;
+                        }
+                        if !local_words[bit]
+                            && (!check_word || is_alnum_word_boundary(body, start, pat_end))
+                        {
+                            local_words[bit] = true;
+                        }
+                        next_allowed[bit] = pat_end;
+                        if local_counts[bit] >= cap && local_words[bit] {
+                            active_mask &= !(1u32 << bit);
+                            if active_mask == 0 {
+                                pos = end;
+                                break;
+                            }
+                        }
+                    }
+                }
+                pos += 1;
+            }
+            for i in 0..batch_len {
+                counts[offset + i] = local_counts[i] as u8;
+                words[offset + i] = local_words[i];
+            }
+            offset += batch_len;
         }
     }
-    count
+}
+
+/// Single-pass count (capped at `cap`) and whole-alphanumeric-token check on a
+/// pre-lowercased copy `haystack_lower` aligned byte-for-byte with `haystack`.
+pub fn count_and_word_lower(
+    haystack: &str,
+    haystack_lower: &str,
+    needle: &str,
+    cap: usize,
+) -> (usize, bool) {
+    if cap == 0 || needle.is_empty() {
+        return (0, false);
+    }
+    let check_word = needle.is_ascii() && needle.bytes().all(|b| b.is_ascii_alphanumeric());
+    let mut count = 0usize;
+    let mut is_word = false;
+    let mut pos = 0usize;
+    while let Some(rel) = haystack_lower[pos..].find(needle) {
+        let idx = pos + rel;
+        let end = idx + needle.len();
+        if count < cap {
+            count += 1;
+        }
+        if check_word && !is_word && is_alnum_word_boundary(haystack, idx, end) {
+            is_word = true;
+        }
+        if count >= cap && (!check_word || is_word) {
+            break;
+        }
+        pos = end;
+    }
+    if !check_word && count > 0 {
+        is_word = has_alnum_token_ascii_ci(haystack, needle);
+    }
+    (count, is_word)
+}
+
+/// Check whether `haystack` (aligned byte-for-byte with `haystack_lower`) has
+/// an alphanumeric token equal to ASCII-lowercase `needle`.
+pub fn has_alnum_token_lower(haystack: &str, haystack_lower: &str, needle: &str) -> bool {
+    if needle.is_empty() || !needle.is_ascii() {
+        return has_alnum_token_ascii_ci(haystack, needle);
+    }
+    if !needle.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let mut pos = 0usize;
+    while let Some(rel) = haystack_lower[pos..].find(needle) {
+        let idx = pos + rel;
+        let end = idx + needle.len();
+        if is_alnum_word_boundary(haystack, idx, end) {
+            return true;
+        }
+        pos = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// Copy-free check whether `haystack` has an alphanumeric token equal (ASCII
 /// case-insensitively) to `needle`, matching `split(|c: char| !c.is_alphanumeric())`.
 pub fn has_alnum_token_ascii_ci(haystack: &str, needle: &str) -> bool {
-    haystack
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|part| part.eq_ignore_ascii_case(needle))
+    if needle.is_empty() || !needle.is_ascii() {
+        return haystack
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|part| part.eq_ignore_ascii_case(needle));
+    }
+    if !needle.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    let mut pos = 0usize;
+    while let Some(idx) = find_ascii_ci_from(h, n, pos) {
+        let end = idx + n.len();
+        if is_alnum_word_boundary(haystack, idx, end) {
+            return true;
+        }
+        pos = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// Per-unit match signals collected for one document without allocating.
@@ -750,6 +1095,13 @@ impl BriefUnitHit {
     }
 }
 
+/// Sparse per-unit match record retained only for query units that scored.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScoredUnitHit {
+    pub unit_index: usize,
+    pub hit: BriefUnitHit,
+}
+
 /// Deterministic integer IDF-like rarity weights from document frequency in the
 /// same scan. Larger values mean rarer terms across the repository.
 pub fn term_rarity_weights(total_docs: usize, doc_freqs: &[usize]) -> Vec<u64> {
@@ -766,32 +1118,38 @@ pub fn term_rarity_weights(total_docs: usize, doc_freqs: &[usize]) -> Vec<u64> {
         .collect()
 }
 
-/// Single integer brief score combining rarity-scaled term coverage, path and
-/// filename precedence over body repeats, capped body hits, and tie-breakers.
+/// Single integer brief score prioritizing term coverage and path/filename
+/// precedence, using rarity only to order ties within equal coverage and
+/// structural match class, followed by capped body repeats and document traits.
 pub fn compute_brief_score(
-    hits: &[BriefUnitHit],
+    hits: &[ScoredUnitHit],
     rarity: &[u64],
+    has_content_units: bool,
     active: u8,
     canonical: u8,
     public_safe: u8,
     confidence: u8,
 ) -> u64 {
-    let has_content_units = hits.iter().any(|h| !h.is_stop_word);
-    let mut unit_sum = 0u64;
-    for (hit, &weight) in hits.iter().zip(rarity.iter()) {
+    let mut structural_base = 0u64;
+    let mut rarity_sum = 0u64;
+    let mut detail_bonus = 0u64;
+    for scored in hits {
+        let hit = scored.hit;
         if !hit.scored_match() || (has_content_units && hit.is_stop_word) {
             continue;
         }
+        let weight = rarity.get(scored.unit_index).copied().unwrap_or(0);
         if !hit.matched() {
             // Morphological stem fallback: slightly below surface-form coverage
             // so exact word matches always win when coverage is otherwise tied.
             let stem_cov = (WEIGHT_COVERAGE * 3) / 4;
-            let stem_loc = if hit.stem_path {
-                WEIGHT_FILENAME_SUB
+            if hit.stem_path {
+                structural_base = structural_base.saturating_add(stem_cov + WEIGHT_FILENAME_SUB);
             } else {
-                WEIGHT_BODY_HIT
-            };
-            unit_sum = unit_sum.saturating_add(weight.saturating_mul(stem_cov + stem_loc));
+                structural_base = structural_base.saturating_add(stem_cov);
+                detail_bonus = detail_bonus.saturating_add(WEIGHT_BODY_HIT);
+            }
+            rarity_sum = rarity_sum.saturating_add((weight * 3) / 4);
             continue;
         }
         let cov = if hit.is_entity {
@@ -818,17 +1176,165 @@ pub fn compute_brief_score(
         } else {
             0
         };
+        structural_base = structural_base.saturating_add(cov + exact_bonus + path_bonus);
+        rarity_sum = rarity_sum.saturating_add(weight);
         let parent_bonus = u64::from(hit.parent_fact) * WEIGHT_PARENT_FACT;
         let capped_body = u64::from(hit.body_hits.min(BODY_HIT_CAP as u8));
         let body_bonus =
             u64::from(hit.body_word) * WEIGHT_BODY_WORD + capped_body * WEIGHT_BODY_HIT;
-        unit_sum = unit_sum.saturating_add(weight.saturating_mul(
-            cov + exact_bonus + path_bonus + fact_bonus + parent_bonus + body_bonus,
-        ));
+        detail_bonus = detail_bonus.saturating_add(fact_bonus + parent_bonus + body_bonus);
     }
-    let tie = u64::from(active) * 100
+    let tie = (u64::from(active) * 100
         + u64::from(canonical) * 50
         + u64::from(public_safe) * 20
-        + u64::from(confidence);
-    unit_sum.saturating_mul(1_000).saturating_add(tie)
+        + u64::from(confidence))
+    .min(1_023);
+    (structural_base.min(1_048_575) << 44)
+        | (rarity_sum.min(262_143) << 26)
+        | (detail_bonus.min(65_535) << 10)
+        | tie
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rarity_orders_only_within_equal_coverage_and_path_class() {
+        let rarity = [20, 900];
+        let common_filename = compute_brief_score(
+            &[ScoredUnitHit {
+                unit_index: 0,
+                hit: BriefUnitHit {
+                    filename_seg: true,
+                    ..Default::default()
+                },
+            }],
+            &rarity,
+            true,
+            3,
+            1,
+            1,
+            100,
+        );
+        let rare_body = compute_brief_score(
+            &[ScoredUnitHit {
+                unit_index: 1,
+                hit: BriefUnitHit {
+                    body_hits: 3,
+                    body_word: true,
+                    ..Default::default()
+                },
+            }],
+            &rarity,
+            true,
+            3,
+            1,
+            1,
+            100,
+        );
+        let common_body = compute_brief_score(
+            &[ScoredUnitHit {
+                unit_index: 0,
+                hit: BriefUnitHit {
+                    body_hits: 3,
+                    body_word: true,
+                    ..Default::default()
+                },
+            }],
+            &rarity,
+            true,
+            3,
+            1,
+            1,
+            100,
+        );
+        assert!(common_filename > rare_body);
+        assert!(rare_body > common_body);
+    }
+
+    #[test]
+    fn sparse_hits_respect_stop_word_flag_when_content_units_exist() {
+        let rarity = [100, 100];
+        let stop_only_hit = [ScoredUnitHit {
+            unit_index: 0,
+            hit: BriefUnitHit {
+                is_stop_word: true,
+                body_hits: 2,
+                body_word: true,
+                ..Default::default()
+            },
+        }];
+        let with_content = compute_brief_score(&stop_only_hit, &rarity, true, 0, 0, 0, 0);
+        let only_stops = compute_brief_score(&stop_only_hit, &rarity, false, 0, 0, 0, 0);
+        assert_eq!(with_content, 0);
+        assert!(only_stops > 0);
+    }
+
+    #[test]
+    fn glob_classification_preserves_first_match_and_deep_paths() {
+        let cfg = RankingConfig::parse_from_str(
+            "classes:\n  - name: first\n    tier: 3\n    globs:\n      - \"a/**/**/c/*.md\"\n  - name: fallback\n    tier: 1\n    globs:\n      - \"**/*.md\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.classify("a/b/c/file.md"), (3, Some("first")));
+        assert_eq!(cfg.classify("a/c/file.md"), (3, Some("first")));
+        let deep = format!("{}/file.md", vec!["seg"; 40].join("/"));
+        assert_eq!(cfg.classify(&deep), (1, Some("fallback")));
+        assert_eq!(cfg.classify("a/b/c/file.txt"), (0, None));
+    }
+
+    #[test]
+    fn body_multi_matcher_matches_single_pattern_counts_and_word_boundaries() {
+        let body =
+            "Check checking CHECK. Route-map and routed; frozen, guard, fallback! CafÉ café.";
+        let lower = body.to_ascii_lowercase();
+        let mut specs: Vec<(String, bool)> = vec![
+            ("check".to_owned(), true),
+            ("route".to_owned(), true),
+            ("frozen".to_owned(), true),
+            ("guard".to_owned(), true),
+            ("fallback".to_owned(), true),
+            ("café".to_owned(), true),
+            ("route-map".to_owned(), false),
+        ];
+        for i in 0..30 {
+            specs.push((format!("extra{i}"), true));
+        }
+        let spec_refs: Vec<(&str, bool)> = specs.iter().map(|(s, w)| (s.as_str(), *w)).collect();
+        let matcher = BodyMultiMatcher::new(&spec_refs);
+        let mut counts = vec![0u8; specs.len()];
+        let mut words = vec![false; specs.len()];
+        matcher.match_body(body, &lower, BODY_HIT_CAP, &mut counts, &mut words);
+
+        for (idx, (pat, check_word)) in spec_refs.iter().enumerate() {
+            let (expected_count, expected_word) =
+                count_and_word_lower(body, &lower, pat, BODY_HIT_CAP);
+            assert_eq!(counts[idx] as usize, expected_count, "count for {pat}");
+            if *check_word {
+                assert_eq!(words[idx], expected_word, "word for {pat}");
+            } else {
+                assert_eq!(words[idx], expected_count > 0, "entity for {pat}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_rejects_dangling_and_directory_symlinks() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "bran-ranking-symlink-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join(".bran")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/ranking.yaml", root.join(".bran/ranking.yaml"))
+            .unwrap();
+        let err = RankingConfig::load(&root).unwrap_err();
+        assert!(err.contains(RANKING_FILENAME), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

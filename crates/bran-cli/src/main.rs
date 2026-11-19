@@ -2180,7 +2180,80 @@ fn score_source_candidates(
 
 struct BriefCandidate {
     ranking: SourceRanking,
-    hits: Vec<ranking::BriefUnitHit>,
+    hits: Vec<ranking::ScoredUnitHit>,
+}
+
+/// Sorted field names matching every key that `brief_source_candidates` can
+/// record in `match_reason`, indexed by bit position in a `u32` mask.
+const BRIEF_FIELD_NAMES: &[&str] = &[
+    "alias",
+    "aliases",
+    "body",
+    "implements",
+    "keyword",
+    "keywords",
+    "okf_status",
+    "path",
+    "public_boundary",
+    "purpose",
+    "responsibility",
+    "status",
+    "symbol",
+    "tag",
+    "tags",
+    "test",
+    "tests",
+    "title",
+    "validates",
+];
+
+#[inline]
+fn brief_field_bit(name: &str) -> u32 {
+    match name {
+        "alias" => 1 << 0,
+        "aliases" => 1 << 1,
+        "body" => 1 << 2,
+        "implements" => 1 << 3,
+        "keyword" => 1 << 4,
+        "keywords" => 1 << 5,
+        "okf_status" => 1 << 6,
+        "path" => 1 << 7,
+        "public_boundary" => 1 << 8,
+        "purpose" => 1 << 9,
+        "responsibility" => 1 << 10,
+        "status" => 1 << 11,
+        "symbol" => 1 << 12,
+        "tag" => 1 << 13,
+        "tags" => 1 << 14,
+        "test" => 1 << 15,
+        "tests" => 1 << 16,
+        "title" => 1 << 17,
+        "validates" => 1 << 18,
+        _ => 0,
+    }
+}
+
+fn format_brief_reason(prefix: &str, mut mask: u32, class_name: Option<&str>) -> String {
+    let mut out = String::with_capacity(prefix.len() + 32);
+    out.push_str(prefix);
+    let mut first = true;
+    while mask != 0 {
+        let idx = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        if let Some(&name) = BRIEF_FIELD_NAMES.get(idx) {
+            if !first {
+                out.push('+');
+            }
+            out.push_str(name);
+            first = false;
+        }
+    }
+    if let Some(name) = class_name {
+        out.push_str(" [");
+        out.push_str(name);
+        out.push(']');
+    }
+    out
 }
 
 fn brief_source_candidates(
@@ -2194,10 +2267,13 @@ fn brief_source_candidates(
     BTreeSet<String>,
     usize,
     Vec<usize>,
+    bool,
 ) {
     let (terms, entities) = query_terms_and_entities(query_text);
     let entity_list: Vec<&str> = entities.iter().map(String::as_str).collect();
     let term_list: Vec<&str> = terms.iter().map(String::as_str).collect();
+    let has_content_units =
+        !entity_list.is_empty() || term_list.iter().any(|&t| !ranking::is_brief_stop_word(t));
     let term_stems: Vec<Option<String>> = term_list
         .iter()
         .map(|&t| {
@@ -2212,6 +2288,17 @@ fn brief_source_candidates(
     let mut total_docs = 0usize;
     let mut candidates = Vec::new();
     let long_paths = snapshot_long_path_map(snapshot);
+    let mut ranked_facts: Vec<(&'static str, &str)> = Vec::new();
+    let mut parent_facts: Vec<(&'static str, &str)> = Vec::new();
+    let mut body_lower_buf = String::new();
+    let body_specs: Vec<(&str, bool)> = entity_list
+        .iter()
+        .map(|&e| (e, false))
+        .chain(term_list.iter().map(|&t| (t, true)))
+        .collect();
+    let body_matcher = ranking::BodyMultiMatcher::new(&body_specs);
+    let mut body_counts = vec![0u8; unit_count];
+    let mut body_words = vec![false; unit_count];
 
     for node in graph_input
         .nodes()
@@ -2231,181 +2318,187 @@ fn brief_source_candidates(
             .next()
             .unwrap_or(locator_original);
         let body = document_body(snapshot, locator_original);
+        if let Some(body) = body {
+            if unit_count > 0 {
+                body_lower_buf.clear();
+                body_lower_buf.push_str(body);
+                body_lower_buf.make_ascii_lowercase();
+                body_counts.fill(0);
+                body_words.fill(false);
+                body_matcher.match_body(
+                    body,
+                    &body_lower_buf,
+                    ranking::BODY_HIT_CAP,
+                    &mut body_counts,
+                    &mut body_words,
+                );
+            }
+        }
+        ranked_facts.clear();
+        for &key in RANKED_FACT_KEYS {
+            if let Some(values) = node.facts().values(key) {
+                for value in values {
+                    ranked_facts.push((key, value.as_str()));
+                }
+            }
+        }
+        parent_facts.clear();
+        for &key in PARENT_QUERY_FACT_KEYS {
+            if let Some(values) = node.facts().values(key) {
+                for value in values {
+                    parent_facts.push((key, value.as_str()));
+                }
+            }
+        }
         let mut exact_matches = 0;
         let mut partial_matches = 0;
-        let mut exact_fields = BTreeSet::new();
-        let mut partial_fields = BTreeSet::new();
-        let mut hits = vec![ranking::BriefUnitHit::default(); unit_count];
+        let mut exact_fields_mask = 0u32;
+        let mut partial_fields_mask = 0u32;
+        let mut hits: Vec<ranking::ScoredUnitHit> = Vec::new();
 
         for (u_idx, &entity) in entity_list.iter().enumerate() {
-            let hit = &mut hits[u_idx];
-            hit.is_entity = true;
-            let mut entity_fields = BTreeSet::new();
+            let mut hit = ranking::BriefUnitHit {
+                is_entity: true,
+                ..Default::default()
+            };
+            let mut entity_fields_mask = 0u32;
             if ranking::contains_ascii_ci(locator_original, entity) {
-                entity_fields.insert("path");
+                entity_fields_mask |= brief_field_bit("path");
                 if ranking::contains_ascii_ci(filename, entity) {
                     hit.filename_seg = true;
                 } else {
                     hit.path_seg = true;
                 }
             }
-            for (key, value) in RANKED_FACT_KEYS.iter().flat_map(|key| {
-                node.facts()
-                    .values(key)
-                    .into_iter()
-                    .flatten()
-                    .map(move |value| (*key, value.as_str()))
-            }) {
+            for &(key, value) in &ranked_facts {
                 if ranking::contains_ascii_ci(value, entity) {
-                    entity_fields.insert(key);
+                    entity_fields_mask |= brief_field_bit(key);
                     hit.fact_word = true;
                 }
             }
-            for (key, value) in PARENT_QUERY_FACT_KEYS.iter().flat_map(|key| {
-                node.facts()
-                    .values(key)
-                    .into_iter()
-                    .flatten()
-                    .map(move |value| (*key, value.as_str()))
-            }) {
+            for &(key, value) in &parent_facts {
                 if ranking::contains_ascii_ci(value, entity) {
-                    entity_fields.insert(key);
+                    entity_fields_mask |= brief_field_bit(key);
                     hit.parent_fact = true;
                 }
             }
-            if let Some(body) = body {
-                let body_count =
-                    ranking::count_ascii_ci_capped(body, entity, ranking::BODY_HIT_CAP);
-                if body_count > 0 {
-                    entity_fields.insert("body");
-                    hit.body_hits = body_count as u8;
-                    hit.body_word = true;
-                }
+            if body.is_some() && body_counts[u_idx] > 0 {
+                entity_fields_mask |= brief_field_bit("body");
+                hit.body_hits = body_counts[u_idx];
+                hit.body_word = true;
             }
-            if !entity_fields.is_empty() {
+            if entity_fields_mask != 0 {
                 exact_matches += 1;
-                exact_fields.extend(entity_fields);
+                exact_fields_mask |= entity_fields_mask;
                 matched_terms.insert(entity.to_owned());
                 doc_freqs[u_idx] += 1;
+                hits.push(ranking::ScoredUnitHit {
+                    unit_index: u_idx,
+                    hit,
+                });
             }
         }
 
         for (t_offset, &term) in term_list.iter().enumerate() {
             let u_idx = entity_list.len() + t_offset;
-            let hit = &mut hits[u_idx];
-            hit.is_stop_word = ranking::is_brief_stop_word(term);
+            let mut hit = ranking::BriefUnitHit {
+                is_stop_word: ranking::is_brief_stop_word(term),
+                ..Default::default()
+            };
 
             if locator_original.eq_ignore_ascii_case(term) {
                 exact_matches += 1;
-                exact_fields.insert("path");
+                exact_fields_mask |= brief_field_bit("path");
                 hit.exact = true;
-            } else if ranking::has_alnum_token_ascii_ci(filename, term) {
-                partial_matches += 1;
-                partial_fields.insert("path");
-                hit.filename_seg = true;
-            } else if ranking::contains_ascii_ci(filename, term) {
-                partial_matches += 1;
-                partial_fields.insert("path");
-                hit.filename_sub = true;
-            } else if ranking::has_alnum_token_ascii_ci(locator_original, term) {
-                partial_matches += 1;
-                partial_fields.insert("path");
-                hit.path_seg = true;
             } else if ranking::contains_ascii_ci(locator_original, term) {
                 partial_matches += 1;
-                partial_fields.insert("path");
-                hit.path_sub = true;
-            }
-
-            for (key, value) in RANKED_FACT_KEYS.iter().flat_map(|key| {
-                node.facts()
-                    .values(key)
-                    .into_iter()
-                    .flatten()
-                    .map(move |value| (*key, value.as_str()))
-            }) {
-                if value.eq_ignore_ascii_case(term) {
-                    exact_matches += 1;
-                    exact_fields.insert(key);
-                    hit.exact = true;
-                } else if ranking::has_alnum_token_ascii_ci(value, term) {
-                    partial_matches += 1;
-                    partial_fields.insert(key);
-                    hit.fact_word = true;
-                } else if ranking::contains_ascii_ci(value, term) {
-                    partial_matches += 1;
-                    partial_fields.insert(key);
-                    hit.fact_sub = true;
+                partial_fields_mask |= brief_field_bit("path");
+                if ranking::has_alnum_token_ascii_ci(filename, term) {
+                    hit.filename_seg = true;
+                } else if ranking::contains_ascii_ci(filename, term) {
+                    hit.filename_sub = true;
+                } else if ranking::has_alnum_token_ascii_ci(locator_original, term) {
+                    hit.path_seg = true;
+                } else {
+                    hit.path_sub = true;
                 }
             }
 
-            for (key, value) in PARENT_QUERY_FACT_KEYS.iter().flat_map(|key| {
-                node.facts()
-                    .values(key)
-                    .into_iter()
-                    .flatten()
-                    .map(move |value| (*key, value.as_str()))
-            }) {
+            for &(key, value) in &ranked_facts {
+                if value.eq_ignore_ascii_case(term) {
+                    exact_matches += 1;
+                    exact_fields_mask |= brief_field_bit(key);
+                    hit.exact = true;
+                } else if ranking::contains_ascii_ci(value, term) {
+                    partial_matches += 1;
+                    partial_fields_mask |= brief_field_bit(key);
+                    if ranking::has_alnum_token_ascii_ci(value, term) {
+                        hit.fact_word = true;
+                    } else {
+                        hit.fact_sub = true;
+                    }
+                }
+            }
+
+            for &(key, value) in &parent_facts {
                 if ranking::contains_ascii_ci(value, term) {
                     partial_matches += 1;
-                    partial_fields.insert(key);
+                    partial_fields_mask |= brief_field_bit(key);
                     hit.parent_fact = true;
                 }
             }
 
-            if let Some(body) = body {
-                let body_count = ranking::count_ascii_ci_capped(body, term, ranking::BODY_HIT_CAP);
-                if body_count > 0 {
-                    partial_matches += 1;
-                    partial_fields.insert("body");
-                    hit.body_hits = body_count as u8;
-                    if ranking::has_alnum_token_ascii_ci(body, term) {
-                        hit.body_word = true;
-                    }
-                }
+            if body.is_some() && body_counts[u_idx] > 0 {
+                partial_matches += 1;
+                partial_fields_mask |= brief_field_bit("body");
+                hit.body_hits = body_counts[u_idx];
+                hit.body_word = body_words[u_idx];
             }
 
             if hit.matched() {
                 matched_terms.insert(term.to_owned());
                 doc_freqs[u_idx] += 1;
+                hits.push(ranking::ScoredUnitHit {
+                    unit_index: u_idx,
+                    hit,
+                });
             } else if let Some(stem) = term_stems[t_offset].as_deref() {
                 if ranking::has_alnum_token_ascii_ci(locator_original, stem)
                     || (stem.len() >= 4 && ranking::contains_ascii_ci(locator_original, stem))
                 {
                     hit.stem_path = true;
-                    partial_fields.insert("path");
+                    partial_fields_mask |= brief_field_bit("path");
                     doc_freqs[u_idx] += 1;
+                    hits.push(ranking::ScoredUnitHit {
+                        unit_index: u_idx,
+                        hit,
+                    });
                 } else if let Some(body) = body {
-                    if ranking::has_alnum_token_ascii_ci(body, stem)
-                        || (stem.len() >= 5 && ranking::contains_ascii_ci(body, stem))
+                    if ranking::has_alnum_token_lower(body, &body_lower_buf, stem)
+                        || (stem.len() >= 5 && body_lower_buf.contains(stem))
                     {
                         hit.stem_body = true;
-                        partial_fields.insert("body");
+                        partial_fields_mask |= brief_field_bit("body");
                         doc_freqs[u_idx] += 1;
+                        hits.push(ranking::ScoredUnitHit {
+                            unit_index: u_idx,
+                            hit,
+                        });
                     }
                 }
             }
         }
 
-        if !hits.iter().any(|h| h.scored_match()) {
+        if hits.is_empty() {
             continue;
         }
         let (status_rank, canonical, public_safe, freshness) = node_ranking_traits(node);
         let (tier, class_name) = ranking_config.classify(locator_original);
-        let mut match_reason = if exact_fields.is_empty() {
-            format!(
-                "partial:{}",
-                partial_fields.into_iter().collect::<Vec<_>>().join("+")
-            )
+        let match_reason = if exact_fields_mask == 0 {
+            format_brief_reason("partial:", partial_fields_mask, class_name)
         } else {
-            format!(
-                "exact:{}",
-                exact_fields.into_iter().collect::<Vec<_>>().join("+")
-            )
+            format_brief_reason("exact:", exact_fields_mask, class_name)
         };
-        if let Some(name) = class_name {
-            match_reason.push_str(&format!(" [{name}]"));
-        }
         candidates.push(BriefCandidate {
             ranking: SourceRanking {
                 bundle: String::new(),
@@ -2427,13 +2520,21 @@ fn brief_source_candidates(
         });
     }
 
-    (candidates, matched_terms, entities, total_docs, doc_freqs)
+    (
+        candidates,
+        matched_terms,
+        entities,
+        total_docs,
+        doc_freqs,
+        has_content_units,
+    )
 }
 
 fn score_brief_candidates(
     candidates: Vec<BriefCandidate>,
     total_docs: usize,
     doc_freqs: &[usize],
+    has_content_units: bool,
 ) -> Vec<SourceRanking> {
     let rarity = ranking::term_rarity_weights(total_docs, doc_freqs);
     candidates
@@ -2442,6 +2543,7 @@ fn score_brief_candidates(
             candidate.ranking.brief_score = ranking::compute_brief_score(
                 &candidate.hits,
                 &rarity,
+                has_content_units,
                 candidate.ranking.active,
                 candidate.ranking.canonical,
                 candidate.ranking.public_safe,
@@ -2484,9 +2586,9 @@ fn brief_source_rankings(
     max_sources: usize,
     ranking_config: &ranking::RankingConfig,
 ) -> (Vec<SourceRanking>, BTreeSet<String>) {
-    let (candidates, matched_terms, entities, total_docs, doc_freqs) =
+    let (candidates, matched_terms, entities, total_docs, doc_freqs, has_content_units) =
         brief_source_candidates(graph_input, snapshot, query_text, ranking_config);
-    let matches = score_brief_candidates(candidates, total_docs, &doc_freqs);
+    let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     (
         finalize_brief_rankings(matches, max_sources, false),
@@ -3767,14 +3869,22 @@ fn do_query_brief_multi(
     let mut candidates = Vec::new();
     let mut total_docs = 0usize;
     let mut doc_freqs = Vec::new();
+    let mut has_content_units = false;
     for (root, ranking_config) in scanned.iter().zip(ranking_configs.iter()) {
-        let (mut root_candidates, root_matched, root_entities, root_docs, root_dfs) =
-            brief_source_candidates(
-                &root.graph_input,
-                &root.snapshot,
-                &query_text,
-                ranking_config,
-            );
+        let (
+            mut root_candidates,
+            root_matched,
+            root_entities,
+            root_docs,
+            root_dfs,
+            root_has_content,
+        ) = brief_source_candidates(
+            &root.graph_input,
+            &root.snapshot,
+            &query_text,
+            ranking_config,
+        );
+        has_content_units |= root_has_content;
         for candidate in &mut root_candidates {
             candidate.ranking.bundle = root.requested.clone();
         }
@@ -3790,7 +3900,7 @@ fn do_query_brief_multi(
         entities = root_entities;
         candidates.extend(root_candidates);
     }
-    let matches = score_brief_candidates(candidates, total_docs, &doc_freqs);
+    let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     let rankings = finalize_brief_rankings(matches, top, true);
     log_timing("score");
