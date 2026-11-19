@@ -1,0 +1,399 @@
+//! Issue #60 (DES-01, DES-02, AM-05): `query --brief` and `get --full`
+//! exercised through the real CLI on the synthetic recall fixture.
+use bran_document::canonical::Json;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const BRAN: &str = env!("CARGO_BIN_EXE_bran");
+const BRIEF_KEYS: [&str; 6] = [
+    "coverage_basis",
+    "query_coverage",
+    "query_outcome",
+    "result_id",
+    "results",
+    "selection",
+];
+const LIMIT_CHARS: usize = 2000;
+
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/recall")
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+struct Repo(PathBuf);
+
+impl Drop for Repo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+impl Repo {
+    fn empty(name: &str, policy: bool) -> Self {
+        let root =
+            std::env::temp_dir().join(format!("bran-brief-query-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        if policy {
+            fs::create_dir_all(root.join(".bran")).unwrap();
+            fs::copy(
+                fixture_dir().join("policy.yaml"),
+                root.join(".bran/policy.yaml"),
+            )
+            .unwrap();
+        }
+        Self(root)
+    }
+
+    /// The synthetic tree with `.bran/policy.yaml` installed, as a consumer has it.
+    fn recall(name: &str, policy: bool) -> Self {
+        let repo = Self::empty(name, policy);
+        copy_tree(&fixture_dir().join("tree"), &repo.0);
+        repo
+    }
+
+    /// AM-05: eight files whose exact paths alone exceed the 2,000-char budget.
+    fn long_paths(name: &str) -> (Self, BTreeSet<String>) {
+        let repo = Self::empty(name, true);
+        let mut paths = BTreeSet::new();
+        for n in 0..8 {
+            let dir = (0..5)
+                .map(|k| format!("segment-{n}-{k}-{}", "x".repeat(48)))
+                .collect::<Vec<_>>()
+                .join("/");
+            let path = format!("long/{dir}/lantern-{n}.md");
+            fs::create_dir_all(repo.0.join(format!("long/{dir}"))).unwrap();
+            fs::write(
+                repo.0.join(&path),
+                format!("---\ntype: concept\ntitle: Lantern {n}\nokf_status: active\ntags: [developer]\n---\n\n# Lantern {n}\n\nThe lantern note {n}.\n"),
+            )
+            .unwrap();
+            paths.insert(path);
+        }
+        (repo, paths)
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(args)
+            .current_dir(&self.0)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// A Git repository whose result store is ignored, as DES-02 requires of consumers.
+    fn git_init(&self) {
+        fs::write(self.0.join(".gitignore"), ".bran/results/\n").unwrap();
+        self.git(&["init", "-q"]);
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", "fixture"]);
+    }
+
+    fn run(&self, args: &[&str]) -> (i32, String) {
+        let output = Command::new(BRAN)
+            .env_remove("BRAN_REGISTERED_ROOTS")
+            .env_remove("BRAN_ADVISOR_CONFIG")
+            .current_dir(&self.0)
+            .args(args)
+            .output()
+            .expect("bran runs");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8(output.stdout).unwrap(),
+        )
+    }
+
+    fn brief(&self, extra: &[&str], question: &str) -> (Json, usize) {
+        let root = self.0.to_str().unwrap();
+        let mut args = vec!["query", root, "--brief"];
+        args.extend_from_slice(extra);
+        args.push(question);
+        let (code, stdout) = self.run(&args);
+        assert_eq!(code, 0, "brief query {question:?} exits 0: {stdout}");
+        let chars = stdout.trim_end_matches('\n').chars().count();
+        (
+            Json::parse(stdout.as_bytes()).expect("brief output is JSON"),
+            chars,
+        )
+    }
+}
+
+fn data(envelope: &Json) -> &Json {
+    envelope.get("data").expect("envelope has data")
+}
+
+fn keys(value: &Json) -> BTreeSet<&str> {
+    let Json::Obj(map) = value else {
+        panic!("expected object, got {value:?}")
+    };
+    map.keys().map(String::as_str).collect()
+}
+
+fn text(value: Option<&Json>) -> &str {
+    match value {
+        Some(Json::Str(s)) => s,
+        other => panic!("expected string, got {other:?}"),
+    }
+}
+
+fn results(envelope: &Json) -> Vec<(i64, String, String)> {
+    let Some(Json::Arr(items)) = data(envelope).get("results") else {
+        panic!("data.results is an array: {envelope:?}")
+    };
+    items
+        .iter()
+        .map(|item| {
+            assert_eq!(keys(item), BTreeSet::from(["path", "rank", "reason"]));
+            let Some(Json::Int(rank)) = item.get("rank") else {
+                panic!("rank is an integer")
+            };
+            (
+                *rank,
+                text(item.get("path")).to_owned(),
+                text(item.get("reason")).to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn warnings(envelope: &Json) -> Vec<String> {
+    match envelope.get("warnings") {
+        Some(Json::Arr(items)) => items.iter().map(|w| text(Some(w)).to_owned()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn questions() -> Vec<(String, String)> {
+    fs::read_to_string(fixture_dir().join("questions.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let row = Json::parse(line.as_bytes()).expect("question line is JSON");
+            (
+                text(row.get("question")).to_owned(),
+                text(row.get("expected")).to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn brief_output_has_only_the_brief_shape_on_every_fixture_question() {
+    let repo = Repo::recall("shape", true);
+    let questions = questions();
+    assert!((6..=10).contains(&questions.len()));
+    for (question, _) in &questions {
+        let (envelope, chars) = repo.brief(&[], question);
+        assert_eq!(text(envelope.get("schema_version")), "1.0.0");
+        assert_eq!(text(envelope.get("command")), "query");
+        let data = data(&envelope);
+        assert_eq!(keys(data), BTreeSet::from(BRIEF_KEYS), "{question:?}");
+        assert_eq!(text(data.get("coverage_basis")), "sources");
+        let selection = data.get("selection").unwrap();
+        assert_eq!(keys(selection), BTreeSet::from(["source"]));
+        assert!(!text(selection.get("source")).is_empty());
+        let items = results(&envelope);
+        assert!(items.len() <= 8, "{question:?}: default top is 8");
+        for (index, (rank, _, reason)) in items.iter().enumerate() {
+            assert_eq!(*rank, index as i64 + 1, "ranks are 1..n");
+            assert!(!reason.is_empty() && !reason.contains('\n'));
+            // Under budget the reason keeps the full match reason.
+            assert!(
+                reason.starts_with("exact:") || reason.starts_with("partial:"),
+                "{question:?}: {reason:?}"
+            );
+        }
+        assert!(chars <= LIMIT_CHARS, "{question:?}: {chars} chars");
+    }
+}
+
+#[test]
+fn brief_ranks_the_hand_derived_answer_first() {
+    let repo = Repo::recall("order", true);
+    // Hand-derived: the first eight fixture questions name their file in
+    // path, title and body; question 9 is outranked by the archived note;
+    // question 10 matches no term of its expected file.
+    let questions = questions();
+    for (question, expected) in &questions[..8] {
+        let (envelope, _) = repo.brief(&[], question);
+        assert_eq!(&results(&envelope)[0].1, expected, "{question:?}");
+    }
+    let (envelope, _) = repo.brief(&[], &questions[8].0);
+    let paths: Vec<_> = results(&envelope).into_iter().map(|r| r.1).collect();
+    assert_eq!(
+        paths[..2],
+        [
+            "archive/old-watering-schedule.md",
+            "docs/watering-schedule.md"
+        ]
+    );
+    let (envelope, _) = repo.brief(&[], &questions[9].0);
+    assert!(results(&envelope).iter().all(|r| r.1 != questions[9].1));
+}
+
+#[test]
+fn brief_top_bounds_the_result_count() {
+    let repo = Repo::recall("top", true);
+    // All ten fixture files match one of these terms.
+    let broad = "zone valve sensor pump frost pipes rain schedule label";
+    let (envelope, _) = repo.brief(&[], broad);
+    assert_eq!(results(&envelope).len(), 8);
+    let (envelope, _) = repo.brief(&["--top", "2"], "weekly watering schedule");
+    let paths: Vec<_> = results(&envelope).into_iter().map(|r| r.1).collect();
+    assert_eq!(
+        paths,
+        [
+            "docs/watering-schedule.md",
+            "archive/old-watering-schedule.md"
+        ]
+    );
+}
+
+#[test]
+fn brief_keeps_long_paths_exact_and_shortens_reasons_first() {
+    let (repo, expected) = Repo::long_paths("long");
+    assert!(expected.iter().all(|path| path.len() > 200));
+    let path_chars: usize = expected.iter().map(String::len).sum();
+    assert!(path_chars > LIMIT_CHARS);
+    let (envelope, chars) = repo.brief(&[], "lantern");
+    let items = results(&envelope);
+    let paths: BTreeSet<_> = items.iter().map(|r| r.1.clone()).collect();
+    assert_eq!(paths, expected, "paths are byte-equal, never elided");
+    for (_, _, reason) in &items {
+        assert!(
+            reason == "exact" || reason == "partial",
+            "over budget, reason is cut to the match kind: {reason:?}"
+        );
+    }
+    // The size finding: exact paths alone exceed the budget, so the output does too.
+    assert!(chars > LIMIT_CHARS);
+}
+
+#[test]
+fn brief_zero_match_question_returns_empty_results_and_an_id() {
+    let repo = Repo::recall("empty", true);
+    let (envelope, _) = repo.brief(&[], "xylophone quasar");
+    assert!(results(&envelope).is_empty());
+    assert!(!text(data(&envelope).get("result_id")).is_empty());
+}
+
+#[test]
+fn brief_without_bran_directory_reports_null_result_id() {
+    let repo = Repo::recall("nostore", false);
+    let (envelope, _) = repo.brief(&[], "valve relay wiring");
+    assert_eq!(keys(data(&envelope)), BTreeSet::from(BRIEF_KEYS));
+    assert_eq!(data(&envelope).get("result_id"), Some(&Json::Null));
+    assert!(!warnings(&envelope).is_empty());
+}
+
+#[test]
+fn brief_result_id_round_trips_through_get_without_dirtying_git() {
+    let repo = Repo::recall("roundtrip", true);
+    repo.git_init();
+    let before = repo.git(&["status", "--porcelain"]);
+    let question = "reset pump pressure alarm";
+    let (envelope, _) = repo.brief(&[], question);
+    let id = text(data(&envelope).get("result_id")).to_owned();
+    let (again, _) = repo.brief(&[], question);
+    assert_eq!(
+        text(data(&again).get("result_id")),
+        id,
+        "same question, same ID"
+    );
+    assert_eq!(repo.git(&["status", "--porcelain"]), before);
+    let (code, stdout) = repo.run(&["get", &id]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains(question),
+        "stored record names the question"
+    );
+    assert!(stdout.contains("runbooks/pump-pressure-alarm.md"));
+}
+
+#[test]
+fn get_full_returns_default_output_and_flags_a_stale_revision() {
+    let repo = Repo::recall("full", true);
+    repo.git_init();
+    let (envelope, _) = repo.brief(&[], "frost threshold temperature");
+    let id = text(data(&envelope).get("result_id")).to_owned();
+    let full = |repo: &Repo| {
+        let (code, stdout) = repo.run(&["get", &id, "--full"]);
+        assert_eq!(code, 0, "{stdout}");
+        Json::parse(stdout.as_bytes()).expect("get --full output is JSON")
+    };
+    let fresh = full(&repo);
+    let Some(Json::Arr(rankings)) = data(&fresh).get("source_rankings") else {
+        panic!("get --full carries the default source_rankings: {fresh:?}")
+    };
+    assert_eq!(text(rankings[0].get("locator")), "docs/frost-protection.md");
+    assert!(!warnings(&fresh).iter().any(|w| w.starts_with("stale")));
+    fs::write(
+        repo.0.join("notes/later.md"),
+        "---\ntype: concept\ntitle: Later\nokf_status: active\ntags: [developer]\n---\n\n# Later\n",
+    )
+    .unwrap();
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "later"]);
+    let stale = full(&repo);
+    assert!(
+        warnings(&stale).iter().any(|w| w == "stale: true"),
+        "{:?}",
+        warnings(&stale)
+    );
+}
+
+#[test]
+fn get_unknown_result_id_fails() {
+    let repo = Repo::recall("unknown", true);
+    let (code, _) = repo.run(&["get", "not-a-result-id"]);
+    assert_ne!(code, 0);
+}
+
+#[test]
+fn default_query_keeps_its_data_shape() {
+    let repo = Repo::recall("default", true);
+    let (code, stdout) = repo.run(&["query", repo.0.to_str().unwrap(), "valve relay wiring"]);
+    assert_eq!(code, 0);
+    let envelope = Json::parse(stdout.as_bytes()).unwrap();
+    assert_eq!(
+        keys(data(&envelope)),
+        BTreeSet::from([
+            "actual_model_input_tokens",
+            "candidate_source_bytes",
+            "context_bytes_avoided",
+            "estimated_tokens",
+            "query",
+            "query_coverage",
+            "query_outcome",
+            "root",
+            "selected_locators",
+            "selected_source_bytes",
+            "source_rankings",
+            "symbol_navigation",
+            "token_estimate_method",
+            "why_selected",
+        ])
+    );
+}
