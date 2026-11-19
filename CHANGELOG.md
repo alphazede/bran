@@ -12,20 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bran query <root> --brief [--top N] <request>` returns a compact JSON
   response (`<= 2,000` characters target for 8 results) with ranked exact paths,
   one-line reasons shortened first when over budget, `coverage_basis: "sources"`,
-  and a content-addressed `result_id` in `FilesystemResultStore` (`.bran/results/`).
+  and a content-addressed `result_id` in `FilesystemResultStore` (`.bran/results/`). ([#63](https://github.com/alphazede/bran/pull/63))
 - `bran get <result-id> --full` re-runs the full default query for the stored
   root and question and adds a `"stale: true"` warning when the source revision
-  changed.
+  changed. ([#63](https://github.com/alphazede/bran/pull/63))
 - `tools/recall/recall_check.py` and the synthetic recall fixture in
   `fixtures/recall/`, plus opt-in `BRAN_TIMINGS=1` per-step stderr timings in
-  `bran query`.
+  `bran query`. ([#63](https://github.com/alphazede/bran/pull/63))
 
 ### Changed
 
 - Documented that default `bran query` `selected_locators` remains alphabetical
   while `source_rankings` and `query --brief` `results` are relevance-ordered,
   and updated `README.md`, `docs/integrations/agent-setup.md`, and
-  `skill/use-bran/SKILL.md` to recommend `--brief` first with full follow-up.
+  `skill/use-bran/SKILL.md` to recommend `--brief` first with full follow-up. ([#63](https://github.com/alphazede/bran/pull/63))
 
 - `cargo deny` now allows the `Unicode-3.0` license, which `unicode-ident`
   uses. Newer `zip` releases depend on it.
