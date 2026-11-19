@@ -24,14 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-root and multi-root `bran query`. ([#63](https://github.com/alphazede/bran/pull/63))
 - Optional `.bran/ranking.yaml` path-class tiers (`classes: [{name, tier, globs}]`,
   tier `0..=9`, first matching class wins) for `bran query --brief`, keeping
-  default `bran query` output unchanged.
+  default `bran query` output unchanged. ([#65](https://github.com/alphazede/bran/pull/65))
 
 ### Changed
 
 - `bran query --brief` now scores candidates with a single integer score that
   prioritizes rarity-scaled term coverage, path and filename hits over capped
   body repeats, and deterministic path tie-breaking, using copy-free ASCII
-  case-insensitive matching across candidate scoring.
+  case-insensitive matching across candidate scoring. ([#65](https://github.com/alphazede/bran/pull/65))
 
 - Documented that default `bran query` `selected_locators` remains alphabetical
   while `source_rankings` and `query --brief` `results` are relevance-ordered,
