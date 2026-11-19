@@ -98,7 +98,7 @@ bran query . --brief "valid_sha256"
 }
 ```
 
-Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`) and `query_coverage` is bounded to fit. Repository scan diagnostics are summarized in a single `scan_warnings` line (`warnings` keeps brief-relevant items; run default `bran query` or `bran get <id> --full` for the full diagnostic list). Multi-root `--brief` queries (`--add-dir`) include `"bundle"` on each result item to distinguish identical relative paths across roots. `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
+Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`) and `query_coverage` is bounded to fit; if the exact paths alone still do not fit, whole results are dropped from the end and a `brief_truncated: <omitted> of <total> results omitted ...` warning reports it. Repository scan diagnostics are summarized in a single `scan_warnings` line (`warnings` keeps brief-relevant items; run default `bran query` or `bran get <id> --full` for the full diagnostic list). Multi-root `--brief` queries (`--add-dir`) include `"bundle"` on each result item to distinguish identical relative paths across roots. `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
 
 Expand a stored result from the query root:
 
