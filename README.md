@@ -35,6 +35,15 @@ ranked, with the reason attached.
 | Reports a miss | n/a | rarely | yes, explicitly |
 | Offline | yes | rarely | yes |
 
+## What is new in 0.3.0
+
+- `bran query <root> --brief "<question>"` returns up to 8 ranked exact paths, each with a one-line reason, in at most 2,000 characters, plus a `result_id`. Start here; the default `bran query` output is unchanged.
+- `bran get <result-id> --full` re-runs the full query for a stored brief result and warns with `stale: true` when the tree changed.
+- An optional `.bran/ranking.yaml` declares path classes so generated or archived evidence ranks below defining sources.
+- Brief mode applies a deterministic selection rule. An optional advisor set by the caller through `BRAN_ADVISOR_CONFIG` is off by default, and any advisor fault keeps the rule's answer.
+- The repository scanner reads files in parallel, with the same limits and deterministic output.
+- `tools/recall/recall_check.py` measures top-1, top-5, misses, latency and output size on a question set you supply.
+
 ## What is new in 0.2.2
 
 - The default total scan limit is now 256 MiB (was 64 MiB), so repositories with more than 64 MiB of scannable text no longer fail with `scan_error: LimitExceeded`. The 1 MiB per-file and 10,000-file limits are unchanged. Existing derived indexes rebuild once because the scan configuration changed.
@@ -49,30 +58,21 @@ ranked, with the reason attached.
 
 ## Install
 
-Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.2.2`):
+Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.3.0`):
 
 ```sh
-https://github.com/alphazede/bran/releases/download/bran-v0.2.2/
+https://github.com/alphazede/bran/releases/download/bran-v0.3.0/
 ```
 
-Or install `bran-v0.2.2` from source:
+Or install `bran-v0.3.0` from source:
 
 ```sh
-cargo install --git https://github.com/alphazede/bran --tag bran-v0.2.2 bran-cli
+cargo install --git https://github.com/alphazede/bran --tag bran-v0.3.0 bran-cli
 ```
-
-> **Unreleased features (`--brief`, `get --full`):** `bran query --brief` and `bran get <id> --full` are unreleased until the next release after `bran-v0.2.2`. Build from source on `main` to run the short-first quickstart below:
->
-> ```sh
-> git clone https://github.com/alphazede/bran.git
-> cd bran
-> cargo build --release --locked -p bran-cli
-> ./target/release/bran query . --brief "valid_sha256"
-> ```
 
 ## Quickstart
 
-With a source build (unreleased until the next release after `bran-v0.2.2`), start with a short query to get ranked exact paths within a 2,000-character budget:
+Start with a short query to get ranked exact paths within a 2,000-character budget:
 
 ```sh
 bran query . --brief "valid_sha256"
@@ -321,7 +321,7 @@ manage or leak. Verify a download:
 ```sh
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore \
-  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.2.2" \
+  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.3.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 sha256sum -c SHA256SUMS --ignore-missing
 ```
