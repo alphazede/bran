@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `zip` from 8.6.0 to 9.0.5 in `xtask`. The lockfile adds `nix` 0.31.3
+  and `cfg_aliases` 0.2.2. ([#57](https://github.com/alphazede/bran/pull/57))
+- Bumped GitHub Actions: `actions/checkout` to v7.0.1 (pinned by SHA in the
+  fast gate), `actions/upload-artifact` to v7, `actions/download-artifact` to
+  v8 and `sigstore/cosign-installer` to v4.1.2.
+  ([#54](https://github.com/alphazede/bran/pull/54))
+
 ## [0.2.2] - 2026-11-06
 
 ### Fixed
