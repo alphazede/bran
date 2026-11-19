@@ -1,0 +1,12 @@
+# Synthetic path classes for the brief ranking tests (DES-04).
+# Tier 0-9, unmatched paths are tier 0, the first matching class wins,
+# and a lower tier always sorts ahead of a higher tier.
+classes:
+  - name: generated-evidence
+    tier: 1
+    globs:
+      - "evidence/**"
+  - name: archived
+    tier: 1
+    globs:
+      - "archive/**"
