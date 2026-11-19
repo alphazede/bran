@@ -15,6 +15,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of a path list. Every candidate now carries its `id`. Protocol in
   `docs/brief-advisor.md`.
 
+### Fixed
+
+- `--brief` selection keeps results by the same relevance measure the ranking
+  sorts by, so an exact field on the leader no longer hides close runners-up.
+- `--brief` no longer admits a document matched only by an ignored word when
+  the query has a content word.
+- `--brief` ranking takes the strongest location signal per query word; a
+  filename substring no longer lowers a whole directory-token match.
+- `--brief` morphology normalizes query words and document tokens the same
+  way, credits filename stems independently of body hits, scores a stem below
+  the exact token, and never matches a stem inside an unrelated word.
+- `--brief` score components no longer saturate into ties on long queries.
+- `.bran/ranking.yaml` rejects a misaligned sibling key and accepts an
+  apostrophe inside a plain scalar.
+- `--brief` output now stays within 2,000 characters: when exact paths alone
+  do not fit, trailing results are dropped and a `brief_truncated` warning
+  reports how many.
+
 ## [0.3.0](https://github.com/alphazede/bran/releases/tag/bran-v0.3.0) - 2026-11-19
 
 ### Added

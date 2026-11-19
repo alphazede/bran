@@ -20,12 +20,13 @@ use crate::{one_line_reason, SourceRanking};
 
 const ADVISOR_CONFIG_ENV: &str = "BRAN_ADVISOR_CONFIG";
 
-// Deterministic rule threshold: keep the top result plus ranked results scoring
-// at least 3/10 (0.30) of the top score, as an ordered subsequence of the
-// bounded shortlist before --top truncates the output.
-const RULE_RATIO_NUM: u128 = 3;
-const RULE_RATIO_DEN: u128 = 10;
-const SCORE_EXACT_WEIGHT: u128 = 1_000_000;
+// Deterministic rule threshold: keep the top result plus ranked results whose
+// structural relevance is at least 1/2 of the top's, as an ordered subsequence
+// of the bounded shortlist before --top truncates the output. Per-word
+// coverage dominates structural relevance, so half separates a single weak
+// mention from documents matching the same words in path or fields.
+const RULE_RATIO_NUM: u128 = 1;
+const RULE_RATIO_DEN: u128 = 2;
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
@@ -84,10 +85,10 @@ pub(crate) fn apply(
     (rule_selected, SelectionSource::Rule)
 }
 
+/// The structural relevance component of the brief sort key, so the cut
+/// measures the same quantity the ranking orders by.
 fn candidate_score(ranking: &SourceRanking) -> u128 {
-    (ranking.exact_matches as u128)
-        .saturating_mul(SCORE_EXACT_WEIGHT)
-        .saturating_add(ranking.partial_matches as u128)
+    u128::from(ranking.brief_score.0)
 }
 
 /// Keep the top candidate plus each following candidate whose score is at least
