@@ -19,7 +19,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--bran", required=True, help="Path to the bran binary.")
     parser.add_argument("--root", required=True, help="Repository root to query.")
-    parser.add_argument("--questions", required=True, help="Path to the JSONL question set.")
+    parser.add_argument(
+        "--questions", required=True, help="Path to the JSONL question set."
+    )
     parser.add_argument(
         "--mode",
         choices=("brief", "full"),
@@ -45,7 +47,10 @@ def load_questions(questions_path: str) -> list[dict[str, object]]:
     try:
         raw_lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"error: unable to read questions file {questions_path}: {exc}", file=sys.stderr)
+        print(
+            f"error: unable to read questions file {questions_path}: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     rows: list[dict[str, object]] = []
@@ -135,12 +140,14 @@ def run_once(
     cmd.append(question)
 
     started = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     elapsed = time.perf_counter() - started
     out_chars = len(proc.stdout.rstrip("\n"))
 
     if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        err = (
+            proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        )
         return None, err, elapsed, out_chars, 0
 
     rank, path_chars, parse_err = extract_rank(proc.stdout, mode, expected)
@@ -167,7 +174,9 @@ def evaluate(
         question = str(row["question"])
         expected = str(row["expected"])
         raw_class = row.get("class")
-        q_class = raw_class if isinstance(raw_class, str) and raw_class else "unclassified"
+        q_class = (
+            raw_class if isinstance(raw_class, str) and raw_class else "unclassified"
+        )
 
         q_latencies: list[float] = []
         q_chars: list[int] = []
@@ -256,7 +265,9 @@ def print_table(summary: dict[str, object]) -> None:
     print(f"misses: {summary['misses']}")
     latency = summary["latency_seconds"]
     chars = summary["output_chars"]
-    print(f"latency_seconds: median={latency['median']:.4f} worst={latency['worst']:.4f}")
+    print(
+        f"latency_seconds: median={latency['median']:.4f} worst={latency['worst']:.4f}"
+    )
     print(f"output_chars: median={chars['median']} worst={chars['worst']}")
     for cls_name, stats in summary["classes"].items():
         print(

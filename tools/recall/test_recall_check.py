@@ -40,9 +40,22 @@ def make_root(parent):
 
 def check(root, questions, *extra):
     return subprocess.run(
-        [sys.executable, "-I", str(SCRIPT), "--bran", str(BRAN), "--root", str(root),
-         "--questions", str(questions), *extra],
-        capture_output=True, text=True, timeout=300,
+        [
+            sys.executable,
+            "-I",
+            str(SCRIPT),
+            "--bran",
+            str(BRAN),
+            "--root",
+            str(root),
+            "--questions",
+            str(questions),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
     )
 
 
@@ -67,7 +80,9 @@ class RecallCheckTest(unittest.TestCase):
     def assert_fixture_metrics(self, summary, mode):
         self.assertEqual(summary["mode"], mode)
         self.assertEqual(summary["questions"], 10)
-        self.assertEqual((summary["top1"], summary["top5"], summary["misses"]), (8, 9, 1))
+        self.assertEqual(
+            (summary["top1"], summary["top5"], summary["misses"]), (8, 9, 1)
+        )
         self.assertEqual([q["rank"] for q in summary["per_question"]], RANKS)
         self.assertEqual(summary["classes"], CLASSES)
         for key in ("latency_seconds", "output_chars"):
@@ -124,7 +139,9 @@ class RecallCheckTest(unittest.TestCase):
             )
             path_chars += len(str(path))
         questions = Path(self.tmp.name) / "long.jsonl"
-        questions.write_text('{"question": "lantern", "expected": "%s"}\n' % path)
+        questions.write_text(
+            json.dumps({"question": "lantern", "expected": str(path)}) + "\n"
+        )
         summary = self.summary("brief", questions=questions, root=root)
         [finding] = summary["size_findings"]
         self.assertEqual(finding["question"], "lantern")
