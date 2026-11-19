@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Parallelized repository file reads and metadata parsing in `RepositoryScanner`
+  using bounded `std::thread` workers while preserving deterministic traversal
+  order, scan limits, and output equivalence.
 - Documented that default `bran query` `selected_locators` remains alphabetical
   while `source_rankings` and `query --brief` `results` are relevance-ordered,
   and updated `README.md`, `docs/integrations/agent-setup.md`, and
