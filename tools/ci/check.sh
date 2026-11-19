@@ -92,6 +92,18 @@ run_database_contract() {
 }
 
 run_recall_tests() {
+    if [ -z "${BRAN_BIN:-}" ]; then
+        target_dir=$(cargo metadata --manifest-path "$bran_root/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+        if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
+            BRAN_BIN="$target_dir/$CARGO_BUILD_TARGET/debug/bran"
+        else
+            BRAN_BIN="$target_dir/debug/bran"
+        fi
+        if [ ! -f "$BRAN_BIN" ] && [ -f "$BRAN_BIN.exe" ]; then
+            BRAN_BIN="$BRAN_BIN.exe"
+        fi
+        export BRAN_BIN
+    fi
     python3 "$bran_root/tools/recall/test_recall_check.py"
 }
 

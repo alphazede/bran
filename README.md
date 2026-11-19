@@ -49,21 +49,30 @@ ranked, with the reason attached.
 
 ## Install
 
-Prebuilt archives for Linux, macOS, and Windows are attached to each release:
+Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.2.2`):
 
 ```sh
 https://github.com/alphazede/bran/releases/download/bran-v0.2.2/
 ```
 
-Or build from source:
+Or install `bran-v0.2.2` from source:
 
 ```sh
 cargo install --git https://github.com/alphazede/bran --tag bran-v0.2.2 bran-cli
 ```
 
+> **Unreleased features (`--brief`, `get --full`):** `bran query --brief` and `bran get <id> --full` are unreleased until the next release after `bran-v0.2.2`. Build from source on `main` to run the short-first quickstart below:
+>
+> ```sh
+> git clone https://github.com/alphazede/bran.git
+> cd bran
+> cargo build --release --locked -p bran-cli
+> ./target/release/bran query . --brief "valid_sha256"
+> ```
+
 ## Quickstart
 
-Start with a short query to get ranked exact paths within a 2,000-character budget:
+With a source build (unreleased until the next release after `bran-v0.2.2`), start with a short query to get ranked exact paths within a 2,000-character budget:
 
 ```sh
 bran query . --brief "valid_sha256"
@@ -89,7 +98,7 @@ bran query . --brief "valid_sha256"
 }
 ```
 
-Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`). `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
+Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`) and `query_coverage` is bounded to fit. Repository scan diagnostics are summarized in a single `scan_warnings` line (`warnings` keeps brief-relevant items; run default `bran query` or `bran get <id> --full` for the full diagnostic list). Multi-root `--brief` queries (`--add-dir`) include `"bundle"` on each result item to distinguish identical relative paths across roots. `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
 
 Expand a stored result from the query root:
 

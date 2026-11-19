@@ -183,7 +183,8 @@ def evaluate(
         rep_rank: int | None = None
         rep_err: str | None = None
         rep_out_chars = 0
-        rep_path_chars = 0
+        worst_ok_out_chars: int | None = None
+        worst_ok_path_chars = 0
 
         for rep in range(repeat):
             rank, err, elapsed, out_chars, path_chars = run_once(
@@ -197,7 +198,11 @@ def evaluate(
                 rep_rank = rank
                 rep_err = err
                 rep_out_chars = out_chars
-                rep_path_chars = path_chars
+            if err is None and (
+                worst_ok_out_chars is None or out_chars > worst_ok_out_chars
+            ):
+                worst_ok_out_chars = out_chars
+                worst_ok_path_chars = path_chars
 
         bucket = classes.setdefault(
             q_class,
@@ -215,6 +220,9 @@ def evaluate(
                 top5 += 1
                 bucket["top5"] += 1
 
+        reported_out_chars = (
+            worst_ok_out_chars if worst_ok_out_chars is not None else rep_out_chars
+        )
         per_question.append(
             {
                 "question": question,
@@ -223,16 +231,20 @@ def evaluate(
                 "rank": rep_rank,
                 "error": rep_err,
                 "latency_seconds": statistics.median(q_latencies),
-                "output_chars": rep_out_chars,
+                "output_chars": reported_out_chars,
             }
         )
 
-        if mode == "brief" and rep_err is None and rep_out_chars > 2000:
+        if (
+            mode == "brief"
+            and worst_ok_out_chars is not None
+            and worst_ok_out_chars > 2000
+        ):
             size_findings.append(
                 {
                     "question": question,
-                    "output_chars": rep_out_chars,
-                    "path_chars": rep_path_chars,
+                    "output_chars": worst_ok_out_chars,
+                    "path_chars": worst_ok_path_chars,
                 }
             )
 

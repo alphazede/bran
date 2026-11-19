@@ -16,7 +16,21 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools/recall/recall_check.py"
 FIXTURE = REPO / "fixtures/recall"
-BRAN = Path(os.environ.get("BRAN_BIN", REPO / "target/debug/bran"))
+
+
+def default_bran_bin() -> Path:
+    if env_bin := os.environ.get("BRAN_BIN"):
+        return Path(env_bin)
+    target_dir = os.environ.get("CARGO_TARGET_DIR")
+    base = Path(target_dir) if target_dir else REPO / "target"
+    if not base.is_absolute():
+        base = REPO / base
+    if target := os.environ.get("CARGO_BUILD_TARGET"):
+        return base / target / "debug/bran"
+    return base / "debug/bran"
+
+
+BRAN = default_bran_bin()
 
 # Hand-derived from fixtures/recall: questions 1-8 name their file in path,
 # title and body; question 9 is outranked by the archived note; question 10
@@ -147,6 +161,65 @@ class RecallCheckTest(unittest.TestCase):
         self.assertEqual(finding["question"], "lantern")
         self.assertEqual(finding["path_chars"], path_chars)
         self.assertGreater(finding["output_chars"], 2000)
+
+    def test_repeat_records_worst_successful_response_in_size_findings(self):
+        state = Path(self.tmp.name) / "calls.txt"
+        wrapper = Path(self.tmp.name) / "fake_bran.py"
+        long_path = "x/" * 100 + "hit.md"
+        first_payload = json.dumps({"data": {"results": [{"path": "a.md"}]}})
+        padding_len = 2584 - len(
+            json.dumps({"data": {"results": [{"path": long_path, "reason": ""}]}})
+        )
+        second_payload = json.dumps(
+            {"data": {"results": [{"path": long_path, "reason": "r" * padding_len}]}}
+        )
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            f"state = pathlib.Path({str(state)!r})\n"
+            "count = int(state.read_text()) if state.exists() else 0\n"
+            "state.write_text(str(count + 1))\n"
+            f"payloads = [{first_payload!r}, {second_payload!r}]\n"
+            "print(payloads[min(count, len(payloads) - 1)])\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        questions = Path(self.tmp.name) / "repeat_size.jsonl"
+        questions.write_text(
+            json.dumps({"question": "q", "expected": long_path}) + "\n",
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT),
+                "--bran",
+                str(wrapper),
+                "--root",
+                str(self.root),
+                "--questions",
+                str(questions),
+                "--mode",
+                "brief",
+                "--repeat",
+                "2",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        summary = json.loads(run.stdout)
+        self.assertEqual(summary["output_chars"]["worst"], len(second_payload))
+        self.assertEqual(
+            summary["per_question"][0]["output_chars"], len(second_payload)
+        )
+        [finding] = summary["size_findings"]
+        self.assertEqual(finding["output_chars"], len(second_payload))
+        self.assertEqual(finding["path_chars"], len(long_path))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
 //! Issue #60 (DES-01, DES-02, AM-05): `query --brief` and `get --full`
 //! exercised through the real CLI on the synthetic recall fixture.
+use bran_core::agent::receipt::InlineResult;
+use bran_core::agent::result_store::ResultId;
 use bran_document::canonical::Json;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BRAN: &str = env!("CARGO_BIN_EXE_bran");
 const BRIEF_KEYS: [&str; 6] = [
@@ -112,16 +115,25 @@ impl Repo {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String) {
-        let output = Command::new(BRAN)
-            .env_remove("BRAN_REGISTERED_ROOTS")
+        let (code, stdout, _) = self.run_all(args, &[]);
+        (code, stdout)
+    }
+
+    fn run_all(&self, args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
+        let mut cmd = Command::new(BRAN);
+        cmd.env_remove("BRAN_REGISTERED_ROOTS")
             .env_remove("BRAN_ADVISOR_CONFIG")
+            .env_remove("BRAN_TIMINGS")
             .current_dir(&self.0)
-            .args(args)
-            .output()
-            .expect("bran runs");
+            .args(args);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let output = cmd.output().expect("bran runs");
         (
             output.status.code().unwrap_or(-1),
             String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
         )
     }
 
@@ -395,5 +407,180 @@ fn default_query_keeps_its_data_shape() {
             "token_estimate_method",
             "why_selected",
         ])
+    );
+}
+
+#[test]
+fn brief_bounds_scan_warnings_and_unmatched_terms_within_budget() {
+    let repo = Repo::empty("bounded-warnings", true);
+    for i in 0..8 {
+        fs::write(
+            repo.0.join(format!("doc-{i}.md")),
+            format!(
+                "---\ntype: concept\ntitle: Lantern {i}\nokf_status: active\ntags: [developer]\n---\n\n# Lantern {i}\n\nLantern calibration guide {i}.\n"
+            ),
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(repo.0.join("assets")).unwrap();
+    for i in 0..200 {
+        fs::write(
+            repo.0.join(format!("assets/binary-artifact-{i:03}.png")),
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR",
+        )
+        .unwrap();
+    }
+    let unmatched: Vec<String> = (0..80).map(|i| format!("unmatchedterm{i:03}")).collect();
+    let question = format!("lantern {}", unmatched.join(" "));
+    let (code, stdout, _) = repo.run_all(
+        &["query", repo.0.to_str().unwrap(), "--brief", &question],
+        &[],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    let total_code_points = stdout.chars().count();
+    assert!(
+        total_code_points <= LIMIT_CHARS,
+        "complete stdout must be <= {LIMIT_CHARS} code points, got {total_code_points}: {stdout}"
+    );
+    let envelope = Json::parse(stdout.as_bytes()).expect("brief output is JSON");
+    assert_eq!(results(&envelope).len(), 8);
+    let warns = warnings(&envelope);
+    assert_eq!(warns.len(), 1, "expected single summary warning: {warns:?}");
+    assert!(
+        warns[0].contains("200") && warns[0].contains("bran get"),
+        "expected bounded scan warning summary: {warns:?}"
+    );
+
+    let id = text(data(&envelope).get("result_id")).to_owned();
+    let (full_code, full_stdout, _) = repo.run_all(&["get", &id, "--full"], &[]);
+    assert_eq!(full_code, 0, "{full_stdout}");
+    let full_env = Json::parse(full_stdout.as_bytes()).expect("full output is JSON");
+    assert!(
+        warnings(&full_env).len() >= 200,
+        "full query via get --full should expose all scan warnings"
+    );
+}
+
+#[test]
+fn brief_and_stored_record_preserve_paths_over_graph_locator_limit() {
+    let repo = Repo::empty("over-1024", true);
+    let segments: Vec<String> = (0..11)
+        .map(|k| format!("dir-segment-{k:02}-{}", "a".repeat(86)))
+        .collect();
+    let rel_dir = segments.join("/");
+    let rel_path = format!("{rel_dir}/deep-calibration.md");
+    assert!(
+        rel_path.len() > 1024,
+        "test path must exceed 1024 bytes, got {}",
+        rel_path.len()
+    );
+    fs::create_dir_all(repo.0.join(&rel_dir)).unwrap();
+    fs::write(
+        repo.0.join(&rel_path),
+        "# Deep Calibration\n\nUnique body token deepcalibrationsignal.\n",
+    )
+    .unwrap();
+
+    let (envelope, _) = repo.brief(&[], "deepcalibrationsignal");
+    let items = results(&envelope);
+    assert_eq!(items.len(), 1, "{envelope:?}");
+    assert_eq!(items[0].1, rel_path, "brief result path must be exact");
+
+    let id = text(data(&envelope).get("result_id")).to_owned();
+    let (code, get_stdout) = repo.run(&["get", &id]);
+    assert_eq!(code, 0, "{get_stdout}");
+    let get_env = Json::parse(get_stdout.as_bytes()).expect("get output is JSON");
+    let answer_str = text(data(&get_env).get("answer"));
+    let answer_json = Json::parse(answer_str.as_bytes()).expect("stored answer is JSON");
+    let Some(Json::Arr(stored_results)) = answer_json.get("results") else {
+        panic!("stored answer missing results: {answer_json:?}");
+    };
+    assert_eq!(
+        text(stored_results[0].get("path")),
+        rel_path,
+        "stored answer must preserve exact >1024-byte path"
+    );
+}
+
+#[test]
+fn multi_root_brief_preserves_distinct_root_identity_and_emits_timings() {
+    let root_a = Repo::empty("multi-dup-a", true);
+    let root_b = Repo::empty("multi-dup-b", true);
+    fs::write(
+        root_a.0.join("lantern.md"),
+        "---\ntype: concept\ntitle: Lantern Alpha\nokf_status: active\ntags: [developer]\n---\n\n# Lantern Alpha\n\nAlpha lantern calibration.\n",
+    )
+    .unwrap();
+    fs::write(
+        root_b.0.join("lantern.md"),
+        "---\ntype: concept\ntitle: Lantern Beta\nokf_status: active\ntags: [developer]\n---\n\n# Lantern Beta\n\nBeta lantern wiring.\n",
+    )
+    .unwrap();
+
+    let arg_a = root_a.0.to_str().unwrap();
+    let arg_b = root_b.0.to_str().unwrap();
+    let (code, stdout, stderr) = root_a.run_all(
+        &["query", arg_a, "--add-dir", arg_b, "--brief", "lantern"],
+        &[("BRAN_TIMINGS", "1")],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("BRAN_TIMINGS step=total"),
+        "multi-root brief must emit BRAN_TIMINGS lines: {stderr}"
+    );
+
+    let envelope = Json::parse(stdout.as_bytes()).expect("multi-root brief is JSON");
+    let Some(Json::Arr(items)) = data(&envelope).get("results") else {
+        panic!("missing results: {envelope:?}");
+    };
+    assert_eq!(items.len(), 2);
+    let bundles: BTreeSet<&str> = items
+        .iter()
+        .map(|item| {
+            assert_eq!(text(item.get("path")), "lantern.md");
+            text(item.get("bundle"))
+        })
+        .collect();
+    assert_eq!(bundles, BTreeSet::from([arg_a, arg_b]));
+
+    let id = text(data(&envelope).get("result_id")).to_owned();
+    let (get_code, get_stdout) = root_a.run(&["get", &id]);
+    assert_eq!(get_code, 0, "{get_stdout}");
+    let get_env = Json::parse(get_stdout.as_bytes()).expect("get output is JSON");
+    let answer_json =
+        Json::parse(text(data(&get_env).get("answer")).as_bytes()).expect("answer is JSON");
+    let Some(Json::Arr(stored_results)) = answer_json.get("results") else {
+        panic!("stored answer missing results: {answer_json:?}");
+    };
+    let stored_bundles: BTreeSet<&str> = stored_results
+        .iter()
+        .map(|item| text(item.get("bundle")))
+        .collect();
+    assert_eq!(stored_bundles, BTreeSet::from([arg_a, arg_b]));
+}
+
+#[test]
+fn get_full_rejects_non_brief_inline_result_via_cli() {
+    let repo = Repo::recall("nonbrief-full", true);
+    let plain = InlineResult::new("plain answer", ["docs/valve-wiring.md"]).unwrap();
+    let payload = plain.encode_canonical();
+    let id = ResultId::sha256(&payload);
+    let batch_id = ResultId::sha256(id.value().as_bytes());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let batch_dir = repo.0.join(format!(
+        ".bran/results/batch-{now:020}-{}",
+        batch_id.value()
+    ));
+    fs::create_dir_all(&batch_dir).unwrap();
+    fs::write(batch_dir.join(id.value()), &payload).unwrap();
+
+    let (code, _, stderr) = repo.run_all(&["get", &id.to_string(), "--full"], &[]);
+    assert_ne!(code, 0, "non-brief result must reject --full");
+    assert!(
+        stderr.contains("full_query_unavailable"),
+        "expected full_query_unavailable in stderr: {stderr}"
     );
 }

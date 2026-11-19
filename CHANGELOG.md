@@ -10,15 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `bran query <root> --brief [--top N] <request>` returns a compact JSON
-  response (`<= 2,000` characters target for 8 results) with ranked exact paths,
-  one-line reasons shortened first when over budget, `coverage_basis: "sources"`,
+  response (`<= 2,000` Unicode code points target for 8 results) with ranked
+  exact paths (including paths above 1,024 bytes, and `"bundle"` per item in
+  multi-root queries), one-line reasons shortened first when over budget,
+  bounded `query_coverage` and `warnings` (summarizing omitted repository scan
+  diagnostics in a single `scan_warnings` line), `coverage_basis: "sources"`,
   and a content-addressed `result_id` in `FilesystemResultStore` (`.bran/results/`). ([#63](https://github.com/alphazede/bran/pull/63))
 - `bran get <result-id> --full` re-runs the full default query for the stored
   root and question and adds a `"stale: true"` warning when the source revision
   changed. ([#63](https://github.com/alphazede/bran/pull/63))
 - `tools/recall/recall_check.py` and the synthetic recall fixture in
   `fixtures/recall/`, plus opt-in `BRAN_TIMINGS=1` per-step stderr timings in
-  `bran query`. ([#63](https://github.com/alphazede/bran/pull/63))
+  single-root and multi-root `bran query`. ([#63](https://github.com/alphazede/bran/pull/63))
 
 ### Changed
 
