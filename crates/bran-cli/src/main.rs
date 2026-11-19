@@ -2456,16 +2456,22 @@ fn brief_source_candidates(
             }
 
             // Morphological evidence: whole tokens normalized like the query
-            // word, location evaluated independently of body hits.
+            // word, or its stem at a sub-word start inside a compound
+            // identifier; location evaluated independently of body hits.
             if let Some(norm) = term_norms[t_offset].as_deref() {
-                if ranking::has_morph_token(locator_original, norm) {
+                let root = norm.strip_suffix('y').unwrap_or(norm);
+                if ranking::has_morph_token(locator_original, norm)
+                    || ranking::has_morph_subword(locator_original, root, 4)
+                {
                     hit.stem_path = true;
                     hit.stem_filename = ranking::has_morph_token(filename, norm);
                     partial_fields_mask |= brief_field_bit("path");
                 }
                 if hit.body_hits == 0 {
                     if let Some(body) = body {
-                        if ranking::has_morph_token(body, norm) {
+                        if ranking::has_morph_token(body, norm)
+                            || ranking::has_morph_subword(body, root, 5)
+                        {
                             hit.stem_body = true;
                             partial_fields_mask |= brief_field_bit("body");
                         }
@@ -3314,6 +3320,14 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
 
 const BRIEF_DEFAULT_TOP: usize = 8;
 const BRIEF_CHAR_LIMIT: usize = 2_000;
+/// Extra budget per result an explicit `--top` requests beyond the default.
+const BRIEF_CHARS_PER_EXTRA_RESULT: usize = 250;
+
+/// Brief output budget in characters: 2,000 for up to the default 8 results,
+/// plus 250 for each further result an explicit `--top` requests.
+fn brief_char_limit(top: usize) -> usize {
+    BRIEF_CHAR_LIMIT + top.saturating_sub(BRIEF_DEFAULT_TOP) * BRIEF_CHARS_PER_EXTRA_RESULT
+}
 const BRIEF_ANSWER_KIND: &str = "bran-brief-query-v1";
 
 fn one_line_reason(reason: &str) -> String {
@@ -3442,10 +3456,12 @@ fn brief_data_within_budget(
     result_id: Option<&str>,
     selection_source: &str,
     rankings: &[SourceRanking],
+    top: usize,
     warns: &mut Vec<String>,
     effective_provenance: &str,
     metrics: &str,
 ) -> String {
+    let limit = brief_char_limit(top);
     let mut items: Vec<BriefItem<'_>> = rankings
         .iter()
         .map(|r| BriefItem {
@@ -3470,7 +3486,7 @@ fn brief_data_within_budget(
                 metrics,
             );
             // Reserve 1 code point for write_to_stdio's trailing newline.
-            (envelope.chars().count() < BRIEF_CHAR_LIMIT, data)
+            (envelope.chars().count() < limit, data)
         };
     let fits = |items: &[BriefItem<'_>], m: &[String], u: &[String]| -> (bool, String) {
         fits_with(items, m, u, warns)
@@ -3521,7 +3537,7 @@ fn brief_data_within_budget(
     let mut data = data;
     while !items.is_empty() {
         items.pop();
-        let notice = brief_truncation_warning(total - items.len(), total);
+        let notice = brief_truncation_warning(total - items.len(), total, limit);
         *with_notice.last_mut().expect("notice slot") = notice;
         let (ok, candidate) = fits_with(&items, &bounded_matched, &bounded_unmatched, &with_notice);
         data = candidate;
@@ -3530,14 +3546,14 @@ fn brief_data_within_budget(
         }
     }
     if items.len() < total {
-        warns.push(brief_truncation_warning(total - items.len(), total));
+        warns.push(brief_truncation_warning(total - items.len(), total, limit));
     }
     data
 }
 
-fn brief_truncation_warning(omitted: usize, total: usize) -> String {
+fn brief_truncation_warning(omitted: usize, total: usize, limit: usize) -> String {
     format!(
-        "brief_truncated: {omitted} of {total} results omitted to fit the {BRIEF_CHAR_LIMIT}-character brief budget; run default query for all results"
+        "brief_truncated: {omitted} of {total} results omitted to fit the {limit}-character brief budget; run default query for all results"
     )
 }
 
@@ -3749,6 +3765,7 @@ fn do_query_brief(
             None,
             "rule",
             &[],
+            top,
             &mut warns,
             &registered_provenance(&provenance, revisions),
             &metrics,
@@ -3830,6 +3847,7 @@ fn do_query_brief(
         result_id.as_deref(),
         selection_source.as_str(),
         &rankings,
+        top,
         &mut warns,
         &registered_provenance(&provenance, revisions),
         &metrics,
@@ -4015,6 +4033,7 @@ fn do_query_brief_multi(
         result_id.as_deref(),
         selection_source.as_str(),
         &rankings,
+        top,
         &mut warns,
         &registered_provenance(&provenance, revisions),
         &metrics,

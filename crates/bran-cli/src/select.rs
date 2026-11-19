@@ -21,12 +21,10 @@ use crate::{one_line_reason, SourceRanking};
 const ADVISOR_CONFIG_ENV: &str = "BRAN_ADVISOR_CONFIG";
 
 // Deterministic rule threshold: keep the top result plus ranked results whose
-// structural relevance is at least 1/2 of the top's, as an ordered subsequence
-// of the bounded shortlist before --top truncates the output. Per-word
-// coverage dominates structural relevance, so half separates a single weak
-// mention from documents matching the same words in path or fields.
-const RULE_RATIO_NUM: u128 = 1;
-const RULE_RATIO_DEN: u128 = 2;
+// structural relevance is at least 3/10 (0.30) of the top's, as an ordered
+// subsequence of the bounded shortlist before --top truncates the output.
+const RULE_RATIO_NUM: u128 = 3;
+const RULE_RATIO_DEN: u128 = 10;
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;

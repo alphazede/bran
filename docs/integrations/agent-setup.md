@@ -44,8 +44,9 @@ contain credential material.
    ```
 
    `--brief` defaults to `--top 8` (max `32`), keeps paths exact, shortens
-   `reason` first to stay within 2,000 characters (then drops whole trailing
-   results with a `brief_truncated` warning), and sets
+   `reason` first to stay within 2,000 characters, plus 250 per result an
+   explicit `--top` adds above 8 (then drops whole trailing results with a
+   `brief_truncated` warning), and sets
    `coverage_basis: "sources"` because outcome and coverage are derived from
    source rankings without enterprise document evidence. Run `bran get <result_id>`
    from `<repo-root>` to read the stored summary, or `bran get <result_id> --full`

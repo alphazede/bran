@@ -128,6 +128,33 @@ pub fn has_morph_token(haystack: &str, norm: &str) -> bool {
         })
 }
 
+/// True when `root` (ASCII, at least `min_len` bytes) occurs in `haystack`
+/// starting at a sub-word boundary: a token start, a lower-to-upper camelCase
+/// hump, or a letter/digit transition. Finds morphological matches inside
+/// compound identifiers (`IndexBuilder`) but never mid-word (`Install`).
+pub fn has_morph_subword(haystack: &str, root: &str, min_len: usize) -> bool {
+    if root.len() < min_len || !root.is_ascii() {
+        return false;
+    }
+    let h = haystack.as_bytes();
+    let mut pos = 0usize;
+    while let Some(idx) = find_ascii_ci_from(h, root.as_bytes(), pos) {
+        let cur = h[idx];
+        let starts_subword = idx == 0 || {
+            let prev = h[idx - 1];
+            (prev < 0x80 && !prev.is_ascii_alphanumeric())
+                || ((prev.is_ascii_lowercase() || prev.is_ascii_digit())
+                    && cur.is_ascii_uppercase())
+                || prev.is_ascii_digit() != cur.is_ascii_digit()
+        };
+        if starts_subword {
+            return true;
+        }
+        pos = idx + 1;
+    }
+    false
+}
+
 fn collapse_double_consonant(base: &str) -> &str {
     let bytes = base.as_bytes();
     if bytes.len() >= 4 {
