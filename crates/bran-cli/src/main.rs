@@ -8696,7 +8696,7 @@ mod tests {
 
         for alias in ["-V", "--version"] {
             let version = CliApp::run([alias.to_owned()]);
-            assert_eq!(version.output, "bran 0.2.2");
+            assert_eq!(version.output, "bran 0.3.0");
             assert_eq!(version.exit_code, ExitCode::SUCCESS);
             assert!(!version.is_error);
         }
