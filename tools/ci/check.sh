@@ -91,6 +91,22 @@ run_database_contract() {
     python3 "$bran_root/tools/ci/database_contract_check.py"
 }
 
+run_recall_tests() {
+    if [ -z "${BRAN_BIN:-}" ]; then
+        target_dir=$(cargo metadata --manifest-path "$bran_root/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+        if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
+            BRAN_BIN="$target_dir/$CARGO_BUILD_TARGET/debug/bran"
+        else
+            BRAN_BIN="$target_dir/debug/bran"
+        fi
+        if [ ! -f "$BRAN_BIN" ] && [ -f "$BRAN_BIN.exe" ]; then
+            BRAN_BIN="$BRAN_BIN.exe"
+        fi
+        export BRAN_BIN
+    fi
+    python3 "$bran_root/tools/recall/test_recall_check.py"
+}
+
 run_export() {
     printf '%s\n' 'EXPORT: running Slice 3.3 Obsidian export gate.'
     run_budget
@@ -120,6 +136,7 @@ run_fast() {
     cargo clippy --manifest-path "$bran_root/Cargo.toml" --workspace --all-targets --all-features -- -D warnings
     run_tui_journeys
     cargo test --manifest-path "$bran_root/Cargo.toml" --workspace --all-features -- --skip p1_conformance --skip p3_tui_surface --skip p3_tui_onboarding_diagnostics --skip p3_headless_cli
+    run_recall_tests
 
     # cargo-deny availability failure (clear) then exact check for licenses bans sources (common fast/full gate)
     if ! command -v cargo-deny >/dev/null 2>&1; then

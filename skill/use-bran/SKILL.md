@@ -8,17 +8,31 @@ description: Use BRAN to locate and cite repository evidence before repository-w
 BRAN locates and cites repository evidence. It does not decide or implement the
 outer task; the outer agent owns all decisions and changes.
 
-1. Default to one read-only packet: `bran packet <repo-root> "<request>"`.
-2. Use `bran query <repo-root> "<request>"` only for a focused follow-up the
-   packet did not answer. After the primary root, repeat `--add-dir <repo-root>`
-   to ask the same question across multiple policy-bearing roots. Multi-root
-   results list `requested_roots` in argument order and put `bundle` on every
-   ranked source. If any requested root lacks native policy or cannot scan,
-   the whole request is refused and only that root argument is named.
-3. Use connected `bran -p` only when a connected profile is configured and the
+1. Start with a short query: `bran query <repo-root> --brief "<request>"`
+   (optional `--top N`, default `8`, max `32`). It returns ranked exact
+   paths in `data.results`, one-line reasons, `coverage_basis: "sources"`
+   (derived from source rankings without enterprise document evidence), and a
+   `result_id`. Consuming repositories should add `.bran/results/` to
+   `.gitignore` so brief queries leave `git status` clean.
+2. Expand from `<repo-root>` when needed: `bran get <result-id>` returns the
+   stored summary, and `bran get <result-id> --full` re-runs the full default
+   query (check `warnings` for `"stale: true"` if HEAD changed). When `.bran/`
+   is absent or registered-root mode is active, `result_id` is `null` with a
+   warning; follow up directly with the full query or packet.
+3. For full context, Default to one read-only packet:
+   `bran packet <repo-root> "<request>"`, or Use `bran query <repo-root> "<request>"`
+   only for a focused follow-up that `--brief` or the packet did not answer.
+   In default `bran query`, `selected_locators` stays alphabetical; relevance
+   order is `source_rankings` in default `query` and `results` in `--brief`.
+   After the primary root, repeat `--add-dir <repo-root>` to ask the same
+   question across multiple policy-bearing roots. Multi-root results list
+   `requested_roots` in argument order and put `bundle` on every ranked
+   source. If any requested root lacks native policy or cannot scan, the whole
+   request is refused and only that root argument is named.
+4. Use connected `bran -p` only when a connected profile is configured and the
    bounded current repository is explicitly trusted. Keep it read-only and ask
    only for evidence location, contents, cross-file context, and citations.
-4. Read the entire result. Treat `data.query_outcome` as the semantic result,
+5. Read the entire result. Treat `data.query_outcome` as the semantic result,
    not command `status`. `grounded` means every extracted query term matched
    repository evidence. `miss` means there is no ranked evidence; empty
    selections are a miss, not a successful answer. `partial_unanchored` means
@@ -27,7 +41,7 @@ outer task; the outer agent owns all decisions and changes.
    non-empty ranking as full grounding. Report failures and unavailable fields honestly,
    preserve provenance and citations, label estimates as estimates, and never
    invent results or compression.
-5. Continue the outer task using the cited evidence; keep decisions and
+6. Continue the outer task using the cited evidence; keep decisions and
    implementation with the outer agent.
 
 Exact symbol navigation comes through the same packet and query. When the

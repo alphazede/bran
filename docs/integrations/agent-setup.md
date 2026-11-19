@@ -29,15 +29,32 @@ contain credential material.
    `settings_status`, the requested/effective capability states, and the offline
    return proof. The diagnostic must report zero provider, auth, and network
    calls.
-3. Use deterministic retrieval directly:
+3. Start with a short query to get ranked exact paths and a `result_id`, then
+   expand or run a full follow-up only when needed:
 
    ```sh
-   bran packet <repo-root> "<request>"
+   bran query <repo-root> --brief "<request>"
+   bran get <result_id>
+   bran get <result_id> --full
    bran query <repo-root> "<request>"
+   bran packet <repo-root> "<request>"
    bran check <repo-root> okf-v0.1
    bran check <repo-root> okf-v0.2
    bran check <repo-root> bran-strict
    ```
+
+   `--brief` defaults to `--top 8` (max `32`), keeps paths exact, shortens
+   `reason` first to stay within 2,000 characters, and sets
+   `coverage_basis: "sources"` because outcome and coverage are derived from
+   source rankings without enterprise document evidence. Run `bran get <result_id>`
+   from `<repo-root>` to read the stored summary, or `bran get <result_id> --full`
+   to re-run the default full query (`warnings` includes `"stale: true"` if the
+   source revision changed). When `.bran/` is missing or registered-root mode is
+   active, `--brief` returns `result_id: null` with a warning. Consuming
+   repositories should add `.bran/results/` to `.gitignore` so brief queries
+   leave `git status` unchanged. In default `bran query`, `selected_locators`
+   remains alphabetical; use `source_rankings` (default) or `results` (`--brief`)
+   for relevance order.
 
 No generated answer is expected. Preserve provenance and label byte-derived
 token counts as estimates. `okf-v0.1` remains supported; `okf-v0.2` is

@@ -35,8 +35,8 @@ use bran_core::agent::result_store::{
     MemoryResultStore, ResultId, ResultStore, ResultStoreError, ResultStoreLimits,
 };
 use bran_core::agent::runtime::{
-    AgentFailure, AuthError, AuthStore, InvocationOutcome, ProviderError, ProviderOutput,
-    ProviderPort, ProviderRequest,
+    AgentFailure, AuthError, AuthStore, InvocationOutcome, ProviderClaim, ProviderError,
+    ProviderOutput, ProviderPort, ProviderRequest,
 };
 use bran_core::agent::{
     AgentProfile, AgentProfileRegistry, ModelRegistry, ProviderRegistry, ReasoningLevel, ToolPolicy,
@@ -56,11 +56,14 @@ use bran_core::policy::{PolicyError, RepositoryPolicy, MAX_POLICY_BYTES, POLICY_
 use bran_core::profile::BRAN_STRICT;
 use bran_core::profile::{Diagnostic, ProfileValidator, ValidationStatus};
 use bran_core::repair::{MaintainerAuthority, RepairCoordinator, RepairReceipt, RepairTerminal};
-use bran_core::scan::{is_knowledge_document_path, RepositoryScanner, ScanConfig, ScanSnapshot};
+use bran_core::scan::{
+    is_knowledge_document_path, ContentIdentity, RepositoryScanner, ScanConfig, ScanSnapshot,
+};
 use bran_core::scip;
 use bran_core::view::{
     Presentation, ViewCompiler, ViewField, ViewFilter, ViewGrouping, ViewSort, ViewSource, ViewSpec,
 };
+use bran_document::canonical::Json;
 use bran_tui::{
     apply_settings, load_settings, render_app, OnboardingStep, OperatingProfile, Settings,
     TerminalCapabilities, TerminalGuard, TerminalPort, TuiAction, TuiApp, TuiEvent,
@@ -80,6 +83,7 @@ Usage: bran <command> [arguments]
 Commands:
   smoke
   query <repo-root> <request>
+  query <repo-root> --brief [--top N] <request>
   query <repo-root> --record <request>
   query <repo-root> --add-dir <repo-root> <request>
   query <repo-root> --add-dir <repo-root> --record <request>
@@ -91,7 +95,7 @@ Commands:
   tui
   agents list
   doctor <--onboarding|--agent>
-  get <result-id>
+  get <result-id> [--full]
   body-preserved <repo-root> <manifest>
   -p [options] <request>
   help
@@ -339,7 +343,10 @@ impl CliApp {
                 let mut parts = Vec::new();
                 let mut accept_flags = true;
                 let mut expect_add_dir = false;
+                let mut expect_top = false;
                 let mut record = false;
+                let mut brief = false;
+                let mut top: Option<usize> = None;
                 for a in it {
                     let value = match a.as_ref().to_str() {
                         Some(s) => s.to_owned(),
@@ -353,6 +360,17 @@ impl CliApp {
                         expect_add_dir = false;
                         continue;
                     }
+                    if expect_top {
+                        let Ok(parsed) = value.parse::<usize>() else {
+                            return CliResult::usage(make_query_error("invalid_top"));
+                        };
+                        if parsed == 0 || parsed > QUERY_RESULT_LIMIT {
+                            return CliResult::usage(make_query_error("invalid_top"));
+                        }
+                        top = Some(parsed);
+                        expect_top = false;
+                        continue;
+                    }
                     if accept_flags && value == "--add-dir" {
                         expect_add_dir = true;
                         continue;
@@ -364,11 +382,34 @@ impl CliApp {
                         record = true;
                         continue;
                     }
+                    if accept_flags && value == "--brief" {
+                        if brief {
+                            return CliResult::usage(make_query_error("duplicate_brief"));
+                        }
+                        brief = true;
+                        continue;
+                    }
+                    if accept_flags && value == "--top" {
+                        if top.is_some() {
+                            return CliResult::usage(make_query_error("duplicate_top"));
+                        }
+                        expect_top = true;
+                        continue;
+                    }
                     accept_flags = false;
                     parts.push(value);
                 }
                 if expect_add_dir {
                     return CliResult::usage(make_query_error("missing_add_dir"));
+                }
+                if expect_top {
+                    return CliResult::usage(make_query_error("missing_top"));
+                }
+                if top.is_some() && !brief {
+                    return CliResult::usage(make_query_error("top_requires_brief"));
+                }
+                if brief && record {
+                    return CliResult::usage(make_query_error("conflicting_flags"));
                 }
                 let qtext = parts.join(" ");
                 if qtext.trim().is_empty() {
@@ -392,7 +433,17 @@ impl CliApp {
                         std::iter::once(root.as_str()).chain(added.iter().map(String::as_str)),
                     )
                 });
-                let result = if added.is_empty() {
+                let result = if brief {
+                    let top = top.unwrap_or(BRIEF_DEFAULT_TOP);
+                    let allow_store = registered.is_none();
+                    if added.is_empty() {
+                        do_query_brief(root, qtext, top, allow_store, revisions.as_deref())
+                    } else {
+                        let mut roots = vec![root];
+                        roots.extend(added);
+                        do_query_brief_multi(roots, qtext, top, allow_store, revisions.as_deref())
+                    }
+                } else if added.is_empty() {
                     do_query(root, qtext, record)
                 } else {
                     let mut roots = vec![root];
@@ -902,17 +953,30 @@ impl CliApp {
                 }
             }
             "get" => {
-                let result_id = match it
-                    .next()
-                    .and_then(|value| value.as_ref().to_str().map(str::to_owned))
-                {
-                    Some(value) => value,
-                    None => return CliResult::usage(make_get_error("missing_result_id")),
-                };
-                if it.next().is_some() {
-                    return CliResult::usage(make_get_error("too_many_args"));
+                let mut result_id: Option<String> = None;
+                let mut full = false;
+                for a in it {
+                    let value = match a.as_ref().to_str() {
+                        Some(s) => s.to_owned(),
+                        None => return CliResult::usage(make_get_error("invalid_utf8")),
+                    };
+                    if value == "--full" {
+                        if full {
+                            return CliResult::usage(make_get_error("duplicate_option"));
+                        }
+                        full = true;
+                    } else if value.starts_with("--") {
+                        return CliResult::usage(make_get_error("unknown_option"));
+                    } else if result_id.is_none() {
+                        result_id = Some(value);
+                    } else {
+                        return CliResult::usage(make_get_error("too_many_args"));
+                    }
                 }
-                do_get(Path::new("."), &result_id)
+                let Some(result_id) = result_id else {
+                    return CliResult::usage(make_get_error("missing_result_id"));
+                };
+                do_get_with_mode(Path::new("."), &result_id, full)
             }
             "body-preserved" => {
                 let root = match it
@@ -1903,8 +1967,27 @@ fn source_rankings(
     query_text: &str,
     max_sources: usize,
 ) -> (Vec<SourceRanking>, BTreeSet<String>) {
+    source_rankings_with_mode(graph_input, snapshot, query_text, max_sources, false)
+}
+
+fn source_rankings_brief(
+    graph_input: &GraphInput,
+    snapshot: &ScanSnapshot,
+    query_text: &str,
+    max_sources: usize,
+) -> (Vec<SourceRanking>, BTreeSet<String>) {
+    source_rankings_with_mode(graph_input, snapshot, query_text, max_sources, true)
+}
+
+fn source_rankings_with_mode(
+    graph_input: &GraphInput,
+    snapshot: &ScanSnapshot,
+    query_text: &str,
+    max_sources: usize,
+    resolve_long_paths: bool,
+) -> (Vec<SourceRanking>, BTreeSet<String>) {
     let (matches, matched_terms, entities) =
-        score_source_candidates(graph_input, snapshot, query_text);
+        score_source_candidates_with_paths(graph_input, snapshot, query_text, resolve_long_paths);
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     (
         finalize_source_rankings(matches, max_sources, false),
@@ -1912,22 +1995,58 @@ fn source_rankings(
     )
 }
 
+fn snapshot_long_path_map(snapshot: &ScanSnapshot) -> BTreeMap<String, &str> {
+    let mut map = BTreeMap::new();
+    for path in snapshot.entries.keys() {
+        if path.len() > Provenance::MAX_LOCATOR_BYTES {
+            let id = ContentIdentity::from_bytes(path.as_bytes());
+            let locator = format!(
+                "file:{:016x}{:016x}{:016x}",
+                id.lanes[0], id.lanes[1], id.lanes[2]
+            );
+            map.insert(locator, path.as_str());
+        }
+    }
+    map
+}
+
 fn score_source_candidates(
     graph_input: &GraphInput,
     snapshot: &ScanSnapshot,
     query_text: &str,
 ) -> (Vec<SourceRanking>, BTreeSet<String>, BTreeSet<String>) {
+    score_source_candidates_with_paths(graph_input, snapshot, query_text, false)
+}
+
+fn score_source_candidates_with_paths(
+    graph_input: &GraphInput,
+    snapshot: &ScanSnapshot,
+    query_text: &str,
+    resolve_long_paths: bool,
+) -> (Vec<SourceRanking>, BTreeSet<String>, BTreeSet<String>) {
     let (terms, entities) = query_terms_and_entities(query_text);
     let mut matched_terms = BTreeSet::new();
+    let long_paths = if resolve_long_paths {
+        snapshot_long_path_map(snapshot)
+    } else {
+        BTreeMap::new()
+    };
     let matches = graph_input
         .nodes()
         .iter()
         .filter(|node| node.role() == NodeRole::Document)
-        // Enterprise documents rank only as document evidence (#46), never as
-        // Markdown sources: refused files must not be selectable by path.
-        .filter(|node| !document_evidence::is_document_path(node.provenance().locator()))
         .filter_map(|node| {
-            let locator_original = node.provenance().locator();
+            let raw_locator = node.provenance().locator();
+            let locator_original = if resolve_long_paths {
+                long_paths.get(raw_locator).copied().unwrap_or(raw_locator)
+            } else {
+                raw_locator
+            };
+            // Enterprise documents rank only as document evidence (#46), never as
+            // Markdown sources: refused files must not be selectable by path.
+            if document_evidence::is_document_path(locator_original) {
+                return None;
+            }
             let locator = locator_original.to_ascii_lowercase();
             let body =
                 document_body(snapshot, locator_original).map(|body| body.to_ascii_lowercase());
@@ -2071,7 +2190,7 @@ fn score_source_candidates(
             (exact_matches + partial_matches > 0).then(|| SourceRanking {
                 bundle: String::new(),
                 id: node.id().clone(),
-                locator: node.provenance().locator().to_owned(),
+                locator: locator_original.to_owned(),
                 rank: 0,
                 exact_matches,
                 partial_matches,
@@ -2651,6 +2770,20 @@ fn selected_sources_json(selected: &[(String, &'static str)]) -> (String, String
 }
 
 fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult {
+    let timings_enabled =
+        std::env::var_os("BRAN_TIMINGS").is_some_and(|v| !v.is_empty() && v != "0");
+    let query_start = timings_enabled.then(std::time::Instant::now);
+    let mut step_start = query_start;
+    let mut log_timing = |label: &str| {
+        if let Some(start) = step_start.as_mut() {
+            let now = std::time::Instant::now();
+            eprintln!(
+                "BRAN_TIMINGS step={label} ms={:.3}",
+                now.duration_since(*start).as_secs_f64() * 1000.0
+            );
+            *start = now;
+        }
+    };
     let root_path: &Path = Path::new(&root);
     let scanner = RepositoryScanner::new(root_path, ScanConfig::default())
         .map_err(|e| format!("scan_error: {:?}", e))?;
@@ -2674,7 +2807,9 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
             "{\"candidate_source_bytes\":0,\"selected_source_bytes\":0,\"context_bytes_avoided\":0,\"estimated_tokens\":0,\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}".to_owned(),
         ));
     }
+    log_timing("policy_check");
     let snapshot = scanner.scan().map_err(|e| format!("scan_error: {:?}", e))?;
+    log_timing("scan");
     let graph_input = snapshot
         .graph_input()
         .map_err(|e| format!("graph_input_error: {:?}", e))?;
@@ -2682,15 +2817,19 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     let edge_count = graph_input.edges().len().max(1);
     let limits =
         GraphLimits::new(node_count, edge_count).map_err(|e| format!("limits_error: {:?}", e))?;
+    log_timing("graph_input");
     let (rankings, mut matched_terms) =
         source_rankings(&graph_input, &snapshot, &query_text, QUERY_RESULT_LIMIT);
+    log_timing("score");
     let spec = query_view_spec(&rankings, QUERY_RESULT_LIMIT);
     let graph =
         KnowledgeGraph::build(graph_input, limits).map_err(|e| format!("graph_error: {:?}", e))?;
+    log_timing("graph_build");
 
     let compiled = ViewCompiler::new()
         .compile(&spec, &graph)
         .map_err(|e| format!("view_error: {:?}", e))?;
+    log_timing("view_compile");
     let dependency_limits = DependencyClosureLimits::new(DEPENDENCY_DEPTH_LIMIT, 256)
         .map_err(|e| format!("dep_limits: {:?}", e))?;
     let selected_ids = PacketAssembler::evidence_ids(&compiled, &graph, dependency_limits)
@@ -2711,6 +2850,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     let candidate_bytes = snapshot.total_bytes;
     let estimated = selected_bytes / 4 + usize::from(!selected_bytes.is_multiple_of(4));
     let context_bytes_avoided = candidate_bytes.saturating_sub(selected_bytes);
+    log_timing("packet_assemble");
 
     let mut warns: Vec<String> = snapshot
         .diagnostics
@@ -2731,6 +2871,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
                 .is_some_and(|documents| !documents.matched_terms.is_empty()),
     );
     warns.extend(unmatched_query_warnings(&unmatched));
+    log_timing("document_evidence");
 
     let navigation = SymbolNavigation::resolve(root_path, &snapshot, &query_text, &rankings);
     let retained = navigation.retained(&selected);
@@ -2772,6 +2913,7 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
         "{{\"candidate_source_bytes\":{},\"selected_source_bytes\":{},\"context_bytes_avoided\":{},\"estimated_tokens\":{},\"token_estimate_method\":\"bytes-divided-by-four-ceiling\"}}",
         candidate_bytes, selected_bytes, context_bytes_avoided, estimated
     );
+    log_timing("symbol_resolve");
     let evidence = query_evidence_record(
         query_text,
         vec![root],
@@ -2781,6 +2923,655 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
     );
     if record {
         persist_query_evidence(&evidence)?;
+    }
+    log_timing("record");
+    if let Some(start) = query_start {
+        eprintln!(
+            "BRAN_TIMINGS step=total ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    Ok(("ok", data, warns, vec![], provenance, metrics))
+}
+
+const BRIEF_DEFAULT_TOP: usize = 8;
+const BRIEF_CHAR_LIMIT: usize = 2_000;
+const BRIEF_ANSWER_KIND: &str = "bran-brief-query-v1";
+
+fn one_line_reason(reason: &str) -> String {
+    reason.replace(['\r', '\n'], " ")
+}
+
+fn first_field_reason(reason: &str) -> String {
+    if let Some((kind, fields)) = reason.split_once(':') {
+        let first = fields.split('+').next().unwrap_or(fields);
+        if first.is_empty() {
+            kind.to_owned()
+        } else {
+            format!("{kind}:{first}")
+        }
+    } else {
+        reason.to_owned()
+    }
+}
+
+fn match_kind_reason(reason: &str) -> String {
+    reason.split(':').next().unwrap_or(reason).to_owned()
+}
+
+struct BriefItem<'a> {
+    rank: usize,
+    bundle: &'a str,
+    path: &'a str,
+    reason: String,
+}
+
+fn format_query_coverage(matched: &[String], unmatched: &[String]) -> String {
+    format!(
+        "{{\"matched_terms\":[{}],\"unmatched_terms\":[{}]}}",
+        json_string_list(matched),
+        json_string_list(unmatched)
+    )
+}
+
+fn brief_scan_warning_summary(scan_diagnostic_count: usize) -> Option<String> {
+    if scan_diagnostic_count == 0 {
+        None
+    } else {
+        Some(format!(
+            "scan_warnings: {scan_diagnostic_count} repository scan warnings omitted; run default query or bran get <id> --full"
+        ))
+    }
+}
+
+fn brief_data_json(
+    query_outcome: &str,
+    query_coverage: &str,
+    result_id: Option<&str>,
+    items: &[BriefItem<'_>],
+) -> String {
+    let result_id_json = result_id.map_or_else(
+        || "null".to_owned(),
+        |id| format!("\"{}\"", json_escape(id)),
+    );
+    let results_json = items
+        .iter()
+        .map(|item| {
+            if item.bundle.is_empty() {
+                format!(
+                    "{{\"rank\":{},\"path\":\"{}\",\"reason\":\"{}\"}}",
+                    item.rank,
+                    json_escape(item.path),
+                    json_escape(&item.reason)
+                )
+            } else {
+                format!(
+                    "{{\"rank\":{},\"bundle\":\"{}\",\"path\":\"{}\",\"reason\":\"{}\"}}",
+                    item.rank,
+                    json_escape(item.bundle),
+                    json_escape(item.path),
+                    json_escape(&item.reason)
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"query_outcome\":\"{}\",\"query_coverage\":{},\"coverage_basis\":\"sources\",\"result_id\":{},\"selection\":{{\"source\":\"rule\"}},\"results\":[{}]}}",
+        json_escape(query_outcome),
+        query_coverage,
+        result_id_json,
+        results_json
+    )
+}
+
+fn bound_term_list(terms: &[String], fits: impl Fn(&[String]) -> bool) -> Vec<String> {
+    if terms.is_empty() || fits(terms) {
+        return terms.to_vec();
+    }
+    let summary_only = vec![format!("+{} more", terms.len())];
+    if !fits(&summary_only) {
+        return Vec::new();
+    }
+    let mut lo = 0usize;
+    let mut hi = terms.len() - 1;
+    let mut best = summary_only;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let mut candidate = terms[..mid].to_vec();
+        candidate.push(format!("+{} more", terms.len() - mid));
+        if fits(&candidate) {
+            best = candidate;
+            lo = mid + 1;
+        } else {
+            if mid == 0 {
+                break;
+            }
+            hi = mid - 1;
+        }
+    }
+    best
+}
+
+#[allow(clippy::too_many_arguments)]
+fn brief_data_within_budget(
+    status: &str,
+    query_outcome: &str,
+    matched: &[String],
+    unmatched: &[String],
+    result_id: Option<&str>,
+    rankings: &[SourceRanking],
+    warns: &[String],
+    effective_provenance: &str,
+    metrics: &str,
+) -> String {
+    let mut items: Vec<BriefItem<'_>> = rankings
+        .iter()
+        .map(|r| BriefItem {
+            rank: r.rank,
+            bundle: r.bundle.as_str(),
+            path: r.locator.as_str(),
+            reason: one_line_reason(&r.match_reason),
+        })
+        .collect();
+    let fits = |items: &[BriefItem<'_>], m: &[String], u: &[String]| -> (bool, String) {
+        let coverage = format_query_coverage(m, u);
+        let data = brief_data_json(query_outcome, &coverage, result_id, items);
+        let envelope = make_envelope(
+            "query",
+            status,
+            &data,
+            warns,
+            &[],
+            effective_provenance,
+            metrics,
+        );
+        // Reserve 1 code point for write_to_stdio's trailing newline.
+        (envelope.chars().count() < BRIEF_CHAR_LIMIT, data)
+    };
+    let (ok, data) = fits(&items, matched, unmatched);
+    if ok {
+        return data;
+    }
+    for idx in (0..items.len()).rev() {
+        let shortened = first_field_reason(&items[idx].reason);
+        if shortened != items[idx].reason {
+            items[idx].reason = shortened;
+            let (ok, data) = fits(&items, matched, unmatched);
+            if ok {
+                return data;
+            }
+        }
+    }
+    for idx in (0..items.len()).rev() {
+        let shortened = match_kind_reason(&items[idx].reason);
+        if shortened != items[idx].reason {
+            items[idx].reason = shortened;
+            let (ok, data) = fits(&items, matched, unmatched);
+            if ok {
+                return data;
+            }
+        }
+    }
+    let bounded_unmatched = bound_term_list(unmatched, |candidate_u| {
+        fits(&items, matched, candidate_u).0
+    });
+    let (ok, data) = fits(&items, matched, &bounded_unmatched);
+    if ok {
+        return data;
+    }
+    let bounded_matched = bound_term_list(matched, |candidate_m| {
+        fits(&items, candidate_m, &bounded_unmatched).0
+    });
+    let coverage = format_query_coverage(&bounded_matched, &bounded_unmatched);
+    brief_data_json(query_outcome, &coverage, result_id, &items)
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn canonical_root_string(root: &Path) -> String {
+    fs::canonicalize(root)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn revision_json_value(root: &Path) -> Json {
+    match source_revision::read(root) {
+        SourceRevision::Attested { commit, .. } => Json::Str(commit),
+        SourceRevision::Unavailable(_) => Json::Null,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_brief_inline_result(
+    canonical_roots: &[String],
+    source_revisions: &[Json],
+    query_text: &str,
+    top: usize,
+    query_outcome: &str,
+    matched_terms: &BTreeSet<String>,
+    rankings: &[SourceRanking],
+    digests: &[String],
+) -> Result<InlineResult, ()> {
+    let mut root_obj = BTreeMap::new();
+    root_obj.insert("kind".to_owned(), Json::Str(BRIEF_ANSWER_KIND.to_owned()));
+    root_obj.insert("root".to_owned(), Json::Str(canonical_roots[0].clone()));
+    root_obj.insert(
+        "requested_roots".to_owned(),
+        Json::Arr(canonical_roots.iter().cloned().map(Json::Str).collect()),
+    );
+    root_obj.insert("question".to_owned(), Json::Str(query_text.to_owned()));
+    root_obj.insert("top".to_owned(), Json::Int(top as i64));
+    root_obj.insert("source_revision".to_owned(), source_revisions[0].clone());
+    root_obj.insert(
+        "source_revisions".to_owned(),
+        Json::Arr(source_revisions.to_vec()),
+    );
+    root_obj.insert(
+        "query_outcome".to_owned(),
+        Json::Str(query_outcome.to_owned()),
+    );
+    let (matched, _) = query_term_coverage(query_text, matched_terms);
+    root_obj.insert(
+        "matched_terms".to_owned(),
+        Json::Arr(matched.iter().cloned().map(Json::Str).collect()),
+    );
+    let results_arr = rankings
+        .iter()
+        .map(|r| {
+            let mut item = BTreeMap::new();
+            item.insert("rank".to_owned(), Json::Int(r.rank as i64));
+            if !r.bundle.is_empty() {
+                item.insert("bundle".to_owned(), Json::Str(r.bundle.clone()));
+            }
+            item.insert("path".to_owned(), Json::Str(r.locator.clone()));
+            item.insert(
+                "reason".to_owned(),
+                Json::Str(one_line_reason(&r.match_reason)),
+            );
+            Json::Obj(item)
+        })
+        .collect();
+    root_obj.insert("results".to_owned(), Json::Arr(results_arr));
+
+    let answer_bytes = Json::Obj(root_obj).to_bytes();
+    let answer = String::from_utf8(answer_bytes).map_err(|_| ())?;
+    let answer_digest = ResultId::sha256(answer.as_bytes()).value().to_owned();
+    let matched_summary = if matched.is_empty() {
+        "none".to_owned()
+    } else {
+        matched.join(",")
+    };
+    let meta_locator = if canonical_roots[0].trim().is_empty() || canonical_roots[0].len() > 1024 {
+        "."
+    } else {
+        canonical_roots[0].as_str()
+    };
+    let meta_text = format!(
+        "question={} root={} top={}",
+        query_text, canonical_roots[0], top
+    );
+    let meta_support = format!(
+        "brief-query top={} outcome={} matched={}",
+        top, query_outcome, matched_summary
+    );
+    let mut claims = Vec::with_capacity(1 + rankings.len());
+    claims.push(
+        ProviderClaim::new(
+            "brief-query",
+            truncate_utf8(&meta_text, 65_536),
+            false,
+            meta_locator,
+            answer_digest,
+            truncate_utf8(&meta_support, 65_536),
+        )
+        .map_err(|_| ())?,
+    );
+
+    let mut citations = Vec::with_capacity(rankings.len());
+    for (idx, ranking) in rankings.iter().enumerate() {
+        let locator = truncate_utf8(&ranking.locator, 1024);
+        if !locator.trim().is_empty() {
+            citations.push(locator.to_owned());
+        }
+        let claim_locator = if locator.trim().is_empty() {
+            "."
+        } else {
+            locator
+        };
+        let reason = one_line_reason(&ranking.match_reason);
+        let bundle_part = if ranking.bundle.is_empty() {
+            String::new()
+        } else {
+            format!("bundle={} ", ranking.bundle)
+        };
+        let text = format!(
+            "rank={} {}path={} reason={} exact={} partial={} matched={}",
+            ranking.rank,
+            bundle_part,
+            ranking.locator,
+            reason,
+            ranking.exact_matches,
+            ranking.partial_matches,
+            matched_summary
+        );
+        let support = format!(
+            "rank={} {}reason={} exact={} partial={}",
+            ranking.rank, bundle_part, reason, ranking.exact_matches, ranking.partial_matches
+        );
+        let digest = digests.get(idx).cloned().unwrap_or_else(|| "0".repeat(64));
+        claims.push(
+            ProviderClaim::new(
+                format!("rank-{}", ranking.rank),
+                truncate_utf8(&text, 65_536),
+                false,
+                claim_locator,
+                digest,
+                truncate_utf8(&support, 65_536),
+            )
+            .map_err(|_| ())?,
+        );
+    }
+    InlineResult::with_claims(answer, citations, claims).map_err(|_| ())
+}
+
+fn store_brief_result(store_root: &Path, inline: &InlineResult) -> Result<String, &'static str> {
+    let mut store =
+        FilesystemResultStore::open(store_root).map_err(|_| "result_store_unavailable")?;
+    let bytes = inline.encode_canonical();
+    let ids = store
+        .put_batch(&[bytes.as_slice()], wall_tick())
+        .map_err(|_| "result_store_unavailable")?;
+    ids.into_iter()
+        .next()
+        .map(|id| id.to_string())
+        .ok_or("result_store_unavailable")
+}
+
+fn do_query_brief(
+    root: String,
+    query_text: String,
+    top: usize,
+    allow_store: bool,
+    revisions: Option<&str>,
+) -> QueryPacketResult {
+    let timings_enabled =
+        std::env::var_os("BRAN_TIMINGS").is_some_and(|v| !v.is_empty() && v != "0");
+    let query_start = timings_enabled.then(std::time::Instant::now);
+    let mut step_start = query_start;
+    let mut log_timing = |label: &str| {
+        if let Some(start) = step_start.as_mut() {
+            let now = std::time::Instant::now();
+            eprintln!(
+                "BRAN_TIMINGS step={label} ms={:.3}",
+                now.duration_since(*start).as_secs_f64() * 1000.0
+            );
+            *start = now;
+        }
+    };
+
+    let root_path: &Path = Path::new(&root);
+    let scanner = RepositoryScanner::new(root_path, ScanConfig::default())
+        .map_err(|e| format!("scan_error: {:?}", e))?;
+    if !root_path.join(POLICY_FILENAME).is_file() {
+        let provenance = "{\"sources\":[\"repository-policy-check\"]}".to_owned();
+        let metrics = "{}".to_owned();
+        let warns = vec!["native_policy_unavailable".to_owned()];
+        let data = brief_data_within_budget(
+            "unavailable",
+            "unavailable",
+            &[],
+            &[],
+            None,
+            &[],
+            &warns,
+            &registered_provenance(&provenance, revisions),
+            &metrics,
+        );
+        return Ok(("unavailable", data, warns, vec![], provenance, metrics));
+    }
+    log_timing("policy_check");
+
+    let snapshot = scanner.scan().map_err(|e| format!("scan_error: {:?}", e))?;
+    log_timing("scan");
+    let graph_input = snapshot
+        .graph_input()
+        .map_err(|e| format!("graph_input_error: {:?}", e))?;
+    log_timing("graph_input");
+    let (rankings, matched_terms) =
+        source_rankings_brief(&graph_input, &snapshot, &query_text, top);
+    log_timing("score");
+
+    let (query_outcome, _, _) =
+        query_semantic_outcome(&query_text, &matched_terms, !rankings.is_empty());
+    let (matched, unmatched) = query_term_coverage(&query_text, &matched_terms);
+    let mut warns: Vec<String> = brief_scan_warning_summary(snapshot.diagnostics.len())
+        .into_iter()
+        .collect();
+
+    let result_id = if !allow_store {
+        warns.push(UNAVAILABLE_IN_REGISTERED_ROOT_MODE.to_owned());
+        None
+    } else {
+        let canonical_roots = vec![canonical_root_string(root_path)];
+        let source_revs = vec![revision_json_value(root_path)];
+        let digests: Vec<String> = rankings
+            .iter()
+            .map(|r| {
+                snapshot
+                    .entries
+                    .get(&r.locator)
+                    .map(|e| ResultId::sha256(&e.source).value().to_owned())
+                    .unwrap_or_else(|| "0".repeat(64))
+            })
+            .collect();
+        match build_brief_inline_result(
+            &canonical_roots,
+            &source_revs,
+            &query_text,
+            top,
+            query_outcome,
+            &matched_terms,
+            &rankings,
+            &digests,
+        )
+        .map_err(|()| "result_store_unavailable")
+        .and_then(|inline| store_brief_result(root_path, &inline))
+        {
+            Ok(id) => Some(id),
+            Err(reason) => {
+                warns.push(reason.to_owned());
+                None
+            }
+        }
+    };
+    log_timing("store");
+
+    let provenance = "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned();
+    let metrics = "{}".to_owned();
+    let data = brief_data_within_budget(
+        "ok",
+        query_outcome,
+        &matched,
+        &unmatched,
+        result_id.as_deref(),
+        &rankings,
+        &warns,
+        &registered_provenance(&provenance, revisions),
+        &metrics,
+    );
+    if let Some(start) = query_start {
+        eprintln!(
+            "BRAN_TIMINGS step=total ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    Ok(("ok", data, warns, vec![], provenance, metrics))
+}
+
+fn do_query_brief_multi(
+    roots: Vec<String>,
+    query_text: String,
+    top: usize,
+    allow_store: bool,
+    revisions: Option<&str>,
+) -> QueryPacketResult {
+    let timings_enabled =
+        std::env::var_os("BRAN_TIMINGS").is_some_and(|v| !v.is_empty() && v != "0");
+    let query_start = timings_enabled.then(std::time::Instant::now);
+    let mut step_start = query_start;
+    let mut log_timing = |label: &str| {
+        if let Some(start) = step_start.as_mut() {
+            let now = std::time::Instant::now();
+            eprintln!(
+                "BRAN_TIMINGS step={label} ms={:.3}",
+                now.duration_since(*start).as_secs_f64() * 1000.0
+            );
+            *start = now;
+        }
+    };
+
+    let mut seen = BTreeSet::new();
+    for root in &roots {
+        if !seen.insert(root.as_str()) {
+            return Err(format!("duplicate_root: {root}"));
+        }
+    }
+    let mut scanners = Vec::with_capacity(roots.len());
+    for root in &roots {
+        let root_path = Path::new(root);
+        let scanner = RepositoryScanner::new(root_path, ScanConfig::default())
+            .map_err(|_| format!("scan_error: {root}"))?;
+        if !root_path.join(POLICY_FILENAME).is_file() {
+            return Err(format!("native_policy_unavailable: {root}"));
+        }
+        scanners.push((root, scanner));
+    }
+    log_timing("policy_check");
+
+    let mut snapshots = Vec::with_capacity(scanners.len());
+    for (root, scanner) in scanners {
+        let snapshot = scanner.scan().map_err(|_| format!("scan_error: {root}"))?;
+        snapshots.push((root, snapshot));
+    }
+    log_timing("scan");
+
+    let mut scanned = Vec::with_capacity(snapshots.len());
+    for (root, snapshot) in snapshots {
+        let graph_input = snapshot
+            .graph_input()
+            .map_err(|_| format!("graph_input_error: {root}"))?;
+        scanned.push(ScannedQueryRoot {
+            requested: root.to_owned(),
+            snapshot,
+            graph_input,
+        });
+    }
+    log_timing("graph_input");
+
+    let mut matched_terms = BTreeSet::new();
+    let mut entities = BTreeSet::new();
+    let mut matches = Vec::new();
+    for root in &scanned {
+        let (mut root_matches, root_matched, root_entities) = score_source_candidates_with_paths(
+            &root.graph_input,
+            &root.snapshot,
+            &query_text,
+            true,
+        );
+        for ranking in &mut root_matches {
+            ranking.bundle = root.requested.clone();
+        }
+        matched_terms.extend(root_matched);
+        entities = root_entities;
+        matches.extend(root_matches);
+    }
+    let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
+    let rankings = finalize_source_rankings(matches, top, true);
+    log_timing("score");
+
+    let scan_diag_count: usize = scanned.iter().map(|r| r.snapshot.diagnostics.len()).sum();
+    let mut warns: Vec<String> = brief_scan_warning_summary(scan_diag_count)
+        .into_iter()
+        .collect();
+    let (query_outcome, _, _) =
+        query_semantic_outcome(&query_text, &matched_terms, !rankings.is_empty());
+    let (matched, unmatched) = query_term_coverage(&query_text, &matched_terms);
+
+    let result_id = if !allow_store {
+        warns.push(UNAVAILABLE_IN_REGISTERED_ROOT_MODE.to_owned());
+        None
+    } else {
+        let canonical_roots: Vec<String> = roots
+            .iter()
+            .map(|r| canonical_root_string(Path::new(r)))
+            .collect();
+        let source_revs: Vec<Json> = roots
+            .iter()
+            .map(|r| revision_json_value(Path::new(r)))
+            .collect();
+        let digests: Vec<String> = rankings
+            .iter()
+            .map(|r| {
+                scanned
+                    .iter()
+                    .find(|s| s.requested == r.bundle)
+                    .and_then(|s| s.snapshot.entries.get(&r.locator))
+                    .map(|e| ResultId::sha256(&e.source).value().to_owned())
+                    .unwrap_or_else(|| "0".repeat(64))
+            })
+            .collect();
+        let primary_root = Path::new(&roots[0]);
+        match build_brief_inline_result(
+            &canonical_roots,
+            &source_revs,
+            &query_text,
+            top,
+            query_outcome,
+            &matched_terms,
+            &rankings,
+            &digests,
+        )
+        .map_err(|()| "result_store_unavailable")
+        .and_then(|inline| store_brief_result(primary_root, &inline))
+        {
+            Ok(id) => Some(id),
+            Err(reason) => {
+                warns.push(reason.to_owned());
+                None
+            }
+        }
+    };
+    log_timing("store");
+
+    let provenance = "{\"sources\":[\"repository-scanner\",\"bran-core\"]}".to_owned();
+    let metrics = "{}".to_owned();
+    let data = brief_data_within_budget(
+        "ok",
+        query_outcome,
+        &matched,
+        &unmatched,
+        result_id.as_deref(),
+        &rankings,
+        &warns,
+        &registered_provenance(&provenance, revisions),
+        &metrics,
+    );
+    if let Some(start) = query_start {
+        eprintln!(
+            "BRAN_TIMINGS step=total ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
     Ok(("ok", data, warns, vec![], provenance, metrics))
 }
@@ -6390,7 +7181,12 @@ fn wall_tick() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn do_get(root: &Path, result_id: &str) -> CliResult {
+    do_get_with_mode(root, result_id, false)
+}
+
+fn do_get_with_mode(root: &Path, result_id: &str, full: bool) -> CliResult {
     let id = match ResultId::parse(result_id) {
         Ok(id) => id,
         Err(_) => return CliResult::usage(make_get_error("invalid_result_id")),
@@ -6410,6 +7206,9 @@ fn do_get(root: &Path, result_id: &str) -> CliResult {
         Ok(result) => result,
         Err(_) => return CliResult::operation(make_get_error("invalid_result_content")),
     };
+    if full {
+        return do_get_full(&result);
+    }
     let citations = result
         .citations()
         .iter()
@@ -6447,6 +7246,98 @@ fn do_get(root: &Path, result_id: &str) -> CliResult {
         "{\"sources\":[\"local-content-addressed-result-store\"]}",
         "{}",
     ))
+}
+
+fn do_get_full(result: &InlineResult) -> CliResult {
+    let Some(parsed) = Json::parse(result.answer().as_bytes()) else {
+        return CliResult::operation(make_get_error("full_query_unavailable"));
+    };
+    if parsed.get("kind") != Some(&Json::Str(BRIEF_ANSWER_KIND.to_owned())) {
+        return CliResult::operation(make_get_error("full_query_unavailable"));
+    }
+    let Some(Json::Str(stored_root)) = parsed.get("root") else {
+        return CliResult::operation(make_get_error("full_query_unavailable"));
+    };
+    let Some(Json::Str(question)) = parsed.get("question") else {
+        return CliResult::operation(make_get_error("full_query_unavailable"));
+    };
+    let requested_roots: Vec<String> = match parsed.get("requested_roots") {
+        Some(Json::Arr(items)) if !items.is_empty() => items
+            .iter()
+            .filter_map(|item| match item {
+                Json::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![stored_root.clone()],
+    };
+    if requested_roots.is_empty() {
+        return CliResult::operation(make_get_error("full_query_unavailable"));
+    }
+    let recorded_revisions: Vec<Option<String>> = match parsed.get("source_revisions") {
+        Some(Json::Arr(items)) if items.len() == requested_roots.len() => items
+            .iter()
+            .map(|item| match item {
+                Json::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => {
+            let single = match parsed.get("source_revision") {
+                Some(Json::Str(s)) => Some(s.clone()),
+                _ => None,
+            };
+            vec![single; requested_roots.len()]
+        }
+    };
+    let stale =
+        requested_roots
+            .iter()
+            .zip(recorded_revisions.iter())
+            .any(|(root_dir, recorded)| {
+                let current = match source_revision::read(Path::new(root_dir)) {
+                    SourceRevision::Attested { commit, .. } => Some(commit),
+                    SourceRevision::Unavailable(_) => None,
+                };
+                current != *recorded
+            });
+    let query_result = if requested_roots.len() == 1 {
+        do_query(requested_roots[0].clone(), question.clone(), false)
+    } else {
+        do_query_multi(requested_roots, question.clone(), false)
+    };
+    match query_result {
+        Ok((status, data, mut warns, fails, provenance, metrics)) => {
+            if stale {
+                warns.push("stale: true".to_owned());
+            }
+            CliResult::success(make_envelope(
+                "query",
+                status,
+                &data,
+                &warns,
+                &fails,
+                &provenance,
+                &metrics,
+            ))
+        }
+        Err(msg) => {
+            let warns = if stale {
+                vec!["stale: true".to_owned()]
+            } else {
+                vec![]
+            };
+            CliResult::operation(make_envelope(
+                "query",
+                "error",
+                "null",
+                &warns,
+                &[msg],
+                "{}",
+                "{}",
+            ))
+        }
+    }
 }
 
 fn production_headless_receipt(
@@ -11560,5 +12451,82 @@ mod tests {
         assert!(propose.output.contains("\"authority\":null"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn query_brief_flags_multi_root_and_get_full_contract() {
+        for (args, expected_err) in [
+            (vec!["query", "ROOT", "--top"], "missing_top"),
+            (vec!["query", "ROOT", "--brief", "--top"], "missing_top"),
+            (
+                vec!["query", "ROOT", "--brief", "--top", "0", "q"],
+                "invalid_top",
+            ),
+            (
+                vec!["query", "ROOT", "--brief", "--top", "33", "q"],
+                "invalid_top",
+            ),
+            (
+                vec!["query", "ROOT", "--brief", "--top", "abc", "q"],
+                "invalid_top",
+            ),
+            (
+                vec!["query", "ROOT", "--top", "2", "q"],
+                "top_requires_brief",
+            ),
+            (
+                vec!["query", "ROOT", "--brief", "--brief", "q"],
+                "duplicate_brief",
+            ),
+            (
+                vec!["query", "ROOT", "--brief", "--top", "2", "--top", "3", "q"],
+                "duplicate_top",
+            ),
+            (
+                vec!["query", "ROOT", "--brief", "--record", "q"],
+                "conflicting_flags",
+            ),
+            (vec!["get", "--full"], "missing_result_id"),
+            (vec!["get", "id", "--full", "--full"], "duplicate_option"),
+            (vec!["get", "id", "--unknown"], "unknown_option"),
+            (vec!["get", "id", "--full", "extra"], "too_many_args"),
+        ] {
+            let owned: Vec<String> = args.into_iter().map(str::to_owned).collect();
+            let result = CliApp::run(owned);
+            assert_eq!(
+                result.exit_code,
+                TypedExit::Usage.code(),
+                "{}",
+                result.output
+            );
+            assert!(
+                result.output.contains(expected_err),
+                "expected {expected_err} in {}",
+                result.output
+            );
+        }
+
+        let (root_a, arg_a) = scratch_evidence_root("brief-multi-a");
+        let (root_b, arg_b) = scratch_evidence_root("brief-multi-b");
+        write_evidence_doc(&root_a, "alpha.md", "Alpha", "collector calibration guide");
+        write_evidence_doc(&root_b, "beta.md", "Beta", "collector wiring notes");
+
+        let multi = CliApp::run(vec![
+            "query".to_owned(),
+            arg_a,
+            "--add-dir".to_owned(),
+            arg_b,
+            "--brief".to_owned(),
+            "--top".to_owned(),
+            "2".to_owned(),
+            "collector".to_owned(),
+        ]);
+        assert_eq!(multi.exit_code, ExitCode::SUCCESS, "{}", multi.output);
+        assert!(multi.output.contains("\"coverage_basis\":\"sources\""));
+        assert!(multi.output.contains("alpha.md"));
+        assert!(multi.output.contains("beta.md"));
+
+        let _ = std::fs::remove_dir_all(root_a);
+        let _ = std::fs::remove_dir_all(root_b);
     }
 }
