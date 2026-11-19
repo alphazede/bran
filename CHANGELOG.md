@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Brief-mode advisor: optional `send_fields` value `excerpt` sends a bounded
+  (900-byte, UTF-8) excerpt of each candidate file, and the advisor may answer
+  `{"scores": [{"id", "score"}]}` with a score from 0 to 1 per candidate
+  instead of a path list. Every candidate now carries its `id`. Protocol in
+  `docs/brief-advisor.md`.
+
 ## [0.3.0](https://github.com/alphazede/bran/releases/tag/bran-v0.3.0) - 2026-11-19
 
 ### Added

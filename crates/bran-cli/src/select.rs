@@ -54,6 +54,7 @@ enum SendField {
     Path,
     Reason,
     Rank,
+    Excerpt,
 }
 
 #[derive(Debug)]
@@ -123,7 +124,7 @@ fn try_advise(
         }
     }
     let executable = open_and_verify_executable(&config.advisor, &config.sha256)?;
-    let stdin_bytes = build_request_json(question, rule_selected, &config.send_fields);
+    let stdin_bytes = build_request_json(question, rule_selected, &config.send_fields, roots);
     let stdout_bytes = run_advisor(&config, executable, stdin_bytes)?;
     apply_advisor_reply(&stdout_bytes, rule_selected)
 }
@@ -301,6 +302,7 @@ fn parse_config(text: &str) -> Option<AdvisorConfig> {
                         "path" => SendField::Path,
                         "reason" => SendField::Reason,
                         "rank" => SendField::Rank,
+                        "excerpt" => SendField::Excerpt,
                         _ => return None,
                     };
                     if !set.insert(field) {
@@ -389,12 +391,86 @@ fn open_and_verify_executable(path: &Path, expected_sha256: &str) -> Option<File
     Some(file)
 }
 
+const EXCERPT_MAX_BYTES: usize = 900;
+// Leading lines fill the excerpt up to this many bytes; after that only lines matching a query term.
+const EXCERPT_LEAD_BYTES: usize = 300;
+const EXCERPT_READ_BYTES: u64 = 256 * 1024;
+// Advisor scores are compared as integers in units of 1e-9.
+const SCORE_SCALE: i64 = 1_000_000_000;
+
+/// Leading non-empty lines up to `EXCERPT_LEAD_BYTES`, then the lines that contain a
+/// query term, cut to `EXCERPT_MAX_BYTES` at a character boundary.
+fn build_excerpt(text: &str, terms: &[String]) -> String {
+    let mut out = String::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if out.len() >= EXCERPT_MAX_BYTES {
+            break;
+        }
+        let lower = line.to_ascii_lowercase();
+        if out.len() < EXCERPT_LEAD_BYTES || terms.iter().any(|term| lower.contains(term)) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+    }
+    let mut end = out.len().min(EXCERPT_MAX_BYTES);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    out
+}
+
+/// The excerpt of a regular file inside `root`; `None` (sent as empty) for anything else,
+/// including text that is not valid UTF-8.
+fn read_excerpt(root: &Path, locator: &str, terms: &[String]) -> Option<String> {
+    let path = root.join(locator);
+    let file = open_readonly_nonblock(&path).ok()?;
+    let meta = file.metadata().ok()?;
+    let canonical = fs::canonicalize(&path).ok()?;
+    if !meta.is_file()
+        || !canonical.starts_with(fs::canonicalize(root).ok()?)
+        || !same_file_identity(&meta, &fs::metadata(&canonical).ok()?)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(EXCERPT_READ_BYTES).read_to_end(&mut bytes).ok()?;
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        // shortcut: only the first EXCERPT_READ_BYTES are read, so matches past them are not seen.
+        Err(e) if e.error_len().is_none() && bytes.len() as u64 == EXCERPT_READ_BYTES => {
+            std::str::from_utf8(&bytes[..e.valid_up_to()]).ok()?
+        }
+        Err(_) => return None,
+    };
+    Some(build_excerpt(text, terms))
+}
+
+fn candidate_excerpt(item: &SourceRanking, roots: &[&Path], terms: &[String]) -> String {
+    let root = if item.bundle.is_empty() {
+        roots.first()
+    } else {
+        roots.iter().find(|root| **root == Path::new(&item.bundle))
+    };
+    root.and_then(|root| read_excerpt(root, &item.locator, terms))
+        .unwrap_or_default()
+}
+
 fn build_request_json(
     question: &str,
     rule_selected: &[SourceRanking],
     send_fields: &BTreeSet<SendField>,
+    roots: &[&Path],
 ) -> Vec<u8> {
     let is_multi_root = rule_selected.iter().any(|item| !item.bundle.is_empty());
+    let terms: Vec<String> = if send_fields.contains(&SendField::Excerpt) {
+        let (terms, entities) = crate::query_terms_and_entities(question);
+        terms.into_iter().chain(entities).collect()
+    } else {
+        Vec::new()
+    };
     let mut root = BTreeMap::new();
     if send_fields.contains(&SendField::Question) {
         root.insert("question".to_owned(), Json::Str(question.to_owned()));
@@ -403,11 +479,10 @@ fn build_request_json(
         .iter()
         .map(|item| {
             let mut obj = BTreeMap::new();
-            if is_multi_root {
-                obj.insert("id".to_owned(), Json::Str(item.rank.to_string()));
-                if !item.bundle.is_empty() && send_fields.contains(&SendField::Path) {
-                    obj.insert("bundle".to_owned(), Json::Str(item.bundle.clone()));
-                }
+            // Every option carries its id so an advisor can answer with per-id scores.
+            obj.insert("id".to_owned(), Json::Str(item.rank.to_string()));
+            if is_multi_root && !item.bundle.is_empty() && send_fields.contains(&SendField::Path) {
+                obj.insert("bundle".to_owned(), Json::Str(item.bundle.clone()));
             }
             if send_fields.contains(&SendField::Path) {
                 obj.insert("path".to_owned(), Json::Str(item.locator.clone()));
@@ -420,6 +495,12 @@ fn build_request_json(
             }
             if send_fields.contains(&SendField::Rank) {
                 obj.insert("rank".to_owned(), Json::Int(item.rank as i64));
+            }
+            if send_fields.contains(&SendField::Excerpt) {
+                obj.insert(
+                    "excerpt".to_owned(),
+                    Json::Str(candidate_excerpt(item, roots, &terms)),
+                );
             }
             Json::Obj(obj)
         })
@@ -643,11 +724,134 @@ fn resolve_candidate_index(
     }
 }
 
+/// True when `token` matches the JSON number grammar.
+fn is_json_number(token: &str) -> bool {
+    let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let rest = token.strip_prefix('-').unwrap_or(token);
+    let int_len = digits(rest);
+    if int_len == 0 || (int_len > 1 && rest.starts_with('0')) {
+        return false;
+    }
+    let mut rest = &rest[int_len..];
+    if let Some(frac) = rest.strip_prefix('.') {
+        let frac_len = digits(frac);
+        if frac_len == 0 {
+            return false;
+        }
+        rest = &frac[frac_len..];
+    }
+    if let Some(exp) = rest.strip_prefix(['e', 'E']) {
+        let exp = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+        let exp_len = digits(exp);
+        return exp_len > 0 && exp_len == exp.len();
+    }
+    rest.is_empty()
+}
+
+/// Rewrites every number outside strings as an integer in `SCORE_SCALE` units, so the
+/// integer-only `Json` parser can read fractional scores. `None` for a malformed,
+/// non-finite or out-of-`i64` number.
+fn scale_numbers(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => {
+                // '"' and '\\' never occur inside a multi-byte UTF-8 sequence.
+                let start = at;
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                at = (at + 1).min(bytes.len());
+                out.extend_from_slice(&bytes[start..at]);
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = at;
+                while at < bytes.len()
+                    && matches!(bytes[at], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                {
+                    at += 1;
+                }
+                let token = std::str::from_utf8(&bytes[start..at]).ok()?;
+                if !is_json_number(token) {
+                    return None;
+                }
+                let scaled = (token.parse::<f64>().ok()? * SCORE_SCALE as f64).round();
+                if !scaled.is_finite() || scaled.abs() >= i64::MAX as f64 {
+                    return None;
+                }
+                out.extend_from_slice((scaled as i64).to_string().as_bytes());
+            }
+            byte => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Orders the rule candidates by advisor score, descending; ties and unscored candidates
+/// keep rule order, unscored after scored. Any invalid entry rejects the whole answer.
+fn apply_scores(scores: &Json, rule_selected: &[SourceRanking]) -> Option<Vec<SourceRanking>> {
+    let Json::Arr(entries) = scores else {
+        return None;
+    };
+    if entries.is_empty() {
+        return None;
+    }
+    let mut by_index: Vec<Option<i64>> = vec![None; rule_selected.len()];
+    for entry in entries {
+        let Json::Obj(map) = entry else {
+            return None;
+        };
+        let (Some(Json::Str(id)), Some(Json::Int(score)), 2) =
+            (map.get("id"), map.get("score"), map.len())
+        else {
+            return None;
+        };
+        if !(0..=SCORE_SCALE).contains(score) {
+            return None;
+        }
+        let idx = rule_selected
+            .iter()
+            .position(|item| item.rank.to_string() == *id)?;
+        if by_index[idx].replace(*score).is_some() {
+            return None;
+        }
+    }
+    let mut order: Vec<usize> = (0..rule_selected.len()).collect();
+    order.sort_by_key(|&idx| std::cmp::Reverse(by_index[idx]));
+    Some(
+        order
+            .into_iter()
+            .enumerate()
+            .map(|(position, idx)| {
+                let mut copy = rule_selected[idx].clone();
+                copy.rank = position + 1;
+                copy
+            })
+            .collect(),
+    )
+}
+
 fn apply_advisor_reply(
     stdout_bytes: &[u8],
     rule_selected: &[SourceRanking],
 ) -> Option<Vec<SourceRanking>> {
+    if let Some(reply) = scale_numbers(stdout_bytes).and_then(|bytes| Json::parse(&bytes)) {
+        if let Some(scores) = reply.get("scores") {
+            return match reply.get("paths") {
+                Some(_) => None,
+                None => apply_scores(scores, rule_selected),
+            };
+        }
+    }
     let parsed = Json::parse(stdout_bytes)?;
+    if parsed.get("scores").is_some() {
+        return None;
+    }
     let Some(Json::Arr(path_values)) = parsed.get("paths") else {
         return None;
     };
@@ -714,6 +918,161 @@ mod tests {
         assert!(!poison_marker.exists(), "replacement script must not run");
         assert_eq!(stdout, br#"{"paths":["a.md"]}"#);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn candidate(rank: usize) -> SourceRanking {
+        SourceRanking {
+            bundle: String::new(),
+            id: crate::NodeId::parse(format!("n{rank}")).unwrap(),
+            locator: format!("doc-{rank}.md"),
+            rank,
+            exact_matches: 1,
+            partial_matches: 0,
+            match_reason: String::new(),
+            active: 0,
+            canonical: 0,
+            public_safe: 0,
+            confidence: 0,
+            freshness: String::new(),
+            brief_tier: 0,
+            brief_score: 0,
+        }
+    }
+
+    fn scored(reply: &str, count: usize) -> Option<Vec<String>> {
+        let rule: Vec<SourceRanking> = (1..=count).map(candidate).collect();
+        let advised = apply_advisor_reply(reply.as_bytes(), &rule)?;
+        for (index, item) in advised.iter().enumerate() {
+            assert_eq!(item.rank, index + 1, "ranks follow the advised order");
+        }
+        Some(advised.into_iter().map(|item| item.locator).collect())
+    }
+
+    #[test]
+    fn scores_order_descending_with_rule_order_for_ties_and_unscored() {
+        let reply =
+            r#"{"scores":[{"id":"3","score":0.5},{"id":"1","score":0.5},{"id":"4","score":0.9}]}"#;
+        assert_eq!(
+            scored(reply, 5).unwrap(),
+            ["doc-4.md", "doc-1.md", "doc-3.md", "doc-2.md", "doc-5.md"],
+            "descending score, ties and unscored keep rule order, unscored last"
+        );
+        let reply = r#"{"scores":[{"score":1,"id":"2"},{"id":"1","score":0}]}"#;
+        assert_eq!(scored(reply, 2).unwrap(), ["doc-2.md", "doc-1.md"]);
+        let reply = r#"{"scores":[{"id":"2","score":1e-1},{"id":"1","score":5E-2}]}"#;
+        assert_eq!(scored(reply, 2).unwrap(), ["doc-2.md", "doc-1.md"]);
+        let reply = r#"{"paths":["doc-2.md"]}"#;
+        assert_eq!(
+            scored(reply, 2).unwrap(),
+            ["doc-2.md"],
+            "path replies unchanged"
+        );
+    }
+
+    #[test]
+    fn invalid_score_replies_reject_the_whole_answer() {
+        for reply in [
+            r#"{"scores":[{"id":"9","score":0.5}]}"#,
+            r#"{"scores":[{"id":"0","score":0.5}]}"#,
+            r#"{"scores":[{"id":"1","score":0.5},{"id":"1","score":0.4}]}"#,
+            r#"{"scores":[{"id":"1","score":1.5}]}"#,
+            r#"{"scores":[{"id":"1","score":-0.1}]}"#,
+            r#"{"scores":[{"id":"1","score":2}]}"#,
+            r#"{"scores":[{"id":"1","score":1e999}]}"#,
+            r#"{"scores":[{"id":"1","score":NaN}]}"#,
+            r#"{"scores":[{"id":"1","score":Infinity}]}"#,
+            r#"{"scores":[{"id":"1","score":"0.5"}]}"#,
+            r#"{"scores":[{"id":"1","score":null}]}"#,
+            r#"{"scores":[{"id":"1"}]}"#,
+            r#"{"scores":[{"id":1,"score":0.5}]}"#,
+            r#"{"scores":[{"id":"1","score":0.5,"note":"x"}]}"#,
+            r#"{"scores":[{"id":"1","score":.5}]}"#,
+            r#"{"scores":[{"id":"1","score":01}]}"#,
+            r#"{"scores":[{"id":"1","score":1.}]}"#,
+            r#"{"scores":[{"id":"1","score":0.5e}]}"#,
+            r#"{"scores":[{"id":"1","score":+0.5}]}"#,
+            r#"{"scores":[]}"#,
+            r#"{"scores":{"1":0.5}}"#,
+            r#"{"scores":[0.5]}"#,
+            r#"{"scores":[{"id":"1","score":0.5}],"paths":["doc-1.md"]}"#,
+            r#"{"paths":["doc-1.md"],"scores":[{"id":"1","score":99999999999}]}"#,
+            r#"{"scores":[{"id":"1","score":0.5}]"#,
+        ] {
+            assert_eq!(scored(reply, 3), None, "rejected: {reply}");
+        }
+    }
+
+    #[test]
+    fn scale_numbers_leaves_strings_untouched() {
+        let scaled = scale_numbers(br#"{"a\"1.5":[0.25,-1,"0.5""]}"#).unwrap();
+        assert_eq!(
+            String::from_utf8(scaled).unwrap(),
+            r#"{"a\"1.5":[250000000,-1000000000,"0.5""]}"#
+        );
+    }
+
+    #[test]
+    fn excerpt_keeps_leading_lines_then_matching_lines_within_bound() {
+        let terms = vec!["lantern".to_owned()];
+        let text = "# Title\n\n  intro line  \nfiller\nmore filler\nthe Lantern room\n";
+        assert_eq!(
+            build_excerpt(text, &terms),
+            "# Title\nintro line\nfiller\nmore filler\nthe Lantern room"
+        );
+
+        let lead = "x".repeat(EXCERPT_LEAD_BYTES);
+        let text = format!("{lead}\nfiller\nlantern one\nfiller\nlantern two\n");
+        assert_eq!(
+            build_excerpt(&text, &terms),
+            format!("{lead}\nlantern one\nlantern two"),
+            "past the leading bytes only matching lines are kept"
+        );
+
+        // A two-byte character straddles the byte bound: the cut lands before it.
+        let text = format!("{}é lantern", "a".repeat(EXCERPT_MAX_BYTES - 1));
+        let excerpt = build_excerpt(&text, &terms);
+        assert_eq!(excerpt, "a".repeat(EXCERPT_MAX_BYTES - 1));
+        let long = "lantern é ".repeat(500);
+        let excerpt = build_excerpt(&long, &terms);
+        assert!(excerpt.len() <= EXCERPT_MAX_BYTES && excerpt.len() > EXCERPT_MAX_BYTES - 4);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_excerpt_refuses_non_utf8_escapes_and_non_files() {
+        let dir = std::env::temp_dir().join(format!("bran-select-excerpt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let root = dir.join("tree");
+        fs::create_dir_all(&root).unwrap();
+        let terms = vec!["lantern".to_owned()];
+        fs::write(root.join("good.md"), "lantern\n").unwrap();
+        fs::write(root.join("binary.md"), b"lantern \xff\xfe\n").unwrap();
+        fs::write(dir.join("outside.md"), "lantern secret\n").unwrap();
+        std::os::unix::fs::symlink(dir.join("outside.md"), root.join("link.md")).unwrap();
+        fs::create_dir_all(root.join("sub.md")).unwrap();
+
+        assert_eq!(
+            read_excerpt(&root, "good.md", &terms).as_deref(),
+            Some("lantern")
+        );
+        assert_eq!(
+            read_excerpt(&root, "binary.md", &terms),
+            None,
+            "invalid UTF-8"
+        );
+        assert_eq!(
+            read_excerpt(&root, "link.md", &terms),
+            None,
+            "symlink out of root"
+        );
+        assert_eq!(
+            read_excerpt(&root, "../outside.md", &terms),
+            None,
+            "path out of root"
+        );
+        assert_eq!(read_excerpt(&root, "sub.md", &terms), None, "not a file");
+        assert_eq!(read_excerpt(&root, "missing.md", &terms), None);
         let _ = fs::remove_dir_all(&dir);
     }
 

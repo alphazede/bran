@@ -7,14 +7,17 @@
 //!   caller's `BRAN_ADVISOR_CONFIG`, never from the queried tree.
 //! - Configuration lines: `advisor: <absolute path>`, `sha256: <lowercase hex
 //!   of the executable bytes>`, `timeout_ms: <n>`, `send_fields: [..]` (subset
-//!   of question, path, reason, rank), optional `requires_env: <NAME>`,
+//!   of question, path, reason, rank, excerpt), optional `requires_env: <NAME>`,
 //!   optional `pass_env: [NAME, ..]`.
 //! - The child gets a cleared environment plus only the `pass_env` names that
 //!   are set in BRAN's environment.
 //! - Stdin: `{"question": .., "options": [{..}, ..]}`, one option per rule
-//!   path in rule order, each carrying only the `send_fields` keys.
+//!   path in rule order (the whole rule shortlist, before `--top`), each
+//!   carrying its `id` plus only the `send_fields` keys.
 //! - Stdout: `{"paths": [..]}`, a reorder or subset (no duplicates, at least
-//!   one) of the rule paths. Anything else, a non-zero exit, oversized
+//!   one) of the rule paths, or `{"scores": [{"id": .., "score": 0..1}, ..]}`,
+//!   which orders by score descending (ties and unscored keep rule order,
+//!   unscored last). Anything else, a non-zero exit, oversized
 //!   stdout, or no answer within `timeout_ms` (child killed) keeps the rule
 //!   answer with `selection.source` "rule", exit 0 and no warning in `data`.
 use bran_document::canonical::Json;
@@ -365,7 +368,8 @@ fn advisor_request_carries_only_send_fields() {
     let request = Json::parse(&fs::read(&stdin).expect("advisor read stdin")).unwrap();
     let options: Vec<String> = rule_paths
         .iter()
-        .map(|p| format!("{{\"path\":\"{p}\"}}"))
+        .enumerate()
+        .map(|(i, p)| format!("{{\"id\":\"{}\",\"path\":\"{p}\"}}", i + 1))
         .collect();
     let expected = format!(
         "{{\"question\":\"{QUESTION}\",\"options\":[{}]}}",
@@ -901,4 +905,231 @@ fn advisor_stdout_byte_limit_accepts_at_bound_and_rejects_over_bound() {
         &[("ADVISOR_REPLY", &reply_over)],
         "valid JSON reply 1 byte over stdout limit",
     );
+}
+
+fn scores_json(scores: &[(&str, &str)]) -> String {
+    let entries: Vec<String> = scores
+        .iter()
+        .map(|(id, score)| format!("{{\"id\":\"{id}\",\"score\":{score}}}"))
+        .collect();
+    format!("{{\"scores\":[{}]}}", entries.join(","))
+}
+
+fn request_options(stdin: &Path) -> Vec<Json> {
+    let request = Json::parse(&fs::read(stdin).expect("advisor read stdin")).unwrap();
+    let Some(Json::Arr(options)) = request.get("options") else {
+        panic!("stdin options array: {request:?}")
+    };
+    options.clone()
+}
+
+/// Leading lines then query-term lines, joined by newlines (the excerpt rule for short files).
+fn whole_file_excerpt(path: &Path) -> String {
+    let text = fs::read_to_string(path).unwrap();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.join("\n")
+}
+
+// Slice D item 1: `excerpt` sends a bounded file excerpt per option, only when listed.
+#[test]
+fn advisor_excerpt_is_sent_only_when_listed() {
+    let repo = Repo::new("advisor-excerpt");
+    // A long candidate: past the leading lines only lines with query terms are kept.
+    let mut body = String::from("The heron lantern guides night boats. Heron lantern wicks need trimming; the heron lantern glass needs cleaning.\n");
+    for n in 0..40 {
+        body.push_str(&format!(
+            "\nUnrelated filler paragraph {n} about rope and tar.\n"
+        ));
+        body.push_str(&format!("\nHeron lantern note {n}: wick ñ é ü trimmed.\n"));
+    }
+    fs::write(repo.root.join(SOUTH), doc("Heron Lantern South", &body)).unwrap();
+    let rule_paths = paths(&repo.brief(None, &[]));
+    assert!(rule_paths.contains(&NORTH.to_owned()) && rule_paths.contains(&SOUTH.to_owned()));
+
+    let stdin = repo.file("stdin.json");
+    let reply = repo.reply(&reply_json(&[NORTH]));
+    let env: [(&str, &Path); 2] = [("ADVISOR_STDIN", &stdin), ("ADVISOR_REPLY", &reply)];
+    let with_excerpt = repo.config(
+        "with.yaml",
+        &advisor_lines(
+            &sha256_hex(&advisor_script()),
+            5000,
+            "[question, path, excerpt]",
+            &["ADVISOR_STDIN", "ADVISOR_REPLY"],
+        ),
+    );
+    assert_eq!(source(&repo.brief(Some(&with_excerpt), &env)), "advisor");
+    let options = request_options(&stdin);
+    assert_eq!(options.len(), rule_paths.len());
+    for option in &options {
+        assert_eq!(
+            keys(option),
+            BTreeSet::from(["excerpt", "id", "path"]),
+            "{option:?}"
+        );
+        let path = text(option.get("path"));
+        let excerpt = text(option.get("excerpt"));
+        assert!(excerpt.len() <= 900, "{path}: {} bytes", excerpt.len());
+        if path == NORTH {
+            assert_eq!(excerpt, whole_file_excerpt(&repo.root.join(NORTH)));
+        } else if path == SOUTH {
+            assert!(excerpt.starts_with("---\ntype: concept\ntitle: Heron Lantern South"));
+            assert!(excerpt.contains("Heron lantern note 0: wick ñ é ü trimmed."));
+            assert!(
+                !excerpt.contains("filler paragraph 1 "),
+                "non-matching lines dropped"
+            );
+            assert!(
+                excerpt.len() > 850,
+                "the bound is filled: {}",
+                excerpt.len()
+            );
+        }
+    }
+
+    // Negative: without `excerpt` in send_fields no file text leaves the process.
+    let without = repo.config(
+        "without.yaml",
+        &good_lines(&["ADVISOR_STDIN", "ADVISOR_REPLY"]),
+    );
+    assert_eq!(source(&repo.brief(Some(&without), &env)), "advisor");
+    let raw = fs::read_to_string(&stdin).unwrap();
+    assert!(!raw.contains("excerpt"), "no excerpt key: {raw}");
+    assert!(!raw.contains("wicks need trimming"), "no file text: {raw}");
+    assert!(!raw.contains("concept"), "no frontmatter text: {raw}");
+}
+
+// Slice D item 2: a per-id score answer orders by score, ties and unscored keep rule order.
+#[test]
+fn advisor_scores_order_the_rule_candidates() {
+    let repo = Repo::new("advisor-scores");
+    let rule = repo.brief(None, &[]);
+    let rule_items = results(&rule);
+    let rule_paths = paths(&rule);
+    assert_eq!(rule_paths.len(), 2);
+    let reversed = vec![rule_paths[1].clone(), rule_paths[0].clone()];
+    let config = repo.config("advisor.yaml", &good_lines(&["ADVISOR_REPLY"]));
+
+    for (scores, expected, what) in [
+        (
+            vec![("1", "0.25"), ("2", "0.9")],
+            &reversed,
+            "descending score",
+        ),
+        (
+            vec![("2", "1"), ("1", "0")],
+            &reversed,
+            "integer bounds 0 and 1",
+        ),
+        (
+            vec![("1", "0.5"), ("2", "0.5")],
+            &rule_paths,
+            "tie keeps rule order",
+        ),
+        (
+            vec![("2", "0.1")],
+            &reversed,
+            "unscored candidates follow scored ones",
+        ),
+    ] {
+        let reply = repo.reply(&scores_json(&scores));
+        let advised = repo.brief(Some(&config), &[("ADVISOR_REPLY", &reply)]);
+        assert_eq!(source(&advised), "advisor", "{what}");
+        assert_eq!(&paths(&advised), expected, "{what}");
+        for (index, (rank, path, reason)) in results(&advised).iter().enumerate() {
+            assert_eq!(
+                *rank,
+                index as i64 + 1,
+                "{what}: ranks follow the advised order"
+            );
+            let rule_reason = &rule_items.iter().find(|r| &r.1 == path).unwrap().2;
+            assert_eq!(
+                reason, rule_reason,
+                "{what}: reason comes from the rule result"
+            );
+        }
+    }
+}
+
+// Slice D item 2 negatives: every invalid score answer keeps the rule answer.
+#[test]
+fn advisor_score_faults_keep_the_rule_answer() {
+    let repo = Repo::new("advisor-score-faults");
+    let rule = repo.brief(None, &[]);
+    let config = repo.config(
+        "advisor.yaml",
+        &good_lines(&["ADVISOR_REPLY", "ADVISOR_MODE"]),
+    );
+    let bad_replies = [
+        (scores_json(&[("2", "0.9"), ("9", "0.5")]), "unknown id"),
+        (scores_json(&[("2", "0.9"), ("2", "0.1")]), "duplicate id"),
+        (scores_json(&[("2", "1.5")]), "score above 1"),
+        (scores_json(&[("2", "-0.1")]), "negative score"),
+        (scores_json(&[("2", "1e999")]), "non-finite score"),
+        (scores_json(&[("2", "NaN")]), "NaN score"),
+        (scores_json(&[("2", "\"0.9\"")]), "score as a string"),
+        (scores_json(&[("2", ".9")]), "malformed number"),
+        ("{\"scores\":[]}".to_owned(), "empty scores"),
+        ("{\"scores\":{\"2\":0.9}}".to_owned(), "scores not a list"),
+        (
+            format!("{{\"paths\":[\"{NORTH}\"],\"scores\":[{{\"id\":\"2\",\"score\":0.9}}]}}"),
+            "both paths and scores",
+        ),
+    ];
+    for (body, what) in &bad_replies {
+        let reply = repo.reply(body);
+        assert_rule_kept(&repo, &rule, &config, &[("ADVISOR_REPLY", &reply)], what);
+    }
+    let good = scores_json(&[("2", "0.9"), ("1", "0.1")]);
+    let reply = repo.reply(&good);
+    assert_eq!(
+        source(&repo.brief(Some(&config), &[("ADVISOR_REPLY", &reply)])),
+        "advisor",
+        "the control reply is accepted"
+    );
+    for mode in ["big", "exit"] {
+        let mode_value = PathBuf::from(mode);
+        assert_rule_kept(
+            &repo,
+            &rule,
+            &config,
+            &[("ADVISOR_REPLY", &reply), ("ADVISOR_MODE", &mode_value)],
+            &format!("valid scores with mode {mode}"),
+        );
+    }
+}
+
+// Slice D item 3: the advisor sees the whole rule shortlist before --top truncates it
+// (`select::apply` advises `rule_selected`; the callers truncate to --top afterwards),
+// so it can promote a candidate into the returned set.
+#[test]
+fn advisor_sees_the_rule_shortlist_beyond_top() {
+    let repo = Repo::new("advisor-shortlist");
+    let (rule, _) = repo.brief_with(repo.command(None, &[], &["--top", "32"]));
+    let rule_paths = paths(&rule);
+    assert_eq!(rule_paths.len(), 2);
+    let config = repo.config(
+        "advisor.yaml",
+        &good_lines(&["ADVISOR_STDIN", "ADVISOR_REPLY"]),
+    );
+    let stdin = repo.file("stdin.json");
+    for body in [
+        scores_json(&[("2", "0.8"), ("1", "0.2")]),
+        reply_json(&[&rule_paths[1]]),
+    ] {
+        let reply = repo.reply(&body);
+        let env: [(&str, &Path); 2] = [("ADVISOR_STDIN", &stdin), ("ADVISOR_REPLY", &reply)];
+        let (advised, _) = repo.brief_with(repo.command(Some(&config), &env, &["--top", "1"]));
+        let sent: Vec<String> = request_options(&stdin)
+            .iter()
+            .map(|o| text(o.get("path")).to_owned())
+            .collect();
+        assert_eq!(sent, rule_paths, "advisor receives the full rule shortlist");
+        assert_eq!(source(&advised), "advisor");
+        assert_eq!(paths(&advised), vec![rule_paths[1].clone()], "{body}");
+    }
 }
