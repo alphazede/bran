@@ -7,11 +7,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use bran_document::canonical::{sha256_hex, Json};
@@ -21,7 +21,8 @@ use crate::{one_line_reason, SourceRanking};
 const ADVISOR_CONFIG_ENV: &str = "BRAN_ADVISOR_CONFIG";
 
 // Deterministic rule threshold: keep the top result plus ranked results scoring
-// at least 3/10 (0.30) of the top score, up to the caller's --top bound.
+// at least 3/10 (0.30) of the top score, as an ordered subsequence of the
+// bounded shortlist before --top truncates the output.
 const RULE_RATIO_NUM: u128 = 3;
 const RULE_RATIO_DEN: u128 = 10;
 const SCORE_EXACT_WEIGHT: u128 = 1_000_000;
@@ -70,12 +71,13 @@ struct AdvisorConfig {
 pub(crate) fn apply(
     question: &str,
     ranked: Vec<SourceRanking>,
+    roots: &[&Path],
 ) -> (Vec<SourceRanking>, SelectionSource) {
     let rule_selected = rule_select(ranked);
     if rule_selected.is_empty() {
         return (rule_selected, SelectionSource::Rule);
     }
-    if let Some(advised) = try_advise(question, &rule_selected) {
+    if let Some(advised) = try_advise(question, &rule_selected, roots) {
         return (advised, SelectionSource::Advisor);
     }
     (rule_selected, SelectionSource::Rule)
@@ -108,26 +110,88 @@ fn rule_select(ranked: Vec<SourceRanking>) -> Vec<SourceRanking> {
     kept
 }
 
-fn try_advise(question: &str, rule_selected: &[SourceRanking]) -> Option<Vec<SourceRanking>> {
+fn try_advise(
+    question: &str,
+    rule_selected: &[SourceRanking],
+    roots: &[&Path],
+) -> Option<Vec<SourceRanking>> {
     let config_path = std::env::var_os(ADVISOR_CONFIG_ENV).filter(|v| !v.is_empty())?;
-    let config = load_config(Path::new(&config_path))?;
+    let config = load_config(Path::new(&config_path), roots)?;
     if let Some(required) = &config.requires_env {
         if std::env::var_os(required).is_none_or(|v| v.is_empty()) {
             return None;
         }
     }
-    verify_executable_digest(&config.advisor, &config.sha256)?;
+    let executable = open_and_verify_executable(&config.advisor, &config.sha256)?;
     let stdin_bytes = build_request_json(question, rule_selected, &config.send_fields);
-    let stdout_bytes = run_advisor(&config, stdin_bytes)?;
+    let stdout_bytes = run_advisor(&config, executable, stdin_bytes)?;
     apply_advisor_reply(&stdout_bytes, rule_selected)
 }
 
-fn load_config(path: &Path) -> Option<AdvisorConfig> {
-    let meta = fs::metadata(path).ok()?;
+#[cfg(unix)]
+fn open_readonly_nonblock(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_readonly_nonblock(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    true
+}
+
+fn canonical_parent_dir(path: &Path) -> Option<PathBuf> {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let parent = abs.parent()?;
+    fs::canonicalize(parent).ok()
+}
+
+fn load_config(path: &Path, roots: &[&Path]) -> Option<AdvisorConfig> {
+    let file = open_readonly_nonblock(path).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_CONFIG_BYTES {
         return None;
     }
-    let text = fs::read_to_string(path).ok()?;
+
+    let canonical_config = fs::canonicalize(path).ok()?;
+    let canonical_meta = fs::metadata(&canonical_config).ok()?;
+    if !same_file_identity(&meta, &canonical_meta) {
+        return None;
+    }
+    let canonical_parent = canonical_parent_dir(path)?;
+    for root in roots {
+        let canonical_root = fs::canonicalize(root).ok()?;
+        if canonical_config.starts_with(&canonical_root)
+            || canonical_parent.starts_with(&canonical_root)
+        {
+            return None;
+        }
+    }
+
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > MAX_CONFIG_BYTES {
+        return None;
+    }
     parse_config(&text)
 }
 
@@ -279,20 +343,50 @@ fn parse_config(text: &str) -> Option<AdvisorConfig> {
     })
 }
 
-fn verify_executable_digest(path: &Path, expected_sha256: &str) -> Option<()> {
-    let meta = fs::metadata(path).ok()?;
+#[cfg(unix)]
+fn ensure_fd_above_stdio(file: File) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    if file.as_raw_fd() >= 3 {
+        return Ok(file);
+    }
+    let old_fd = file.into_raw_fd();
+    // SAFETY: `old_fd` is a valid open descriptor owned here and closed on all paths.
+    let new_fd = unsafe { libc::fcntl(old_fd, libc::F_DUPFD_CLOEXEC, 3) };
+    // SAFETY: `old_fd` is no longer referenced after `into_raw_fd()`.
+    unsafe { libc::close(old_fd) };
+    if new_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `new_fd` is a newly duplicated open descriptor owned by this `File`.
+    Ok(unsafe { File::from_raw_fd(new_fd) })
+}
+
+fn open_and_verify_executable(path: &Path, expected_sha256: &str) -> Option<File> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut file = open_readonly_nonblock(path).ok()?;
+    #[cfg(unix)]
+    {
+        file = ensure_fd_above_stdio(file).ok()?;
+    }
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_EXECUTABLE_BYTES {
         return None;
     }
-    let file = File::open(path).ok()?;
     let mut bytes = Vec::with_capacity(meta.len().min(MAX_EXECUTABLE_BYTES) as usize);
-    file.take(MAX_EXECUTABLE_BYTES + 1)
+    (&file)
+        .take(MAX_EXECUTABLE_BYTES + 1)
         .read_to_end(&mut bytes)
         .ok()?;
     if bytes.len() as u64 > MAX_EXECUTABLE_BYTES {
         return None;
     }
-    (sha256_hex(&bytes) == expected_sha256).then_some(())
+    if sha256_hex(&bytes) != expected_sha256 {
+        return None;
+    }
+    file.seek(SeekFrom::Start(0)).ok()?;
+    Some(file)
 }
 
 fn build_request_json(
@@ -300,6 +394,7 @@ fn build_request_json(
     rule_selected: &[SourceRanking],
     send_fields: &BTreeSet<SendField>,
 ) -> Vec<u8> {
+    let is_multi_root = rule_selected.iter().any(|item| !item.bundle.is_empty());
     let mut root = BTreeMap::new();
     if send_fields.contains(&SendField::Question) {
         root.insert("question".to_owned(), Json::Str(question.to_owned()));
@@ -308,6 +403,12 @@ fn build_request_json(
         .iter()
         .map(|item| {
             let mut obj = BTreeMap::new();
+            if is_multi_root {
+                obj.insert("id".to_owned(), Json::Str(item.rank.to_string()));
+                if !item.bundle.is_empty() && send_fields.contains(&SendField::Path) {
+                    obj.insert("bundle".to_owned(), Json::Str(item.bundle.clone()));
+                }
+            }
             if send_fields.contains(&SendField::Path) {
                 obj.insert("path".to_owned(), Json::Str(item.locator.clone()));
             }
@@ -327,8 +428,18 @@ fn build_request_json(
     Json::Obj(root).to_bytes()
 }
 
-fn run_advisor(config: &AdvisorConfig, stdin_bytes: Vec<u8>) -> Option<Vec<u8>> {
+fn build_verified_command(config: &AdvisorConfig, executable: &File) -> Command {
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()));
+        cmd.arg0(&config.advisor);
+        cmd
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut command = Command::new(&config.advisor);
+
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -340,21 +451,61 @@ fn run_advisor(config: &AdvisorConfig, stdin_bytes: Vec<u8>) -> Option<Vec<u8>> 
         }
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        #[cfg(target_os = "linux")]
+        let raw_fd = {
+            use std::os::fd::AsRawFd;
+            executable.as_raw_fd()
+        };
+        // SAFETY: runs in the forked child prior to `exec` using async-signal-safe
+        // `setpgid`/`fcntl`/`lseek` calls on valid open descriptors.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let flags = libc::fcntl(raw_fd, libc::F_GETFD);
+                    if flags < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::fcntl(raw_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let _ = libc::lseek(raw_fd, 0, libc::SEEK_SET);
+                }
+                Ok(())
+            });
+        }
+    }
+
+    command
+}
+
+fn run_advisor(config: &AdvisorConfig, executable: File, stdin_bytes: Vec<u8>) -> Option<Vec<u8>> {
+    let mut command = build_verified_command(config, &executable);
     let deadline = Instant::now() + Duration::from_millis(config.timeout_ms);
     let mut child = command.spawn().ok()?;
+    drop(executable);
+
     let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
         kill_and_reap(child);
         return None;
     };
 
     // Write stdin and drain bounded stdout on helper threads so neither blocks past deadline.
-    thread::spawn(move || {
-        let _ = stdin.write_all(&stdin_bytes);
+    let (stdin_tx, stdin_rx) = mpsc::channel();
+    let stdin_handle = thread::spawn(move || {
+        let res = stdin.write_all(&stdin_bytes).and_then(|()| stdin.flush());
         drop(stdin);
+        let _ = stdin_tx.send(res.map_err(|_| ()));
     });
 
     let (stdout_tx, stdout_rx) = mpsc::channel();
-    thread::spawn(move || {
+    let stdout_handle = thread::spawn(move || {
         let mut buf = Vec::new();
         let res = (&mut stdout)
             .take((MAX_STDOUT_BYTES + 1) as u64)
@@ -371,18 +522,37 @@ fn run_advisor(config: &AdvisorConfig, stdin_bytes: Vec<u8>) -> Option<Vec<u8>> 
         Some(Ok(bytes)) => bytes,
         _ => {
             kill_and_reap(child);
+            join_io(stdin_handle, stdout_handle);
             return None;
         }
     };
 
-    match wait_exit_until(&mut child, deadline) {
-        Some(status) if status.success() => Some(stdout_bytes),
-        Some(_) => None,
-        None => {
-            kill_and_reap(child);
-            None
-        }
+    if !matches!(recv_until(&stdin_rx, deadline), Some(Ok(()))) {
+        kill_and_reap(child);
+        join_io(stdin_handle, stdout_handle);
+        return None;
     }
+
+    let status = match wait_exit_until(&mut child, deadline) {
+        WaitOutcome::Exited(status) => status,
+        WaitOutcome::TimedOutOrError => {
+            kill_and_reap(child);
+            join_io(stdin_handle, stdout_handle);
+            return None;
+        }
+    };
+    join_io(stdin_handle, stdout_handle);
+
+    if status.success() && Instant::now() <= deadline {
+        Some(stdout_bytes)
+    } else {
+        None
+    }
+}
+
+fn join_io(stdin_handle: JoinHandle<()>, stdout_handle: JoinHandle<()>) {
+    let _ = stdin_handle.join();
+    let _ = stdout_handle.join();
 }
 
 fn recv_until<T>(rx: &mpsc::Receiver<T>, deadline: Instant) -> Option<T> {
@@ -390,21 +560,87 @@ fn recv_until<T>(rx: &mpsc::Receiver<T>, deadline: Instant) -> Option<T> {
     rx.recv_timeout(remaining).ok()
 }
 
-fn wait_exit_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+enum WaitOutcome {
+    Exited(ExitStatus),
+    TimedOutOrError,
+}
+
+fn wait_exit_until(child: &mut Child, deadline: Instant) -> WaitOutcome {
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Err(_) => return None,
+            Ok(Some(status)) => {
+                return if Instant::now() <= deadline {
+                    WaitOutcome::Exited(status)
+                } else {
+                    WaitOutcome::TimedOutOrError
+                };
+            }
+            Err(_) => return WaitOutcome::TimedOutOrError,
             Ok(None) => {}
         }
-        let remaining = deadline.checked_duration_since(Instant::now())?;
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return WaitOutcome::TimedOutOrError;
+        };
         thread::sleep(remaining.min(Duration::from_millis(2)));
     }
 }
 
 fn kill_and_reap(mut child: Child) {
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as libc::pid_t;
+        if pgid > 0 {
+            // SAFETY: `child` has not been reaped yet, so `pgid` still identifies
+            // the process group created via `setpgid(0, 0)`.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn resolve_candidate_index(
+    value: &Json,
+    rule_selected: &[SourceRanking],
+    is_multi_root: bool,
+) -> Option<usize> {
+    match value {
+        Json::Str(token) => {
+            let mut matched: Option<usize> = None;
+            for (idx, item) in rule_selected.iter().enumerate() {
+                let id_match = is_multi_root && item.rank.to_string() == *token;
+                let path_match = &item.locator == token;
+                if id_match || path_match {
+                    if matched.is_some() {
+                        return None;
+                    }
+                    matched = Some(idx);
+                }
+            }
+            matched
+        }
+        Json::Obj(obj) if is_multi_root => {
+            let Some(Json::Str(bundle)) = obj.get("bundle") else {
+                return None;
+            };
+            let Some(Json::Str(path)) = obj.get("path") else {
+                return None;
+            };
+            let mut matched: Option<usize> = None;
+            for (idx, item) in rule_selected.iter().enumerate() {
+                if &item.bundle == bundle && &item.locator == path {
+                    if matched.is_some() {
+                        return None;
+                    }
+                    matched = Some(idx);
+                }
+            }
+            matched
+        }
+        _ => None,
+    }
 }
 
 fn apply_advisor_reply(
@@ -419,19 +655,82 @@ fn apply_advisor_reply(
         return None;
     }
 
+    let is_multi_root = rule_selected.iter().any(|item| !item.bundle.is_empty());
     let mut seen = BTreeSet::new();
     let mut advised = Vec::with_capacity(path_values.len());
     for value in path_values {
-        let Json::Str(path) = value else {
-            return None;
-        };
-        if !seen.insert(path.as_str()) {
+        let idx = resolve_candidate_index(value, rule_selected, is_multi_root)?;
+        if !seen.insert(idx) {
             return None;
         }
-        let found = rule_selected.iter().find(|item| &item.locator == path)?;
-        let mut copy = found.clone();
+        let mut copy = rule_selected[idx].clone();
         copy.rank = advised.len() + 1;
         advised.push(copy);
     }
     Some(advised)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn verified_executable_runs_original_bytes_after_path_replacement() {
+        let dir = std::env::temp_dir().join(format!("bran-select-toctou-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let script_path = dir.join("advisor.sh");
+        let poison_marker = dir.join("poison-ran");
+        let original = b"#!/bin/sh\ncat >/dev/null\nprintf '{\"paths\":[\"a.md\"]}'\n";
+        fs::write(&script_path, original).unwrap();
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let digest = sha256_hex(original);
+        let verified_fd = open_and_verify_executable(&script_path, &digest)
+            .expect("original script passes digest");
+
+        // Atomically replace the file at `script_path` after verification and before spawn.
+        let replacement_path = dir.join("advisor.sh.new");
+        let replacement = format!(
+            "#!/bin/sh\ncat >/dev/null\ntouch '{}'\nprintf '{{\"paths\":[\"b.md\"]}}'\n",
+            poison_marker.display()
+        );
+        fs::write(&replacement_path, replacement).unwrap();
+        fs::set_permissions(&replacement_path, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&replacement_path, &script_path).unwrap();
+
+        let config = AdvisorConfig {
+            advisor: script_path.clone(),
+            sha256: digest,
+            timeout_ms: 5_000,
+            send_fields: BTreeSet::from([SendField::Path]),
+            requires_env: None,
+            pass_env: Vec::new(),
+        };
+        let stdout = run_advisor(&config, verified_fd, b"{}".to_vec())
+            .expect("verified fd runs despite path replacement");
+        assert!(!poison_marker.exists(), "replacement script must not run");
+        assert_eq!(stdout, br#"{"paths":["a.md"]}"#);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn late_exit_past_deadline_is_rejected_even_if_child_exited_zero() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn sh");
+        // Wait until the child is definitely finished, then check against an expired deadline.
+        thread::sleep(Duration::from_millis(30));
+        let expired = Instant::now() - Duration::from_millis(5);
+        assert!(matches!(
+            wait_exit_until(&mut child, expired),
+            WaitOutcome::TimedOutOrError
+        ));
+        let _ = child.wait();
+    }
 }

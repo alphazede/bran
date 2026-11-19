@@ -277,7 +277,8 @@ fn rule_keeps_the_tied_strong_matches_and_drops_weak_mentions() {
     );
 }
 
-// TC-13: output for --top N is a prefix of the rule answer, minimum 1, and runs are identical.
+// TC-13: output for --top N is a prefix of the rule answer (which itself is an ordered
+// subsequence of the ranked shortlist across tiers), minimum 1, and runs are identical.
 #[test]
 fn rule_answer_is_a_deterministic_prefix_under_top() {
     let repo = Repo::new("rule-prefix");
@@ -432,7 +433,8 @@ fn advisor_faults_keep_the_rule_answer() {
     );
 }
 
-// TC-14 sleep_past_budget: the query returns within timeout_ms + 2000 ms and the child is killed.
+// TC-14 sleep_past_budget: the query returns within timeout_ms + 2000 ms, the child
+// process tree (both direct child and helper child) is killed, and the direct child is reaped.
 #[test]
 #[cfg(target_os = "linux")]
 fn advisor_past_deadline_is_killed_and_rule_answers() {
@@ -453,15 +455,20 @@ fn advisor_past_deadline_is_killed_and_rule_answers() {
             &sha256_hex(&advisor_script()),
             timeout_ms,
             ALL_FIELDS,
-            &["ADVISOR_MARKER", "ADVISOR_MODE"],
+            &["ADVISOR_MARKER", "ADVISOR_HELPER_MARKER", "ADVISOR_MODE"],
         ),
     );
     let marker = repo.file("marker");
+    let helper_marker = repo.file("helper-marker");
     let sleep = PathBuf::from("sleep");
     let start = Instant::now();
     let envelope = repo.brief(
         Some(&config),
-        &[("ADVISOR_MARKER", &marker), ("ADVISOR_MODE", &sleep)],
+        &[
+            ("ADVISOR_MARKER", &marker),
+            ("ADVISOR_HELPER_MARKER", &helper_marker),
+            ("ADVISOR_MODE", &sleep),
+        ],
     );
     let elapsed = start.elapsed();
     assert_eq!(source(&envelope), "rule");
@@ -471,16 +478,27 @@ fn advisor_past_deadline_is_killed_and_rule_answers() {
         "returned in {elapsed:?}; baseline {baseline:?}, timeout {timeout_ms} ms"
     );
     let pid = fs::read_to_string(&marker).expect("advisor started");
-    let stat = PathBuf::from(format!("/proc/{}/stat", pid.trim()));
+    let proc_dir = PathBuf::from(format!("/proc/{}", pid.trim()));
+    assert!(
+        !proc_dir.exists(),
+        "direct advisor child {} should be reaped by bran",
+        pid.trim()
+    );
+    let helper_pid = fs::read_to_string(&helper_marker).expect("advisor spawned helper child");
+    let helper_stat = PathBuf::from(format!("/proc/{}/stat", helper_pid.trim()));
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let alive = fs::read_to_string(&stat)
+        let alive = fs::read_to_string(&helper_stat)
             .map(|s| !s.contains(") Z "))
             .unwrap_or(false);
         if !alive {
             break;
         }
-        assert!(Instant::now() < deadline, "advisor child still running");
+        assert!(
+            Instant::now() < deadline,
+            "advisor helper child {} still running",
+            helper_pid.trim()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -646,4 +664,241 @@ fn hostile_tree_advisor_files_ignored_with_caller_config() {
     );
     assert_eq!(source(&envelope), "advisor");
     assert_eq!(paths(&envelope), vec![SOUTH.to_owned(), NORTH.to_owned()]);
+}
+
+// P4-R05 (TC-13): --top applies after the rule filters the bounded shortlist, so a weak
+// tier-0 candidate between a strong tier-0 and strong tier-1 does not drop the tier-1 hit.
+#[test]
+fn rule_cross_tier_applies_filter_before_top() {
+    let repo = Repo::new("cross-tier");
+    fs::remove_file(repo.root.join(NORTH)).unwrap();
+    fs::remove_file(repo.root.join(SOUTH)).unwrap();
+    fs::create_dir_all(repo.root.join("archive")).unwrap();
+    fs::write(
+        repo.root.join(".bran/ranking.yaml"),
+        "classes:\n  - name: archived\n    tier: 1\n    globs:\n      - \"archive/**\"\n",
+    )
+    .unwrap();
+    let strong = "The heron lantern guides night boats. Heron lantern wicks need trimming; the heron lantern glass needs cleaning.";
+    let primary = "docs/heron-lantern-primary.md";
+    let archived = "archive/heron-lantern-old.md";
+    fs::write(
+        repo.root.join(primary),
+        doc("Heron Lantern Primary", strong),
+    )
+    .unwrap();
+    fs::write(repo.root.join(archived), doc("Heron Lantern Old", strong)).unwrap();
+
+    let (top3, _) = repo.brief_with(repo.command(None, &[], &["--top", "3"]));
+    let (top2, _) = repo.brief_with(repo.command(None, &[], &["--top", "2"]));
+    let (top1, _) = repo.brief_with(repo.command(None, &[], &["--top", "1"]));
+    assert_eq!(paths(&top3), vec![primary.to_owned(), archived.to_owned()]);
+    assert_eq!(
+        paths(&top2),
+        vec![primary.to_owned(), archived.to_owned()],
+        "--top 2 must keep both qualifying cross-tier results"
+    );
+    assert_eq!(paths(&top1), vec![primary.to_owned()]);
+    assert_eq!(source(&top2), "rule");
+}
+
+// P4-R02 (DES-07, AM-07): config inside the primary root, inside an added root, or reached
+// via a symlink pointing into a queried root must fall back silently without spawning.
+#[test]
+#[cfg(unix)]
+fn advisor_config_inside_queried_tree_or_symlink_never_spawns() {
+    let repo = Repo::new("config-inside-tree");
+    let rule = repo.brief(None, &[]);
+    let marker = repo.file("marker");
+    let reply = repo.reply(&reply_json(&[SOUTH, NORTH]));
+    let env: [(&str, &Path); 2] = [("ADVISOR_MARKER", &marker), ("ADVISOR_REPLY", &reply)];
+    let lines = good_lines(&["ADVISOR_MARKER", "ADVISOR_REPLY"]).join("\n") + "\n";
+
+    let in_primary = repo.root.join(".bran/caller-advisor.yaml");
+    fs::write(&in_primary, &lines).unwrap();
+    assert_rule_kept(
+        &repo,
+        &rule,
+        &in_primary,
+        &env,
+        "config directly inside primary root",
+    );
+    assert!(!marker.exists(), "in-primary config must not spawn");
+
+    let symlink_to_primary = repo.file("link-to-primary.yaml");
+    std::os::unix::fs::symlink(&in_primary, &symlink_to_primary).unwrap();
+    assert_rule_kept(
+        &repo,
+        &rule,
+        &symlink_to_primary,
+        &env,
+        "symlinked config resolving inside primary root",
+    );
+    assert!(!marker.exists(), "symlink into primary root must not spawn");
+
+    let added = Repo::new("config-inside-added");
+    let in_added = added.root.join("advisor.yaml");
+    fs::write(&in_added, &lines).unwrap();
+    let symlink_to_added = repo.file("link-to-added.yaml");
+    std::os::unix::fs::symlink(&in_added, &symlink_to_added).unwrap();
+
+    for (cfg, what) in [
+        (&in_added, "config directly inside added root"),
+        (&symlink_to_added, "symlinked config inside added root"),
+    ] {
+        let mut command = Command::new(BRAN);
+        command
+            .env_remove("BRAN_REGISTERED_ROOTS")
+            .env("BRAN_ADVISOR_CONFIG", cfg)
+            .env("ADVISOR_MARKER", &marker)
+            .env("ADVISOR_REPLY", &reply)
+            .current_dir(&repo.root)
+            .args([
+                "query",
+                repo.root.to_str().unwrap(),
+                "--add-dir",
+                added.root.to_str().unwrap(),
+                "--brief",
+                QUESTION,
+            ]);
+        let (envelope, _) = repo.brief_with(command);
+        assert_eq!(source(&envelope), "rule", "{what}: source stays rule");
+        assert!(!marker.exists(), "{what}: must not spawn");
+    }
+}
+
+// P4-R04: an incomplete stdin request write (child closes stdin early while returning a valid
+// reply and exit 0) must be rejected so BRAN keeps the rule answer.
+#[test]
+fn advisor_incomplete_stdin_write_keeps_rule_answer() {
+    let repo = Repo::new("advisor-incomplete-stdin");
+    let config = repo.config(
+        "advisor.yaml",
+        &good_lines(&["ADVISOR_REPLY", "ADVISOR_MODE"]),
+    );
+    let reply = repo.reply(&reply_json(&[SOUTH, NORTH]));
+    let close_stdin = PathBuf::from("close_stdin");
+    // Exceed the 64 KiB pipe buffer across multiple argv words (each below MAX_ARG_STRLEN)
+    // so write_all cannot succeed before exec <&- closes stdin.
+    let chunk = "lantern ".repeat(4_096);
+    let mut rule_args = vec!["query", repo.root.to_str().unwrap(), "--brief", QUESTION];
+    rule_args.extend(std::iter::repeat_n(chunk.as_str(), 4));
+
+    let mut rule_cmd = Command::new(BRAN);
+    rule_cmd
+        .env_remove("BRAN_REGISTERED_ROOTS")
+        .env_remove("BRAN_ADVISOR_CONFIG")
+        .current_dir(&repo.root)
+        .args(&rule_args);
+    let (rule, _) = repo.brief_with(rule_cmd);
+
+    let mut adv_cmd = Command::new(BRAN);
+    adv_cmd
+        .env_remove("BRAN_REGISTERED_ROOTS")
+        .env("BRAN_ADVISOR_CONFIG", &config)
+        .env("ADVISOR_REPLY", &reply)
+        .env("ADVISOR_MODE", &close_stdin)
+        .current_dir(&repo.root)
+        .args(&rule_args);
+    let (envelope, _) = repo.brief_with(adv_cmd);
+    assert_eq!(source(&envelope), "rule");
+    assert_eq!(data(&envelope).get("results"), data(&rule).get("results"));
+}
+
+// P4-R06: multi-root queries with identical relative paths send unambiguous candidate ids,
+// fall back to rule on an ambiguous bare-path reply, and apply an unambiguous reorder.
+#[test]
+fn advisor_multi_root_identity_and_ambiguous_reply_fallback() {
+    let root_a = Repo::new("multi-id-a");
+    let root_b = Repo::new("multi-id-b");
+    let doc_path = "docs/shared-lantern.md";
+    let strong = "The heron lantern guides night boats. Heron lantern wicks need trimming; the heron lantern glass needs cleaning. Extra heron lantern beacon.";
+    for repo in [&root_a, &root_b] {
+        fs::remove_file(repo.root.join(NORTH)).unwrap();
+        fs::remove_file(repo.root.join(SOUTH)).unwrap();
+        fs::write(repo.root.join(doc_path), doc("Shared Lantern", strong)).unwrap();
+    }
+
+    let arg_a = root_a.root.to_str().unwrap();
+    let arg_b = root_b.root.to_str().unwrap();
+    let config = root_a.config(
+        "advisor.yaml",
+        &good_lines(&["ADVISOR_STDIN", "ADVISOR_REPLY"]),
+    );
+    let stdin_file = root_a.file("stdin.json");
+    let ambiguous_reply = root_a.reply(&reply_json(&[doc_path]));
+
+    let mut cmd = Command::new(BRAN);
+    cmd.env_remove("BRAN_REGISTERED_ROOTS")
+        .env("BRAN_ADVISOR_CONFIG", &config)
+        .env("ADVISOR_STDIN", &stdin_file)
+        .env("ADVISOR_REPLY", &ambiguous_reply)
+        .current_dir(&root_a.root)
+        .args(["query", arg_a, "--add-dir", arg_b, "--brief", QUESTION]);
+    let (ambiguous, _) = root_a.brief_with(cmd);
+    assert_eq!(
+        source(&ambiguous),
+        "rule",
+        "ambiguous bare path in multi-root must fall back to rule"
+    );
+    let Some(Json::Arr(ambig_results)) = data(&ambiguous).get("results") else {
+        panic!("missing results");
+    };
+    assert_eq!(ambig_results.len(), 2);
+
+    let req = Json::parse(&fs::read(&stdin_file).expect("advisor read stdin")).unwrap();
+    let Some(Json::Arr(options)) = req.get("options") else {
+        panic!("stdin options array");
+    };
+    assert_eq!(options.len(), 2);
+    let ids: Vec<&str> = options.iter().map(|opt| text(opt.get("id"))).collect();
+    let bundles: Vec<&str> = options.iter().map(|opt| text(opt.get("bundle"))).collect();
+    assert_ne!(ids[0], ids[1], "candidate ids must be distinct");
+    assert_eq!(bundles, vec![arg_a, arg_b]);
+
+    let reordered_reply = root_a.reply(&reply_json(&[ids[1], ids[0]]));
+    let mut cmd2 = Command::new(BRAN);
+    cmd2.env_remove("BRAN_REGISTERED_ROOTS")
+        .env("BRAN_ADVISOR_CONFIG", &config)
+        .env("ADVISOR_REPLY", &reordered_reply)
+        .current_dir(&root_a.root)
+        .args(["query", arg_a, "--add-dir", arg_b, "--brief", QUESTION]);
+    let (advised, _) = root_a.brief_with(cmd2);
+    assert_eq!(source(&advised), "advisor");
+    let Some(Json::Arr(adv_results)) = data(&advised).get("results") else {
+        panic!("missing results");
+    };
+    assert_eq!(adv_results.len(), 2);
+    assert_eq!(text(adv_results[0].get("bundle")), arg_b);
+    assert_eq!(text(adv_results[1].get("bundle")), arg_a);
+}
+
+// P4-R09: independent test oracle at the exact 64 KiB stdout bound (accepted at 65,536
+// bytes, rejected at 65,537 bytes even with valid JSON).
+#[test]
+fn advisor_stdout_byte_limit_accepts_at_bound_and_rejects_over_bound() {
+    let repo = Repo::new("advisor-stdout-bound");
+    let rule = repo.brief(None, &[]);
+    let config = repo.config("advisor.yaml", &good_lines(&["ADVISOR_REPLY"]));
+    let base = reply_json(&[SOUTH, NORTH]);
+    const LIMIT: usize = 64 * 1024;
+    assert!(base.len() < LIMIT);
+
+    let at_limit = format!("{base}{}", " ".repeat(LIMIT - base.len()));
+    assert_eq!(at_limit.len(), LIMIT);
+    let reply_at = repo.reply(&at_limit);
+    let accepted = repo.brief(Some(&config), &[("ADVISOR_REPLY", &reply_at)]);
+    assert_eq!(source(&accepted), "advisor");
+    assert_eq!(paths(&accepted), vec![SOUTH.to_owned(), NORTH.to_owned()]);
+
+    let over_limit = format!("{base}{}", " ".repeat(LIMIT + 1 - base.len()));
+    assert_eq!(over_limit.len(), LIMIT + 1);
+    let reply_over = repo.reply(&over_limit);
+    assert_rule_kept(
+        &repo,
+        &rule,
+        &config,
+        &[("ADVISOR_REPLY", &reply_over)],
+        "valid JSON reply 1 byte over stdout limit",
+    );
 }

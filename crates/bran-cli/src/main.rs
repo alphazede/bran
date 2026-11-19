@@ -3740,9 +3740,15 @@ fn do_query_brief(
         .graph_input()
         .map_err(|e| format!("graph_input_error: {:?}", e))?;
     log_timing("graph_input");
-    let (rankings, matched_terms) =
-        brief_source_rankings(&graph_input, &snapshot, &query_text, top, &ranking_config);
-    let (rankings, selection_source) = select::apply(&query_text, rankings);
+    let (rankings, matched_terms) = brief_source_rankings(
+        &graph_input,
+        &snapshot,
+        &query_text,
+        QUERY_RESULT_LIMIT,
+        &ranking_config,
+    );
+    let (mut rankings, selection_source) = select::apply(&query_text, rankings, &[root_path]);
+    rankings.truncate(top);
     log_timing("score");
 
     let (query_outcome, _, _) =
@@ -3915,8 +3921,10 @@ fn do_query_brief_multi(
     }
     let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
-    let rankings = finalize_brief_rankings(matches, top, true);
-    let (rankings, selection_source) = select::apply(&query_text, rankings);
+    let rankings = finalize_brief_rankings(matches, QUERY_RESULT_LIMIT, true);
+    let root_paths: Vec<&Path> = roots.iter().map(Path::new).collect();
+    let (mut rankings, selection_source) = select::apply(&query_text, rankings, &root_paths);
+    rankings.truncate(top);
     log_timing("score");
 
     let scan_diag_count: usize = scanned.iter().map(|r| r.snapshot.diagnostics.len()).sum();
