@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `.bran/ranking.yaml` path-class tiers (`classes: [{name, tier, globs}]`,
   tier `0..=9`, first matching class wins) for `bran query --brief`, keeping
   default `bran query` output unchanged. ([#65](https://github.com/alphazede/bran/pull/65))
+- Brief mode selection step (`crates/bran-cli/src/select.rs`): deterministic
+  score-ratio prefix rule (`selection.source: "rule"`) and optional
+  caller-scoped external advisor configured only via `BRAN_ADVISOR_CONFIG`
+  (`sha256`-verified, cleared environment with `pass_env`, `requires_env`,
+  bounded stdout, deadline kill and reap, silent fallback to the rule).
 
 ### Changed
 

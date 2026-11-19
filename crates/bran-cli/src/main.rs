@@ -1,5 +1,6 @@
 mod document_evidence;
 mod ranking;
+mod select;
 mod source_revision;
 
 use source_revision::SourceRevision;
@@ -3368,6 +3369,7 @@ fn brief_data_json(
     query_outcome: &str,
     query_coverage: &str,
     result_id: Option<&str>,
+    selection_source: &str,
     items: &[BriefItem<'_>],
 ) -> String {
     let result_id_json = result_id.map_or_else(
@@ -3397,10 +3399,11 @@ fn brief_data_json(
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"query_outcome\":\"{}\",\"query_coverage\":{},\"coverage_basis\":\"sources\",\"result_id\":{},\"selection\":{{\"source\":\"rule\"}},\"results\":[{}]}}",
+        "{{\"query_outcome\":\"{}\",\"query_coverage\":{},\"coverage_basis\":\"sources\",\"result_id\":{},\"selection\":{{\"source\":\"{}\"}},\"results\":[{}]}}",
         json_escape(query_outcome),
         query_coverage,
         result_id_json,
+        json_escape(selection_source),
         results_json
     )
 }
@@ -3440,6 +3443,7 @@ fn brief_data_within_budget(
     matched: &[String],
     unmatched: &[String],
     result_id: Option<&str>,
+    selection_source: &str,
     rankings: &[SourceRanking],
     warns: &[String],
     effective_provenance: &str,
@@ -3456,7 +3460,7 @@ fn brief_data_within_budget(
         .collect();
     let fits = |items: &[BriefItem<'_>], m: &[String], u: &[String]| -> (bool, String) {
         let coverage = format_query_coverage(m, u);
-        let data = brief_data_json(query_outcome, &coverage, result_id, items);
+        let data = brief_data_json(query_outcome, &coverage, result_id, selection_source, items);
         let envelope = make_envelope(
             "query",
             status,
@@ -3504,7 +3508,13 @@ fn brief_data_within_budget(
         fits(&items, candidate_m, &bounded_unmatched).0
     });
     let coverage = format_query_coverage(&bounded_matched, &bounded_unmatched);
-    brief_data_json(query_outcome, &coverage, result_id, &items)
+    brief_data_json(
+        query_outcome,
+        &coverage,
+        result_id,
+        selection_source,
+        &items,
+    )
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
@@ -3713,6 +3723,7 @@ fn do_query_brief(
             &[],
             &[],
             None,
+            "rule",
             &[],
             &warns,
             &registered_provenance(&provenance, revisions),
@@ -3731,6 +3742,7 @@ fn do_query_brief(
     log_timing("graph_input");
     let (rankings, matched_terms) =
         brief_source_rankings(&graph_input, &snapshot, &query_text, top, &ranking_config);
+    let (rankings, selection_source) = select::apply(&query_text, rankings);
     log_timing("score");
 
     let (query_outcome, _, _) =
@@ -3786,6 +3798,7 @@ fn do_query_brief(
         &matched,
         &unmatched,
         result_id.as_deref(),
+        selection_source.as_str(),
         &rankings,
         &warns,
         &registered_provenance(&provenance, revisions),
@@ -3903,6 +3916,7 @@ fn do_query_brief_multi(
     let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     let rankings = finalize_brief_rankings(matches, top, true);
+    let (rankings, selection_source) = select::apply(&query_text, rankings);
     log_timing("score");
 
     let scan_diag_count: usize = scanned.iter().map(|r| r.snapshot.diagnostics.len()).sum();
@@ -3967,6 +3981,7 @@ fn do_query_brief_multi(
         &matched,
         &unmatched,
         result_id.as_deref(),
+        selection_source.as_str(),
         &rankings,
         &warns,
         &registered_provenance(&provenance, revisions),
