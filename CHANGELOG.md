@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cargo deny` now allows the `Unicode-3.0` license, which `unicode-ident`
   uses. Newer `zip` releases depend on it.
-  ([#PR](https://github.com/alphazede/bran/pull/PR))
+  ([#62](https://github.com/alphazede/bran/pull/62))
 
 - Bumped `zip` from 8.6.0 to 9.0.5 in `xtask`. The lockfile adds `nix` 0.31.3
   and `cfg_aliases` 0.2.2. ([#57](https://github.com/alphazede/bran/pull/57))
