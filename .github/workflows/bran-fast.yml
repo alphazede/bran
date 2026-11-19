@@ -1,6 +1,7 @@
+---
 name: BRAN fast checks
 
-on:
+'on':
   pull_request:
   push:
     branches: [main]
@@ -11,15 +12,20 @@ permissions:
 
 jobs:
   fast:
+    # yamllint disable-line rule:line-length
     if: ${{ !(github.event_name == 'push' && github.repository == 'alphazede/bran-dev' && github.event.repository.private == true && github.event.repository.custom_properties.delivery_profile == 'private-owner-direct') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.94.1 --profile minimal --component clippy,rustfmt
+        run: >-
+          rustup toolchain install 1.94.1 --profile minimal
+          --component clippy,rustfmt
 
       - name: Select pinned Rust toolchain
         run: rustup default 1.94.1
@@ -27,5 +33,31 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --version 0.19.0 --locked
 
+      - name: Check out az-lint
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: alphazede/az-lint
+          ref: cc79b7a1dc533822aa5e67cccca4fb8c0e52d117
+          path: .az-lint-runner
+          persist-credentials: false
+
+      - name: Install pinned linters
+        run: |
+          mv .az-lint-runner "$RUNNER_TEMP/az-lint"
+          bash .github/scripts/install-az-lint.sh
+
       - name: Run the public fast gate
-        run: ./tools/ci/check.sh --fast
+        env:
+          AZ_LINT_BASE: >-
+            ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$AZ_LINT_BASE" || "$AZ_LINT_BASE" =~ ^0+$ ]]; then
+            AZ_LINT_BASE=$(git rev-parse HEAD^)
+          fi
+          if ! git cat-file -e "$AZ_LINT_BASE^{commit}"; then
+            git fetch --no-tags origin "$AZ_LINT_BASE"
+          fi
+          export PATH="$RUNNER_TEMP/az-lint-tools/bin:$PATH"
+          cargo fetch --locked
+          export AZ_LINT_BASE AZ_LINT="$RUNNER_TEMP/az-lint/az-lint"
+          ./tools/ci/check.sh --fast
