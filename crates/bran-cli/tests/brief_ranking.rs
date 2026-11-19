@@ -229,18 +229,18 @@ fn brief_defining_script_outranks_rare_body_only_mention_without_ranking_file() 
         )
         .unwrap();
     }
-    let quorum_note = "notes/quorum-note.md";
+    // The filename stays neutral so the mention is body-only.
+    let quorum_note = "notes/misc-note.md";
     fs::write(
         repo.0.join(quorum_note),
         "---\ntype: concept\ntitle: Misc\nokf_status: active\n---\n\n# Misc\n\nMentions quorum once.\n",
     )
     .unwrap();
 
+    // The fielded scorer weighs rarity (BM25 IDF), so coverage alone no longer
+    // fixes first place among notes that all mention the words; the script
+    // must still outrank the rare body-only mention.
     let paths = repo.brief_paths("lantern keys quorum");
-    assert_eq!(
-        paths[0], SCRIPT,
-        "2-term filename match must outrank 1-term rare body-only note: {paths:?}"
-    );
     assert!(
         position(&paths, SCRIPT) < position(&paths, quorum_note),
         "{SCRIPT} must outrank {quorum_note}: {paths:?}"

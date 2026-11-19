@@ -40,6 +40,7 @@ ranked, with the reason attached.
 - `bran query <root> --brief "<question>"` returns up to 8 ranked exact paths, each with a one-line reason, in at most 2,000 characters, plus a `result_id`. Start here; the default `bran query` output is unchanged.
 - `bran get <result-id> --full` re-runs the full query for a stored brief result and warns with `stale: true` when the tree changed.
 - An optional `.bran/ranking.yaml` declares path classes so generated or archived evidence ranks below defining sources.
+- Brief ranking uses a fielded lexical index, and an optional `.bran/descriptions.jsonl` adds per-file descriptions; see [docs/brief-ranking.md](docs/brief-ranking.md).
 - Brief mode applies a deterministic selection rule. An optional advisor set by the caller through `BRAN_ADVISOR_CONFIG` is off by default, and any advisor fault keeps the rule's answer.
 - The repository scanner reads files in parallel, with the same limits and deterministic output.
 - `tools/recall/recall_check.py` measures top-1, top-5, misses, latency and output size on a question set you supply.

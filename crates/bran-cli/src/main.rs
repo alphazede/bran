@@ -1,7 +1,9 @@
 mod document_evidence;
+mod fielded;
 mod ranking;
 mod select;
 mod source_revision;
+mod stem;
 
 use source_revision::SourceRevision;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2578,12 +2580,32 @@ fn finalize_brief_rankings(
 }
 
 fn brief_source_rankings(
+    root: &Path,
     graph_input: &GraphInput,
     snapshot: &ScanSnapshot,
     query_text: &str,
     max_sources: usize,
     ranking_config: &ranking::RankingConfig,
-) -> (Vec<SourceRanking>, BTreeSet<String>) {
+) -> (Vec<SourceRanking>, BTreeSet<String>, Vec<String>) {
+    let fielded_root = fielded::Root {
+        bundle: "",
+        path: root,
+        graph_input,
+        snapshot,
+        ranking_config,
+    };
+    if let Some(ranked) = fielded::rank(&[fielded_root], query_text) {
+        let matches = suppress_unanchored_entity_matches(
+            ranked.rankings,
+            &ranked.matched_terms,
+            &ranked.entities,
+        );
+        return (
+            finalize_brief_rankings(matches, max_sources, false),
+            ranked.matched_terms,
+            ranked.warnings,
+        );
+    }
     let (candidates, matched_terms, entities, total_docs, doc_freqs, has_content_units) =
         brief_source_candidates(graph_input, snapshot, query_text, ranking_config);
     let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
@@ -2591,6 +2613,7 @@ fn brief_source_rankings(
     (
         finalize_brief_rankings(matches, max_sources, false),
         matched_terms,
+        Vec::new(),
     )
 }
 
@@ -3764,7 +3787,8 @@ fn do_query_brief(
         .graph_input()
         .map_err(|e| format!("graph_input_error: {:?}", e))?;
     log_timing("graph_input");
-    let (rankings, matched_terms) = brief_source_rankings(
+    let (rankings, matched_terms, fielded_warnings) = brief_source_rankings(
+        root_path,
         &graph_input,
         &snapshot,
         &query_text,
@@ -3780,6 +3804,7 @@ fn do_query_brief(
     let (matched, unmatched) = query_term_coverage(&query_text, &matched_terms);
     let mut warns: Vec<String> = brief_scan_warning_summary(snapshot.diagnostics.len())
         .into_iter()
+        .chain(fielded_warnings)
         .collect();
 
     let result_id = if !allow_store {
@@ -3907,13 +3932,30 @@ fn do_query_brief_multi(
     }
     log_timing("graph_input");
 
+    let fielded_roots: Vec<fielded::Root> = scanned
+        .iter()
+        .zip(ranking_configs.iter())
+        .map(|(root, ranking_config)| fielded::Root {
+            bundle: &root.requested,
+            path: Path::new(&root.requested),
+            graph_input: &root.graph_input,
+            snapshot: &root.snapshot,
+            ranking_config,
+        })
+        .collect();
+    let fielded_ranked = fielded::rank(&fielded_roots, &query_text);
+    let mut fielded_warnings = Vec::new();
     let mut matched_terms = BTreeSet::new();
     let mut entities = BTreeSet::new();
     let mut candidates = Vec::new();
     let mut total_docs = 0usize;
     let mut doc_freqs = Vec::new();
     let mut has_content_units = false;
-    for (root, ranking_config) in scanned.iter().zip(ranking_configs.iter()) {
+    for (root, ranking_config) in scanned
+        .iter()
+        .zip(ranking_configs.iter())
+        .filter(|_| fielded_ranked.is_none())
+    {
         let (
             mut root_candidates,
             root_matched,
@@ -3943,7 +3985,13 @@ fn do_query_brief_multi(
         entities = root_entities;
         candidates.extend(root_candidates);
     }
-    let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
+    let mut matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
+    if let Some(ranked) = fielded_ranked {
+        matches = ranked.rankings;
+        matched_terms = ranked.matched_terms;
+        entities = ranked.entities;
+        fielded_warnings = ranked.warnings;
+    }
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     let rankings = finalize_brief_rankings(matches, QUERY_RESULT_LIMIT, true);
     let root_paths: Vec<&Path> = roots.iter().map(Path::new).collect();
@@ -3954,6 +4002,7 @@ fn do_query_brief_multi(
     let scan_diag_count: usize = scanned.iter().map(|r| r.snapshot.diagnostics.len()).sum();
     let mut warns: Vec<String> = brief_scan_warning_summary(scan_diag_count)
         .into_iter()
+        .chain(fielded_warnings)
         .collect();
     let (query_outcome, _, _) =
         query_semantic_outcome(&query_text, &matched_terms, !rankings.is_empty());

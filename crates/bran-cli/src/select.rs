@@ -937,7 +937,7 @@ mod tests {
             confidence: 0,
             freshness: String::new(),
             brief_tier: 0,
-            brief_score: 0,
+            brief_score: Default::default(),
         }
     }
 

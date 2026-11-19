@@ -118,10 +118,12 @@ fn strongest_location_weight_wins_over_coincident_filename_substring() {
 }
 
 /// Row 4: filename morphology counts even when the body has the literal word.
+/// Under the fielded scorer the filename field outweighs a lone body mention
+/// enough that the body-only file may fall under the selection cut.
 #[test]
 fn filename_stem_counts_independently_of_body_hits() {
     let repo = Repo::with(&[("a.txt", "indexed\n"), ("index.txt", "indexed\n")]);
-    assert_eq!(repo.paths(&[], "indexed"), ["index.txt", "a.txt"]);
+    assert_eq!(repo.paths(&[], "indexed")[0], "index.txt");
 }
 
 /// Row 4: query words and document tokens normalize the same way.
@@ -225,4 +227,85 @@ fn brief_output_respects_budget_and_reports_truncation() {
         32 - paths.len()
     );
     assert!(stdout.contains(&omitted), "{stdout}");
+}
+
+fn description_line(path: &str, text: &str, description: &str) -> String {
+    format!(
+        "{{\"path\":\"{path}\",\"sha256\":\"{}\",\"description\":\"{description}\"}}\n",
+        bran_document::canonical::sha256_hex(text.as_bytes())
+    )
+}
+
+/// Sidecar: a description adds words to its file only while the recorded
+/// hash matches; a changed file drops it with a stale warning.
+#[test]
+fn description_sidecar_applies_only_while_hash_matches() {
+    let repo = Repo::with(&[("a.txt", "alpha\n"), ("b.txt", "beta\n")]);
+    repo.write(
+        ".bran/descriptions.jsonl",
+        &description_line("b.txt", "beta\n", "zephyr rotation"),
+    );
+    assert_eq!(repo.paths(&[], "zephyr"), ["b.txt"]);
+    repo.write("b.txt", "beta changed\n");
+    let (code, stdout) = repo.query(&[], "zephyr");
+    assert_eq!(code, 0, "{stdout}");
+    // The first query's stored result is scannable text and may match.
+    assert!(
+        !result_paths(&stdout).contains(&"b.txt".to_owned()),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("descriptions_ignored: 0 rejected, 1 stale"),
+        "{stdout}"
+    );
+}
+
+/// Sidecar trust boundary: out-of-tree paths, bad hashes, extra keys and
+/// malformed lines are rejected one by one without failing the query.
+#[test]
+fn description_sidecar_rejects_bad_lines_without_failing() {
+    let repo = Repo::with(&[("a.txt", "alpha\n")]);
+    let good = description_line("a.txt", "alpha\n", "quillwort");
+    let hash = bran_document::canonical::sha256_hex(b"alpha\n");
+    let sidecar = [
+        description_line("../a.txt", "alpha\n", "outside"),
+        description_line("/etc/passwd", "alpha\n", "absolute"),
+        "{\"path\":\"a.txt\",\"sha256\":\"XYZ\",\"description\":\"badhash\"}\n".to_owned(),
+        format!("{{\"path\":\"a.txt\",\"sha256\":\"{hash}\",\"description\":\"x\",\"extra\":1}}\n"),
+        "not json at all\n".to_owned(),
+        description_line("missing.txt", "alpha\n", "absent"),
+        good,
+    ]
+    .concat();
+    repo.write(".bran/descriptions.jsonl", &sidecar);
+    let (code, stdout) = repo.query(&[], "quillwort");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["a.txt"]);
+    assert!(
+        stdout.contains("descriptions_ignored: 6 rejected, 0 stale"),
+        "{stdout}"
+    );
+    for word in ["outside", "absolute", "badhash", "absent"] {
+        assert!(
+            !repo.paths(&[], word).contains(&"a.txt".to_owned()),
+            "{word}"
+        );
+    }
+}
+
+/// Sidecar trust boundary: an oversize file is ignored as a whole and the
+/// query still answers from the repository.
+#[test]
+fn description_sidecar_oversize_is_ignored() {
+    let repo = Repo::with(&[("a.txt", "alpha\n")]);
+    let mut big = description_line("a.txt", "alpha\n", "quillwort");
+    big.push_str(&" ".repeat(8 * 1024 * 1024));
+    repo.write(".bran/descriptions.jsonl", &big);
+    let (code, stdout) = repo.query(&[], "alpha quillwort");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["a.txt"]);
+    assert!(
+        stdout.contains("descriptions_ignored: file too large"),
+        "{stdout}"
+    );
 }
