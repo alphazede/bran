@@ -1163,6 +1163,9 @@ mod tests {
         assert!(Intent::of("which repository owners may the tool write into").value);
         assert!(Intent::of("which repositories does the sync sweep").value);
         assert!(!Intent::of("which assertions keep imports out").value);
+        // A plural ends in `s` (not `ss`, `us`, `is`) and has more than three letters.
+        assert!(!Intent::of("which policy may apply").value);
+        assert!(!Intent::of("which gas does the meter read").value);
         assert!(!Intent::of("which parser derives a match").value);
         assert!(!Intent::of("which unit schedules stalled checks").value);
         assert!(!Intent::of("which process runs the backup").value);
