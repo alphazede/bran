@@ -852,29 +852,27 @@ fn value_sources(
 /// then to the root, then by a unique path suffix.
 struct Resolver<'a> {
     ids: HashMap<(usize, &'a str), usize>,
-    suffixes: HashMap<(usize, String), Option<usize>>,
+    /// Lowercase locator of each document.
+    lower: Vec<String>,
+    /// Documents by root and lowercase file name; keys stay linear in path length.
+    // shortcut: a lookup scans every file with the same name, upgrade to a suffix trie if one name repeats thousands of times.
+    names: HashMap<(usize, String), Vec<usize>>,
 }
 
 impl<'a> Resolver<'a> {
     fn new(docs: &'a [Doc]) -> Self {
         let mut ids = HashMap::new();
-        let mut suffixes: HashMap<(usize, String), Option<usize>> = HashMap::new();
+        let mut names: HashMap<(usize, String), Vec<usize>> = HashMap::new();
+        let lower: Vec<String> = docs
+            .iter()
+            .map(|d| d.locator.to_ascii_lowercase())
+            .collect();
         for (j, d) in docs.iter().enumerate() {
             ids.insert((d.root, d.locator), j);
-            let lower = d.locator.to_ascii_lowercase();
-            let mut start = 0;
-            loop {
-                suffixes
-                    .entry((d.root, lower[start..].to_owned()))
-                    .and_modify(|v| *v = None)
-                    .or_insert(Some(j));
-                match lower[start..].find('/') {
-                    Some(i) => start += i + 1,
-                    None => break,
-                }
-            }
+            let name = lower[j].rsplit('/').next().unwrap_or_default();
+            names.entry((d.root, name.to_owned())).or_default().push(j);
         }
-        Self { ids, suffixes }
+        Self { ids, lower, names }
     }
 
     fn resolve(&self, root: usize, from: &str, raw: &str) -> Option<usize> {
@@ -886,10 +884,20 @@ impl<'a> Resolver<'a> {
         if let Some(&j) = self.ids.get(&(root, raw)) {
             return Some(j);
         }
-        self.suffixes
-            .get(&(root, raw.to_ascii_lowercase()))
-            .copied()
-            .flatten()
+        // A suffix matches the whole locator or starts after a `/`; two matches are ambiguous.
+        let raw = raw.to_ascii_lowercase();
+        let name = raw.rsplit('/').next().unwrap_or_default();
+        let mut hit = None;
+        for &j in self.names.get(&(root, name.to_owned()))? {
+            let l = &self.lower[j];
+            let suffix = l
+                .strip_suffix(raw.as_str())
+                .is_some_and(|head| head.is_empty() || head.ends_with('/'));
+            if suffix && hit.replace(j).is_some() {
+                return None;
+            }
+        }
+        hit
     }
 
     fn references(&self, j: usize, doc: &Doc) -> BTreeSet<usize> {
@@ -1298,5 +1306,100 @@ mod tests {
             .unwrap();
         fs::remove_dir_all(root).unwrap();
         assert_eq!(contents, "original");
+    }
+
+    /// Counts heap bytes this thread allocates, so parallel tests do not interfere.
+    struct CountingAlloc;
+
+    thread_local! {
+        static ALLOCATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    // SAFETY: forwards every call to the system allocator unchanged.
+    unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            let _ = ALLOCATED.try_with(|a| a.set(a.get() + layout.size()));
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: CountingAlloc = CountingAlloc;
+
+    fn allocated_during(f: impl FnOnce()) -> usize {
+        let before = ALLOCATED.with(|a| a.get());
+        f();
+        ALLOCATED.with(|a| a.get()) - before
+    }
+
+    #[test]
+    fn suffix_resolution_work_grows_linearly_with_path_depth() {
+        let node = bran_core::graph::NodeInput::new(
+            bran_core::graph::NodeId::parse("test.node").unwrap(),
+            NodeRole::Document,
+            bran_core::graph::Provenance::new("test", "test://node").unwrap(),
+            bran_core::graph::Confidence::new(100).unwrap(),
+        );
+        fn config<'a>(
+            node: &'a bran_core::graph::NodeInput,
+            root: usize,
+            locator: &'a str,
+        ) -> Doc<'a> {
+            Doc {
+                root,
+                node,
+                locator,
+                source: "",
+                tier: 0,
+                class: None,
+                role: Role::Config,
+                description: None,
+            }
+        }
+        let doc = |root, locator| config(&node, root, locator);
+        let deep = |depth: usize| {
+            let dirs: Vec<String> = (0..depth).map(|i| format!("Dir{i:03}")).collect();
+            format!("{}/app.conf", dirs.join("/"))
+        };
+        let measure = |locator: &str| {
+            let docs = [config(&node, 0, locator)];
+            let tail = locator.split_once('/').unwrap().1.to_ascii_lowercase();
+            allocated_during(|| {
+                let resolver = Resolver::new(&docs);
+                assert_eq!(resolver.resolve(0, "other/readme.md", &tail), Some(0));
+            })
+        };
+        // Eight times the depth: linear work grows about 8x, quadratic about 64x.
+        let (shallow, deeper) = (measure(&deep(64)), measure(&deep(512)));
+        eprintln!("allocated bytes: depth 64 = {shallow}, depth 512 = {deeper}");
+        assert!(
+            deeper < 12 * shallow,
+            "8x depth grew allocation from {shallow} to {deeper} bytes"
+        );
+
+        // Same results: a unique suffix resolves case-insensitively, only at a
+        // segment boundary, and a suffix shared by two files is rejected.
+        let docs = [
+            doc(0, "a/x/Shared/list.conf"),
+            doc(0, "b/y/shared/list.conf"),
+            doc(0, "c/Only.conf"),
+            doc(1, "d/only.conf"),
+        ];
+        let resolver = Resolver::new(&docs);
+        assert_eq!(resolver.resolve(0, "z/n.md", "only.conf"), Some(2));
+        assert_eq!(resolver.resolve(0, "z/n.md", "C/ONLY.CONF"), Some(2));
+        assert_eq!(resolver.resolve(1, "z/n.md", "only.conf"), Some(3));
+        assert_eq!(resolver.resolve(0, "z/n.md", "nly.conf"), None);
+        assert_eq!(resolver.resolve(0, "z/n.md", "e/f/c/only.conf"), None);
+        assert_eq!(resolver.resolve(0, "z/n.md", "shared/list.conf"), None);
+        assert_eq!(resolver.resolve(0, "z/n.md", "x/shared/list.conf"), Some(0));
+        assert_eq!(
+            resolver.resolve(0, "z/n.md", "a/x/Shared/list.conf"),
+            Some(0)
+        );
     }
 }
