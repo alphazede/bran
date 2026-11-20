@@ -1,6 +1,8 @@
 //! Issue #60 (DES-04, AM-02, TC-09): `.bran/ranking.yaml` path-class tiers and
 //! defining-file signals in `query --brief`, through the real CLI on synthetic
 //! fixtures. Every query runs in a fresh copy so no earlier result store is scanned.
+mod support;
+
 use bran_document::canonical::Json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,13 +70,13 @@ impl Repo {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let output = Command::new(BRAN)
+        let mut command = Command::new(BRAN);
+        command
             .env_remove("BRAN_REGISTERED_ROOTS")
             .env_remove("BRAN_ADVISOR_CONFIG")
             .current_dir(&self.0)
-            .args(args)
-            .output()
-            .expect("bran runs");
+            .args(args);
+        let output = support::output(&mut command).expect("bran runs");
         (
             output.status.code().unwrap_or(-1),
             String::from_utf8(output.stdout).unwrap(),
@@ -245,6 +247,17 @@ fn brief_defining_script_outranks_rare_body_only_mention_without_ranking_file() 
         position(&paths, SCRIPT) < position(&paths, quorum_note),
         "{SCRIPT} must outrank {quorum_note}: {paths:?}"
     );
+
+    fs::remove_file(repo.0.join(BODY_EVIDENCE)).unwrap();
+    for idx in 1..=3 {
+        fs::rename(
+            repo.0.join(format!("notes/lantern-ref-{idx}.md")),
+            repo.0.join(format!("notes/mention-{idx}.md")),
+        )
+        .unwrap();
+    }
+    let paths = repo.brief_paths("lantern keys quorum");
+    assert_eq!(paths[0], SCRIPT, "{paths:?}");
 }
 
 #[cfg(unix)]

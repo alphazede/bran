@@ -17,8 +17,8 @@ use bran_document::canonical::{sha256_hex, Json};
 
 use crate::stem::{agent_verb, stem, EXCEPTIONS};
 use crate::{
-    document_evidence, node_ranking_traits, query_terms_and_entities, ranking,
-    snapshot_long_path_map, SourceRanking, RANKED_FACT_KEYS,
+    brief_source_excluded, node_ranking_traits, query_identifier_runs, query_terms_and_entities,
+    ranking, snapshot_long_path_map, SourceRanking, RANKED_FACT_KEYS,
 };
 
 /// Optional per-file descriptions, one JSON object per line.
@@ -478,11 +478,13 @@ impl Corpus {
         for t in 0..n {
             for k in 0..4 {
                 let tf = f64::from(stats.tf[k * n + t]);
-                if tf == 0.0 || self.avg[k] == 0.0 {
+                if tf == 0.0 {
                     continue;
                 }
                 let b = LENGTH_NORMALIZATION[k];
-                let norm = K1 * (1.0 - b + b * f64::from(stats.len[k]) / self.avg[k]);
+                // A field absent in the leading tier still counts in lower tiers.
+                let avg = if self.avg[k] == 0.0 { 1.0 } else { self.avg[k] };
+                let norm = K1 * (1.0 - b + b * f64::from(stats.len[k]) / avg);
                 score += self.idf[t] * FIELD_WEIGHTS[k] * (K1 + 1.0) * tf / (tf + norm);
             }
         }
@@ -588,7 +590,7 @@ pub(crate) fn rank(roots: &[Root], question: &str) -> Option<Ranked> {
         {
             let raw = node.provenance().locator();
             let locator = long_paths.get(raw).copied().unwrap_or(raw);
-            if document_evidence::is_document_path(locator) || locator == DESCRIPTIONS_FILENAME {
+            if brief_source_excluded(locator) {
                 continue;
             }
             let source = root
@@ -738,8 +740,12 @@ pub(crate) fn rank(roots: &[Root], question: &str) -> Option<Ranked> {
         })
         .collect();
     let mut matched_terms = BTreeSet::new();
-    for term in &terms_list {
-        let stems = terms(term);
+    for original in query_identifier_runs(question) {
+        let term = original.to_ascii_lowercase();
+        if !terms_list.contains(&term) {
+            continue;
+        }
+        let stems = terms(original);
         let matched = if stems.is_empty() {
             !rankings.is_empty()
         } else {
@@ -748,7 +754,7 @@ pub(crate) fn rank(roots: &[Root], question: &str) -> Option<Ranked> {
                 .all(|s| q.stems.binary_search(s).is_ok_and(|i| seen[i]))
         };
         if matched {
-            matched_terms.insert(term.clone());
+            matched_terms.insert(term);
         }
     }
     for entity in &entities {
@@ -1006,6 +1012,7 @@ fn load_descriptions(
         }
     };
     let (mut rejected, mut stale) = (0usize, 0usize);
+    let mut hashes = HashMap::new();
     for line in bytes.split(|&b| b == b'\n') {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -1016,11 +1023,17 @@ fn load_descriptions(
         }
         match parse_description(line) {
             Some((path, sha256, text)) if !out.contains_key(&path) => {
-                match snapshot.entries.get(&path) {
-                    Some(entry) if sha256_hex(&entry.source) == sha256 => {
-                        out.insert(path, text);
+                match snapshot.entries.get_key_value(&path) {
+                    Some((key, entry)) => {
+                        let hash = hashes
+                            .entry(key)
+                            .or_insert_with(|| sha256_hex(&entry.source));
+                        if *hash == sha256 {
+                            out.insert(path, text);
+                        } else {
+                            stale += 1;
+                        }
                     }
-                    Some(_) => stale += 1,
                     None => rejected += 1,
                 }
             }
@@ -1036,23 +1049,28 @@ fn load_descriptions(
 }
 
 fn read_sidecar(root: &Path) -> Result<Option<Vec<u8>>, &'static str> {
-    let bran = root.join(".bran");
-    let path = root.join(DESCRIPTIONS_FILENAME);
-    let meta = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
+    let file = match open_sidecar(root) {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("unreadable"),
+        Err(err) => {
+            #[cfg(unix)]
+            if err.raw_os_error() == Some(libc::ELOOP) {
+                return Err("not a regular file");
+            }
+            return Err(match err.kind() {
+                std::io::ErrorKind::NotADirectory | std::io::ErrorKind::InvalidData => {
+                    "not a regular file"
+                }
+                _ => "unreadable",
+            });
+        }
     };
-    let bran_meta = fs::symlink_metadata(&bran).map_err(|_| "unreadable")?;
-    if bran_meta.file_type().is_symlink() || !meta.file_type().is_file() {
+    let meta = file.metadata().map_err(|_| "unreadable")?;
+    if !meta.is_file() {
         return Err("not a regular file");
     }
     if meta.len() > MAX_DESCRIPTIONS_BYTES {
         return Err("file too large");
-    }
-    let file = open_no_follow(&path).map_err(|_| "unreadable")?;
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err("not a regular file");
     }
     let mut bytes = Vec::new();
     file.take(MAX_DESCRIPTIONS_BYTES + 1)
@@ -1065,16 +1083,48 @@ fn read_sidecar(root: &Path) -> Result<Option<Vec<u8>>, &'static str> {
 }
 
 #[cfg(unix)]
-fn open_no_follow(path: &Path) -> std::io::Result<File> {
+fn open_sidecar(root: &Path) -> std::io::Result<File> {
+    open_sidecar_at(&open_bran_directory(root)?)
+}
+
+#[cfg(unix)]
+fn open_bran_directory(root: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(root.join(".bran"))
+}
+
+#[cfg(unix)]
+fn open_sidecar_at(directory: &File) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    // SAFETY: the directory descriptor stays open and the filename is a C string.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c"descriptions.jsonl".as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 #[cfg(not(unix))]
-fn open_no_follow(path: &Path) -> std::io::Result<File> {
+fn open_sidecar(root: &Path) -> std::io::Result<File> {
+    let path = root.join(DESCRIPTIONS_FILENAME);
+    if !fs::symlink_metadata(root.join(".bran"))?.is_dir()
+        || !fs::symlink_metadata(&path)?.is_file()
+    {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    // shortcut: portable pathname checks cover static links. Use handle-relative
+    // opens on this platform if the queried tree can change concurrently.
     File::open(path)
 }
 
@@ -1084,7 +1134,7 @@ fn parse_description(line: &[u8]) -> Option<(String, String, String)> {
     if line.len() > MAX_DESCRIPTION_LINE_BYTES {
         return None;
     }
-    let Json::Obj(map) = Json::parse(line)? else {
+    let Json::Obj(map) = Json::parse_unique(line)? else {
         return None;
     };
     if map.len() != 3 {
@@ -1209,5 +1259,44 @@ mod tests {
         ] {
             assert!(parse_description(bad.as_bytes()).is_none(), "{bad}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_linked_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("bran-sidecar-links-{}", std::process::id()));
+        let bran = root.join(".bran");
+        fs::create_dir_all(&bran).unwrap();
+        fs::write(root.join("descriptions.txt"), b"test").unwrap();
+        symlink("../descriptions.txt", root.join(DESCRIPTIONS_FILENAME)).unwrap();
+        let linked_file = read_sidecar(&root);
+        fs::rename(&bran, root.join("alternate")).unwrap();
+        symlink("missing", &bran).unwrap();
+        let linked_directory = read_sidecar(&root);
+        fs::remove_dir_all(root).unwrap();
+        assert!(linked_file.is_err());
+        assert!(linked_directory.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_open_stays_with_the_opened_directory() {
+        let root = std::env::temp_dir().join(format!("bran-sidecar-dir-{}", std::process::id()));
+        let bran = root.join(".bran");
+        fs::create_dir_all(&bran).unwrap();
+        fs::write(root.join(DESCRIPTIONS_FILENAME), "original").unwrap();
+        let directory = open_bran_directory(&root).unwrap();
+        fs::rename(&bran, root.join("old")).unwrap();
+        fs::create_dir(&bran).unwrap();
+        fs::write(root.join(DESCRIPTIONS_FILENAME), "replacement").unwrap();
+        let mut contents = String::new();
+        open_sidecar_at(&directory)
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(contents, "original");
     }
 }

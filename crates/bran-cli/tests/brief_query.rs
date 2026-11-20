@@ -2,6 +2,8 @@
 //! exercised through the real CLI on the synthetic recall fixture.
 use bran_core::agent::receipt::InlineResult;
 use bran_core::agent::result_store::ResultId;
+mod support;
+
 use bran_document::canonical::Json;
 use std::collections::BTreeSet;
 use std::fs;
@@ -91,7 +93,8 @@ impl Repo {
     }
 
     fn git(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .args([
                 "-c",
                 "user.name=fixture",
@@ -99,9 +102,8 @@ impl Repo {
                 "user.email=fixture@example.invalid",
             ])
             .args(args)
-            .current_dir(&self.0)
-            .output()
-            .expect("git runs");
+            .current_dir(&self.0);
+        let output = support::output(&mut command).expect("git runs");
         assert!(output.status.success(), "git {args:?} failed");
         String::from_utf8(output.stdout).unwrap()
     }
@@ -129,7 +131,7 @@ impl Repo {
         for (k, v) in envs {
             cmd.env(k, v);
         }
-        let output = cmd.output().expect("bran runs");
+        let output = support::output(&mut cmd).expect("bran runs");
         (
             output.status.code().unwrap_or(-1),
             String::from_utf8(output.stdout).unwrap(),
@@ -297,6 +299,12 @@ fn brief_keeps_long_paths_exact_and_shortens_reasons_first() {
         paths.is_subset(&expected),
         "paths are byte-equal, never elided"
     );
+    let (full, _) = repo.brief(&["--top", "32"], "lantern");
+    let complete = results(&full);
+    assert_eq!(complete.len(), expected.len());
+    for (kept, expected) in items.iter().zip(&complete) {
+        assert_eq!(kept.1, expected.1, "only trailing results may be dropped");
+    }
     for (_, _, reason) in &items {
         assert!(
             reason == "exact" || reason == "partial",

@@ -60,8 +60,8 @@ Every candidate also carries its `id`, the rule rank as a string.
 
 ## Request (stdin)
 
-BRAN sends one JSON object. `options` holds the whole rule shortlist (up to
-32 candidates) in rule order, before `--top` truncates the output. The
+BRAN sends one JSON object. `options` holds up to 32 candidates that pass
+the rule selection cut, in rule order. BRAN applies `--top` after advice. The
 advisor can promote any of them into the returned set.
 
 ```json
@@ -96,12 +96,12 @@ A score per candidate, each from 0 to 1:
 
 BRAN orders candidates by score, descending. Ties keep the rule order.
 Candidates the advisor did not score follow the scored ones, in rule order.
-Scores are rounded to nine decimal places before the range check and the
-comparison.
+BRAN checks range limits before comparing scores at double precision.
 
 BRAN rejects the whole answer and keeps the rule's result when:
 
 - the output is not one of the two forms, or has both `paths` and `scores`;
+- a JSON object contains a repeated field name;
 - a path is not a candidate, is ambiguous, or repeats; the list is empty;
 - a score entry is not exactly `{"id": "<string>", "score": <number>}`;
 - an `id` is unknown or repeats; `scores` is empty;

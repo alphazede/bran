@@ -17,6 +17,7 @@ from pathlib import Path
 # warning with this text (README "Use --top N").
 BRIEF_TRUNCATED = re.compile(r"brief_truncated: (\d+) of (\d+) results omitted")
 BRIEF_CHAR_LIMIT = 2000
+QUERY_TIMEOUT_SECONDS = 605
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -159,7 +160,24 @@ def run_once(
     cmd.append(question)
 
     started = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=QUERY_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.perf_counter() - started
+        return (
+            None,
+            f"query timed out after {QUERY_TIMEOUT_SECONDS} s",
+            elapsed,
+            0,
+            0,
+            None,
+        )
     elapsed = time.perf_counter() - started
     out_chars = len(proc.stdout.rstrip("\n"))
 
@@ -204,7 +222,8 @@ def evaluate(
         rep_out_chars = 0
         worst_ok_out_chars: int | None = None
         worst_ok_path_chars = 0
-        worst_trunc: tuple[int, int, int] | None = None  # omitted, total, path_chars
+        worst_ok_trunc: tuple[int, int] | None = None
+        worst_trunc: tuple[int, int, int, int] | None = None
 
         for rep in range(repeat):
             rank, err, elapsed, out_chars, path_chars, truncated = run_once(
@@ -223,12 +242,13 @@ def evaluate(
             ):
                 worst_ok_out_chars = out_chars
                 worst_ok_path_chars = path_chars
+                worst_ok_trunc = truncated
             if (
                 err is None
                 and truncated
                 and (worst_trunc is None or truncated[0] > worst_trunc[0])
             ):
-                worst_trunc = (*truncated, path_chars)
+                worst_trunc = (*truncated, path_chars, out_chars)
 
         bucket = classes.setdefault(
             q_class,
@@ -261,31 +281,30 @@ def evaluate(
             }
         )
 
-        # A real bran keeps brief output inside the budget by omitting whole
-        # results (`brief_truncated`); an over-budget response is a finding too.
-        if mode == "brief" and worst_trunc is not None:
-            omitted, total, trunc_path_chars = worst_trunc
-            size_findings.append(
-                {
-                    "question": question,
-                    "output_chars": worst_ok_out_chars,
-                    "path_chars": trunc_path_chars,
-                    "omitted": omitted,
-                    "total": total,
-                }
-            )
-        elif (
+        if (
             mode == "brief"
             and worst_ok_out_chars is not None
             and worst_ok_out_chars > BRIEF_CHAR_LIMIT
         ):
+            omitted, total = worst_ok_trunc or (0, 0)
             size_findings.append(
                 {
                     "question": question,
                     "output_chars": worst_ok_out_chars,
                     "path_chars": worst_ok_path_chars,
-                    "omitted": 0,
-                    "total": 0,
+                    "omitted": omitted,
+                    "total": total,
+                }
+            )
+        elif mode == "brief" and worst_trunc is not None:
+            omitted, total, path_chars, out_chars = worst_trunc
+            size_findings.append(
+                {
+                    "question": question,
+                    "output_chars": out_chars,
+                    "path_chars": path_chars,
+                    "omitted": omitted,
+                    "total": total,
                 }
             )
 

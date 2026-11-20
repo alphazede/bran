@@ -12,10 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Pin `az-lint` to its re-authored `v0.1.0` commit; the files are unchanged. ([#70](https://github.com/alphazede/bran/pull/70))
-- `--brief` treats `.jsx`, `.mjs`, `.cjs`, `.tsx`, `.mts` and `.cts` files with `test`, `tests`, `spec` or `specs` in their path as test files, so a non-test question demotes them like `.ts` tests.
-- `--brief` matches a filename word through its agent-noun verb form in both directions: `parser` in a question matches a file named `parse`, and the reverse. Only the filename field uses this form.
-- `--brief` adds the directory name to the filename field of an `index` or `README` document, so the page that describes a directory matches that directory's name.
-- `--brief` applies the value-source rule to set questions (`which owners may ...`), so the configuration file that lists the members can rank above the script that reads it. `which <noun>` and `which <plural> <verb>` questions are unchanged.
+- `--brief` treats `.jsx`, `.mjs`, `.cjs`, `.tsx`, `.mts` and `.cts` files with `test`, `tests`, `spec` or `specs` in their path as test files, so a non-test question demotes them like `.ts` tests. ([#72](https://github.com/alphazede/bran/pull/72))
+- `--brief` matches a filename word through its agent-noun verb form in both directions: `parser` in a question matches a file named `parse`, and the reverse. Only the filename field uses this form. ([#72](https://github.com/alphazede/bran/pull/72))
+- `--brief` adds the directory name to the filename field of an `index` or `README` document, so the page that describes a directory matches that directory's name. ([#72](https://github.com/alphazede/bran/pull/72))
+- `--brief` applies the value-source rule to set questions (`which owners may ...`), so the configuration file that lists the members can rank above the script that reads it. `which <noun>` and `which <plural> <verb>` questions are unchanged. ([#72](https://github.com/alphazede/bran/pull/72))
 
 - `tools/ci/check.sh` waits for a shared gate slot and caps its CPU cores when `AZ_GATE_SLOTS_SH` names a helper; without it the script runs as before. ([#69](https://github.com/alphazede/bran/pull/69))
 - Lint changed files with [`az-lint`](https://github.com/alphazede/az-lint) as a blocking step before tests, locally and in the hosted gate. ([#68](https://github.com/alphazede/bran/pull/68))
@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.bran/ranking.yaml` still sort first. The index is rebuilt from each
   query's scan, so results are never stale. `reason` values are now
   `exact|partial:` followed by `filename`, `path`, `body`, `description` or
-  `reference`. Details in `docs/brief-ranking.md`.
+  `reference`. Details in `docs/brief-ranking.md`. ([#72](https://github.com/alphazede/bran/pull/72))
 
 ### Added
 
@@ -37,33 +37,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"path", "sha256", "description"}` object per line adds a description to
   a file's description field while the hash matches the file. Size limits,
   in-tree paths only; bad lines are skipped with one
-  `descriptions_ignored` warning and never fail the query.
+  `descriptions_ignored` warning and never fail the query. ([#72](https://github.com/alphazede/bran/pull/72))
 
 - Brief-mode advisor: optional `send_fields` value `excerpt` sends a bounded
   (900-byte, UTF-8) excerpt of each candidate file, and the advisor may answer
   `{"scores": [{"id", "score"}]}` with a score from 0 to 1 per candidate
   instead of a path list. Every candidate now carries its `id`. Protocol in
-  `docs/brief-advisor.md`.
+  `docs/brief-advisor.md`. ([#72](https://github.com/alphazede/bran/pull/72))
 
 ### Fixed
 
 - `--brief` selection keeps results by the same relevance measure the ranking
-  sorts by, so an exact field on the leader no longer hides close runners-up.
+  sorts by, so an exact field on the leader no longer hides close runners-up. ([#72](https://github.com/alphazede/bran/pull/72))
 - `--brief` no longer admits a document matched only by an ignored word when
-  the query has a content word.
+  the query has a content word. ([#72](https://github.com/alphazede/bran/pull/72))
 - `--brief` ranking takes the strongest location signal per query word; a
-  filename substring no longer lowers a whole directory-token match.
+  filename substring no longer lowers a whole directory-token match. ([#72](https://github.com/alphazede/bran/pull/72))
 - `--brief` morphology normalizes query words and document tokens the same
   way, credits filename stems independently of body hits, scores a stem below
   the exact token, and matches a stem inside an identifier only at a sub-word
-  start (`IndexBuilder`), never mid-word (`Install`).
-- `--brief` score components no longer saturate into ties on long queries.
+  start (`IndexBuilder`), never mid-word (`Install`). ([#72](https://github.com/alphazede/bran/pull/72))
+- `--brief` score components no longer saturate into ties on long queries. ([#72](https://github.com/alphazede/bran/pull/72))
 - `.bran/ranking.yaml` rejects a misaligned sibling key and accepts an
-  apostrophe inside a plain scalar.
+  apostrophe inside a plain scalar. ([#72](https://github.com/alphazede/bran/pull/72))
 - `--brief` output now stays within its budget: 2,000 characters for up to 8
   results plus 250 per result an explicit `--top` adds. When exact paths
   alone do not fit, trailing results are dropped and a `brief_truncated`
-  warning reports how many.
+  warning reports how many. ([#72](https://github.com/alphazede/bran/pull/72))
 
 ## [0.3.0](https://github.com/alphazede/bran/releases/tag/bran-v0.3.0) - 2026-11-19
 

@@ -48,7 +48,8 @@ idf = ln(1 + (N − df + 0.5) / (df + 0.5))
 ```
 
 `N`, `df` (body document frequency) and the mean field lengths come from the
-files in the leading tier of `.bran/ranking.yaml`. The score also adds
+files in the leading tier of `.bran/ranking.yaml`. When that tier has no
+tokens in a field, its mean length for scoring is 1. The score also adds
 `0.5 × min(1023, document traits) / 400`. Document traits are status, canonical,
 public-safe and confidence. Two rules adjust the score:
 
@@ -77,11 +78,12 @@ A file must have a stem match in some field, or a strong value-source
 reference, to be ranked. Tiers from `.bran/ranking.yaml` still sort first.
 Lower tiers are tokenized when the leading tier has fewer than 32 matches or
 misses a query word, so files in lower tiers remain findable. Ties break on
-literal filename words, then on document traits, then on path. A question
-without any indexable word (only function words) uses the earlier scorer.
+literal filename words, document traits, freshness, and then bundle and path.
+A question without any indexable word uses the earlier scorer.
 
-The 32-candidate shortlist, the half-of-leader selection cut and the advisor
-contract are unchanged.
+The shortlist holds up to 32 candidates. The rule keeps the leader and each
+candidate that scores at least 30% of the leader's relevance score. An advisor
+receives the selected candidates before the display limit applies.
 
 ## Reasons
 
@@ -114,9 +116,11 @@ Each line is one JSON object with exactly these string keys:
 - `description` is 1 to 2,048 bytes and is added to the `description` field.
 
 Limits: the file is at most 8 MiB, each line at most 4,096 bytes, and at most
-50,000 lines are read. The first entry for a path wins. The file is read
-without following symbolic links, and `.bran` must not be a symbolic link. A
-malformed, out-of-tree, oversize or duplicate line is rejected on its own.
+50,000 entries are considered. The first valid entry for a path wins.
+BRAN rejects symbolic links for the sidecar and its `.bran` directory.
+On Unix, BRAN opens the sidecar relative to an open `.bran` directory handle.
+A malformed, out-of-tree, oversized, or duplicate entry is rejected on its own.
+Each JSON object must have unique keys.
 The query never fails because of this file. When anything is ignored, one
 warning reports it: `descriptions_ignored: <n> rejected, <m> stale`, or
 `descriptions_ignored: <reason>` when the whole file is ignored. The sidecar

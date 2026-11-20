@@ -394,8 +394,6 @@ const EXCERPT_MAX_BYTES: usize = 900;
 // Leading lines fill the excerpt up to this many bytes; after that only lines matching a query term.
 const EXCERPT_LEAD_BYTES: usize = 300;
 const EXCERPT_READ_BYTES: u64 = 256 * 1024;
-// Advisor scores are compared as integers in units of 1e-9.
-const SCORE_SCALE: i64 = 1_000_000_000;
 
 /// Leading non-empty lines up to `EXCERPT_LEAD_BYTES`, then the lines that contain a
 /// query term, cut to `EXCERPT_MAX_BYTES` at a character boundary.
@@ -439,7 +437,7 @@ fn read_excerpt(root: &Path, locator: &str, terms: &[String]) -> Option<String> 
     let text = match std::str::from_utf8(&bytes) {
         Ok(text) => text,
         // shortcut: only the first EXCERPT_READ_BYTES are read, so matches past them are not seen.
-        Err(e) if e.error_len().is_none() && bytes.len() as u64 == EXCERPT_READ_BYTES => {
+        Err(e) if e.error_len().is_none() && meta.len() > bytes.len() as u64 => {
             std::str::from_utf8(&bytes[..e.valid_up_to()]).ok()?
         }
         Err(_) => return None,
@@ -747,11 +745,11 @@ fn is_json_number(token: &str) -> bool {
     rest.is_empty()
 }
 
-/// Rewrites every number outside strings as an integer in `SCORE_SCALE` units, so the
-/// integer-only `Json` parser can read fractional scores. `None` for a malformed,
-/// non-finite or out-of-`i64` number.
-fn scale_numbers(bytes: &[u8]) -> Option<Vec<u8>> {
+/// Give each number a temporary integer index for the integer-only JSON parser.
+/// Keep the original lexemes for validation and ordering.
+fn index_numbers(bytes: &[u8]) -> Option<(Vec<u8>, Vec<&str>)> {
     let mut out = Vec::with_capacity(bytes.len());
+    let mut numbers = Vec::new();
     let mut at = 0;
     while at < bytes.len() {
         match bytes[at] {
@@ -776,11 +774,8 @@ fn scale_numbers(bytes: &[u8]) -> Option<Vec<u8>> {
                 if !is_json_number(token) {
                     return None;
                 }
-                let scaled = (token.parse::<f64>().ok()? * SCORE_SCALE as f64).round();
-                if !scaled.is_finite() || scaled.abs() >= i64::MAX as f64 {
-                    return None;
-                }
-                out.extend_from_slice((scaled as i64).to_string().as_bytes());
+                out.extend_from_slice(numbers.len().to_string().as_bytes());
+                numbers.push(token);
             }
             byte => {
                 out.push(byte);
@@ -788,40 +783,69 @@ fn scale_numbers(bytes: &[u8]) -> Option<Vec<u8>> {
             }
         }
     }
-    Some(out)
+    Some((out, numbers))
+}
+
+fn score_number(token: &str) -> Option<f64> {
+    let number = token.parse::<f64>().ok()?;
+    if !(0.0..=1.0).contains(&number) {
+        return None;
+    }
+    // Check decimals that a float rounds onto an endpoint of the allowed range.
+    if number == 0.0 || number == 1.0 {
+        let mantissa = token.split(['e', 'E']).next()?;
+        let mut significant = mantissa
+            .bytes()
+            .filter(u8::is_ascii_digit)
+            .skip_while(|&digit| digit == b'0');
+        if (number == 0.0 && token.starts_with('-') && significant.next().is_some())
+            || (number == 1.0
+                && significant.next() == Some(b'1')
+                && significant.any(|digit| digit != b'0'))
+        {
+            return None;
+        }
+    }
+    Some(number)
 }
 
 /// Orders the rule candidates by advisor score, descending; ties and unscored candidates
 /// keep rule order, unscored after scored. Any invalid entry rejects the whole answer.
-fn apply_scores(scores: &Json, rule_selected: &[SourceRanking]) -> Option<Vec<SourceRanking>> {
+fn apply_scores(
+    scores: &Json,
+    numbers: &[&str],
+    rule_selected: &[SourceRanking],
+) -> Option<Vec<SourceRanking>> {
     let Json::Arr(entries) = scores else {
         return None;
     };
     if entries.is_empty() {
         return None;
     }
-    let mut by_index: Vec<Option<i64>> = vec![None; rule_selected.len()];
+    let mut by_index = vec![None; rule_selected.len()];
     for entry in entries {
         let Json::Obj(map) = entry else {
             return None;
         };
-        let (Some(Json::Str(id)), Some(Json::Int(score)), 2) =
+        let (Some(Json::Str(id)), Some(Json::Int(number_index)), 2) =
             (map.get("id"), map.get("score"), map.len())
         else {
             return None;
         };
-        if !(0..=SCORE_SCALE).contains(score) {
-            return None;
-        }
+        let score = score_number(numbers.get(usize::try_from(*number_index).ok()?)?)?;
         let idx = rule_selected
             .iter()
             .position(|item| item.rank.to_string() == *id)?;
-        if by_index[idx].replace(*score).is_some() {
+        if by_index[idx].replace(score).is_some() {
             return None;
         }
     }
     let mut order: Vec<usize> = (0..rule_selected.len()).collect();
-    order.sort_by_key(|&idx| std::cmp::Reverse(by_index[idx]));
+    order.sort_by(|&left, &right| {
+        by_index[right]
+            .partial_cmp(&by_index[left])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Some(
         order
             .into_iter()
@@ -839,17 +863,13 @@ fn apply_advisor_reply(
     stdout_bytes: &[u8],
     rule_selected: &[SourceRanking],
 ) -> Option<Vec<SourceRanking>> {
-    if let Some(reply) = scale_numbers(stdout_bytes).and_then(|bytes| Json::parse(&bytes)) {
-        if let Some(scores) = reply.get("scores") {
-            return match reply.get("paths") {
-                Some(_) => None,
-                None => apply_scores(scores, rule_selected),
-            };
-        }
-    }
-    let parsed = Json::parse(stdout_bytes)?;
-    if parsed.get("scores").is_some() {
-        return None;
+    let (indexed, numbers) = index_numbers(stdout_bytes)?;
+    let parsed = Json::parse_unique(&indexed)?;
+    if let Some(scores) = parsed.get("scores") {
+        return match parsed.get("paths") {
+            Some(_) => None,
+            None => apply_scores(scores, &numbers, rule_selected),
+        };
     }
     let Some(Json::Arr(path_values)) = parsed.get("paths") else {
         return None;
@@ -961,6 +981,8 @@ mod tests {
         assert_eq!(scored(reply, 2).unwrap(), ["doc-2.md", "doc-1.md"]);
         let reply = r#"{"scores":[{"id":"2","score":1e-1},{"id":"1","score":5E-2}]}"#;
         assert_eq!(scored(reply, 2).unwrap(), ["doc-2.md", "doc-1.md"]);
+        let reply = r#"{"scores":[{"id":"1","score":0.5},{"id":"2","score":0.5000000001}]}"#;
+        assert_eq!(scored(reply, 2).unwrap(), ["doc-2.md", "doc-1.md"]);
         let reply = r#"{"paths":["doc-2.md"]}"#;
         assert_eq!(
             scored(reply, 2).unwrap(),
@@ -977,6 +999,12 @@ mod tests {
             r#"{"scores":[{"id":"1","score":0.5},{"id":"1","score":0.4}]}"#,
             r#"{"scores":[{"id":"1","score":1.5}]}"#,
             r#"{"scores":[{"id":"1","score":-0.1}]}"#,
+            r#"{"scores":[{"id":"1","score":1.0000000001}]}"#,
+            r#"{"scores":[{"id":"1","score":-0.0000000001}]}"#,
+            r#"{"scores":[{"id":"1","score":1.00000000000000001}]}"#,
+            r#"{"scores":[{"id":"1","score":-1e-999}]}"#,
+            r#"{"scores":[{"id":"999","\u0069d":"1","score":0.5}]}"#,
+            r#"{"paths":["unknown.md"],"paths":["doc-1.md"]}"#,
             r#"{"scores":[{"id":"1","score":2}]}"#,
             r#"{"scores":[{"id":"1","score":1e999}]}"#,
             r#"{"scores":[{"id":"1","score":NaN}]}"#,
@@ -1003,11 +1031,17 @@ mod tests {
     }
 
     #[test]
-    fn scale_numbers_leaves_strings_untouched() {
-        let scaled = scale_numbers(br#"{"a\"1.5":[0.25,-1,"0.5""]}"#).unwrap();
+    fn advisor_number_parsing_leaves_strings_untouched() {
+        let reply = r#"{"paths":["a\"1.5.md"]}"#;
+        let mut rule = [candidate(1), candidate(2)];
+        rule[1].locator = r#"a"1.5.md"#.to_owned();
+        let advised = apply_advisor_reply(reply.as_bytes(), &rule).unwrap();
+        assert_eq!(advised.len(), 1);
+        assert_eq!(advised[0].locator, rule[1].locator);
+        let reply = r#"{"note":"a\"1.5","scores":[{"id":"2","score":0.5}]}"#;
         assert_eq!(
-            String::from_utf8(scaled).unwrap(),
-            r#"{"a\"1.5":[250000000,-1000000000,"0.5""]}"#
+            apply_advisor_reply(reply.as_bytes(), &rule).unwrap()[0].locator,
+            rule[1].locator
         );
     }
 
@@ -1076,6 +1110,24 @@ mod tests {
     }
 
     #[test]
+    fn excerpt_accepts_a_cut_character_only_when_more_bytes_follow() {
+        let dir =
+            std::env::temp_dir().join(format!("bran-select-excerpt-cut-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("notes.md");
+        let mut bytes = vec![b'a'; EXCERPT_READ_BYTES as usize - 1];
+        bytes.push(0xc3);
+        fs::write(&path, &bytes).unwrap();
+        let incomplete = read_excerpt(&dir, "notes.md", &[]);
+        bytes.push(0xa9);
+        fs::write(&path, &bytes).unwrap();
+        let split = read_excerpt(&dir, "notes.md", &[]);
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(incomplete, None);
+        assert_eq!(split, Some("a".repeat(EXCERPT_MAX_BYTES)));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn late_exit_past_deadline_is_rejected_even_if_child_exited_zero() {
         let mut child = Command::new("/bin/sh")
@@ -1089,6 +1141,9 @@ mod tests {
             wait_exit_until(&mut child, expired),
             WaitOutcome::TimedOutOrError
         ));
+        if child.try_wait().unwrap().is_none() {
+            let _ = child.kill();
+        }
         let _ = child.wait();
     }
 }

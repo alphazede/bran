@@ -20,6 +20,8 @@
 //!   unscored last). Anything else, a non-zero exit, oversized
 //!   stdout, or no answer within `timeout_ms` (child killed) keeps the rule
 //!   answer with `selection.source` "rule", exit 0 and no warning in `data`.
+mod support;
+
 use bran_document::canonical::Json;
 use std::collections::BTreeSet;
 use std::fs;
@@ -49,9 +51,7 @@ fn advisor_script() -> PathBuf {
 }
 
 fn sha256_hex(path: &Path) -> String {
-    let output = Command::new("sha256sum").arg(path).output().unwrap();
-    assert!(output.status.success());
-    String::from_utf8(output.stdout).unwrap()[..64].to_owned()
+    bran_document::canonical::sha256_hex(&fs::read(path).unwrap())
 }
 
 fn doc(title: &str, body: &str) -> String {
@@ -155,7 +155,7 @@ impl Repo {
 
     /// Runs a brief query; asserts exit 0 and the brief data shape (no warning in data).
     fn brief_with(&self, mut command: Command) -> (Json, String) {
-        let output = command.output().expect("bran runs");
+        let output = support::output(&mut command).expect("bran runs");
         let stdout = String::from_utf8(output.stdout).unwrap();
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert_eq!(
@@ -173,13 +173,13 @@ impl Repo {
     }
 
     fn default_locators(&self) -> Vec<String> {
-        let output = Command::new(BRAN)
+        let mut command = Command::new(BRAN);
+        command
             .env_remove("BRAN_REGISTERED_ROOTS")
             .env_remove("BRAN_ADVISOR_CONFIG")
             .current_dir(&self.root)
-            .args(["query", self.root.to_str().unwrap(), QUESTION])
-            .output()
-            .unwrap();
+            .args(["query", self.root.to_str().unwrap(), QUESTION]);
+        let output = support::output(&mut command).expect("bran runs");
         let envelope = Json::parse(&output.stdout).expect("default output is JSON");
         let Some(Json::Arr(items)) = data(&envelope).get("source_rankings") else {
             panic!("default query has source_rankings")

@@ -12,6 +12,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+if __package__:
+    from . import recall_check
+else:
+    import recall_check
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools/recall/recall_check.py"
@@ -169,8 +175,6 @@ class RecallCheckTest(unittest.TestCase):
         self.assertLessEqual(finding["output_chars"], 2000)
 
     def test_repeat_records_worst_successful_response_in_size_findings(self):
-        state = Path(self.tmp.name) / "calls.txt"
-        wrapper = Path(self.tmp.name) / "fake_bran.py"
         long_path = "x/" * 100 + "hit.md"
         first_payload = json.dumps({"data": {"results": [{"path": "a.md"}]}})
         padding_len = 2584 - len(
@@ -179,6 +183,45 @@ class RecallCheckTest(unittest.TestCase):
         second_payload = json.dumps(
             {"data": {"results": [{"path": long_path, "reason": "r" * padding_len}]}}
         )
+        summary = self.repeat_outputs(first_payload, second_payload, long_path)
+        self.assertEqual(summary["output_chars"]["worst"], len(second_payload))
+        self.assertEqual(
+            summary["per_question"][0]["output_chars"], len(second_payload)
+        )
+        [finding] = summary["size_findings"]
+        self.assertEqual(finding["output_chars"], len(second_payload))
+        self.assertEqual(finding["path_chars"], len(long_path))
+        self.assertEqual(finding["omitted"], 0)
+
+    def test_repeat_size_finding_uses_a_single_response(self):
+        truncated = json.dumps(
+            {
+                "data": {"results": [{"path": "a.md"}]},
+                "warnings": ["brief_truncated: 2 of 3 results omitted"],
+            }
+        )
+        complete = json.dumps({"data": {"results": [{"path": "x" * 250 + ".md"}]}})
+        [finding] = self.repeat_outputs(truncated, complete, "a.md")["size_findings"]
+        self.assertEqual(finding["output_chars"], len(truncated))
+        self.assertEqual(finding["path_chars"], len("a.md"))
+        self.assertEqual(finding["omitted"], 2)
+
+    def test_repeat_size_finding_reports_oversize_even_if_another_reply_truncated(self):
+        truncated = json.dumps(
+            {
+                "data": {"results": [{"path": "a.md"}]},
+                "warnings": ["brief_truncated: 2 of 3 results omitted"],
+            }
+        )
+        oversized = json.dumps({"data": {"results": [{"path": "x" * 2100 + ".md"}]}})
+        [finding] = self.repeat_outputs(truncated, oversized, "a.md")["size_findings"]
+        self.assertEqual(finding["output_chars"], len(oversized))
+        self.assertEqual(finding["path_chars"], 2103)
+        self.assertEqual(finding["omitted"], 0)
+
+    def repeat_outputs(self, first_payload, second_payload, expected):
+        state = Path(self.tmp.name) / "calls.txt"
+        wrapper = Path(self.tmp.name) / "fake_bran.py"
         wrapper.write_text(
             "#!/usr/bin/env python3\n"
             "import pathlib, sys\n"
@@ -192,7 +235,7 @@ class RecallCheckTest(unittest.TestCase):
         wrapper.chmod(0o755)
         questions = Path(self.tmp.name) / "repeat_size.jsonl"
         questions.write_text(
-            json.dumps({"question": "q", "expected": long_path}) + "\n",
+            json.dumps({"question": "q", "expected": expected}) + "\n",
             encoding="utf-8",
         )
         run = subprocess.run(
@@ -218,15 +261,18 @@ class RecallCheckTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
-        summary = json.loads(run.stdout)
-        self.assertEqual(summary["output_chars"]["worst"], len(second_payload))
-        self.assertEqual(
-            summary["per_question"][0]["output_chars"], len(second_payload)
-        )
-        [finding] = summary["size_findings"]
-        self.assertEqual(finding["output_chars"], len(second_payload))
-        self.assertEqual(finding["path_chars"], len(long_path))
-        self.assertEqual(finding["omitted"], 0)
+        return json.loads(run.stdout)
+
+    def test_query_timeout_is_reported(self):
+        wrapper = Path(self.tmp.name) / "slow_bran.py"
+        wrapper.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(0.5)\n")
+        wrapper.chmod(0o755)
+        with patch.object(recall_check, "QUERY_TIMEOUT_SECONDS", 0.05, create=True):
+            rank, error, _, _, _, _ = recall_check.run_once(
+                str(wrapper), str(self.root), "quillwort", "a.md", "brief"
+            )
+        self.assertIsNone(rank)
+        self.assertIn("timed out", error)
 
 
 if __name__ == "__main__":

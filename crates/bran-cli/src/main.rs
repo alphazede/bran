@@ -1848,36 +1848,25 @@ const QUERY_STOP_WORDS: &[&str] = &["about", "and", "for", "from", "not", "the",
 fn query_terms_and_entities(query_text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut terms = BTreeSet::new();
     let mut entities = BTreeSet::new();
-    let mut run = String::new();
-    for character in query_text.chars() {
-        if character.is_alphanumeric() || matches!(character, '-' | '_' | '.') {
-            run.push(character.to_ascii_lowercase());
-        } else {
-            classify_query_run(&run, &mut terms, &mut entities);
-            run.clear();
+    for run in query_identifier_runs(query_text) {
+        let label = run.to_ascii_lowercase();
+        if label.contains(['-', '_', '.']) {
+            if label.len() >= 6 {
+                entities.insert(label);
+            }
+        } else if label.len() >= 3 && !QUERY_STOP_WORDS.contains(&label.as_str()) {
+            terms.insert(label);
         }
     }
-    classify_query_run(&run, &mut terms, &mut entities);
     (terms, entities)
 }
 
-/// One maximal identifier-character run becomes either a high-specificity
-/// entity unit or a plain word. Short separator fragments ("e.g.", "v0.2")
-/// are dropped entirely rather than treated as words.
-fn classify_query_run(run: &str, terms: &mut BTreeSet<String>, entities: &mut BTreeSet<String>) {
-    if run.is_empty() {
-        return;
-    }
-    let trimmed = run.trim_matches(['-', '_', '.']);
-    if trimmed.contains(['-', '_', '.']) {
-        if trimmed.len() >= 6 {
-            entities.insert(trimmed.to_owned());
-        }
-        return;
-    }
-    if trimmed.len() >= 3 && !QUERY_STOP_WORDS.contains(&trimmed) {
-        terms.insert(trimmed.to_owned());
-    }
+/// Keep the original case for fielded tokenization of identifier stems.
+fn query_identifier_runs(query: &str) -> impl Iterator<Item = &str> {
+    query
+        .split(|c: char| !c.is_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+        .map(|run| run.trim_matches(['-', '_', '.']))
+        .filter(|run| !run.is_empty())
 }
 
 /// The body content of one scanned entry: source slice after the frontmatter
@@ -2310,9 +2299,7 @@ fn brief_source_candidates(
     {
         let raw_locator = node.provenance().locator();
         let locator_original = long_paths.get(raw_locator).copied().unwrap_or(raw_locator);
-        // Enterprise documents rank only as document evidence (#46), never as
-        // Markdown sources: refused files must not be selectable by path.
-        if document_evidence::is_document_path(locator_original) {
+        if brief_source_excluded(locator_original) {
             continue;
         }
         total_docs += 1;
@@ -2583,6 +2570,16 @@ fn finalize_brief_rankings(
         ranking.rank = index + 1;
     }
     matches
+}
+
+const BRIEF_RESULTS_DIRECTORY: &str = ".bran/results";
+
+fn brief_source_excluded(locator: &str) -> bool {
+    // Enterprise documents rank through document evidence (#46). Generated
+    // results and description metadata stay outside the source ranking.
+    document_evidence::is_document_path(locator)
+        || locator == fielded::DESCRIPTIONS_FILENAME
+        || Path::new(locator).starts_with(BRIEF_RESULTS_DIRECTORY)
 }
 
 fn brief_source_rankings(
@@ -7253,7 +7250,7 @@ impl FilesystemResultStore {
         let root = fs::canonicalize(root).map_err(|_| ResultStoreError::Unavailable)?;
         let state = root.join(".bran");
         checked_directory(&state)?;
-        let directory = state.join("results");
+        let directory = root.join(BRIEF_RESULTS_DIRECTORY);
         checked_directory(&directory)?;
         Ok(Self { directory })
     }

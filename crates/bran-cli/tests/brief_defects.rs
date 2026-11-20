@@ -1,10 +1,13 @@
 //! Brief selection and ranking regressions, each built from a small synthetic
 //! repository and run through the real CLI.
+mod support;
+
 use bran_document::canonical::Json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const BRAN: &str = env!("CARGO_BIN_EXE_bran");
 const LIMIT_CHARS: usize = 2000;
@@ -48,15 +51,15 @@ impl Repo {
 
     /// Exit code and stdout followed by stderr.
     fn query(&self, extra: &[&str], question: &str) -> (i32, String) {
-        let output = Command::new(BRAN)
+        let mut command = Command::new(BRAN);
+        command
             .env_remove("BRAN_REGISTERED_ROOTS")
             .env_remove("BRAN_ADVISOR_CONFIG")
             .current_dir(&self.0)
             .args(["query", self.0.to_str().unwrap(), "--brief"])
             .args(extra)
-            .arg(question)
-            .output()
-            .expect("bran runs");
+            .arg(question);
+        let output = support::output(&mut command).expect("bran runs");
         let mut text = String::from_utf8(output.stdout).unwrap();
         text.push_str(&String::from_utf8(output.stderr).unwrap());
         (output.status.code().unwrap_or(-1), text)
@@ -436,4 +439,120 @@ fn set_question_promotes_the_referenced_configuration_file() {
             "{question}"
         );
     }
+}
+
+#[test]
+fn brief_reports_camel_case_matches_in_coverage() {
+    let repo = Repo::with(&[("parser.rs", "fn parseHTTPServer() {}")]);
+    let (code, stdout) = repo.query(&[], "parseHTTPServer");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["parser.rs"]);
+    let data = Json::parse(stdout.as_bytes()).unwrap();
+    let coverage = data.get("data").unwrap().get("query_coverage").unwrap();
+    assert_eq!(
+        coverage.get("matched_terms"),
+        Some(&Json::Arr(vec![Json::Str("parsehttpserver".to_owned())])),
+    );
+    assert_eq!(coverage.get("unmatched_terms"), Some(&Json::Arr(vec![])));
+}
+
+#[test]
+fn brief_does_not_rank_previous_results_after_a_file_changes() {
+    let repo = Repo::with(&[("booking.md", "# Booking\n\nQuillwort.\n")]);
+    let (code, stdout) = repo.query(&[], "quillwort");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["booking.md"]);
+    let envelope = Json::parse(stdout.as_bytes()).unwrap();
+    assert!(matches!(
+        envelope.get("data").unwrap().get("result_id"),
+        Some(Json::Str(_))
+    ));
+    repo.write("booking.md", "# Booking\n\nOrchard.\n");
+    assert!(repo.paths(&[], "quillwort").is_empty());
+}
+
+#[test]
+fn lower_tier_can_use_description_when_leading_tier_has_none() {
+    let repo = Repo::with(&[
+        ("lead.txt", "Neutral words.\n"),
+        ("lower/a.md", "# Archive\n\nTokens.\n"),
+        ("lower/z.md", "# Tokens\n\nArchive.\n"),
+    ]);
+    repo.write(
+        ".bran/ranking.yaml",
+        "classes:\n  - name: archived\n    tier: 1\n    globs: [\"lower/**\"]\n",
+    );
+    assert_eq!(repo.paths(&[], "tokens")[0], "lower/z.md");
+}
+
+#[test]
+fn agent_noun_in_body_does_not_match_the_verb() {
+    let repo = Repo::with(&[
+        ("src/parser.rs", "fn make() {}\n"),
+        ("docs/notes.md", "# Notes\n\nThe parser handles input.\n"),
+    ]);
+    assert_eq!(repo.paths(&[], "parse"), ["src/parser.rs"]);
+}
+
+#[test]
+fn description_sidecar_accepts_escaped_unicode_and_rejects_duplicate_keys() {
+    let repo = Repo::with(&[("a.txt", "alpha\n"), ("b.txt", "beta\n")]);
+    let duplicate = description_line("a.txt", "alpha\n", "bitterwort").replacen(
+        r#""path":"#,
+        r#""path":"missing.txt","\u0070ath":"#,
+        1,
+    );
+    let valid = description_line("b.txt", "beta\n", r"quillwort \ud83c\udfee");
+    let bad_unicode = description_line("a.txt", "alpha\n", r"nightshade \ud83c");
+    repo.write(
+        ".bran/descriptions.jsonl",
+        &format!("{duplicate}{valid}{bad_unicode}"),
+    );
+    let (code, stdout) = repo.query(&[], "quillwort bitterwort nightshade");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["b.txt"]);
+    assert!(
+        stdout.contains("descriptions_ignored: 2 rejected, 0 stale"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn description_sidecar_bounds_work_for_repeated_stale_rows() {
+    let source = "a ".repeat(245_760);
+    let repo = Repo::with(&[("sizing.txt", &source)]);
+    let stale = description_line("sizing.txt", "old bytes", "stale");
+    let fresh = description_line("sizing.txt", &source, "quillwort");
+    repo.write(".bran/descriptions.jsonl", &(stale.repeat(256) + &fresh));
+    let start = Instant::now();
+    let (code, stdout) = repo.query(&[], "quillwort");
+    let elapsed = start.elapsed();
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["sizing.txt"]);
+    assert!(stdout.contains("descriptions_ignored: 0 rejected, 256 stale"));
+    assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+}
+
+#[test]
+fn description_sidecar_enforces_line_and_entry_limits() {
+    let repo = Repo::with(&[("a.txt", "alpha\n"), ("b.txt", "beta\n")]);
+    let mut rows = " ".repeat(4096);
+    rows.push_str(&description_line("b.txt", "beta\n", "quillwort"));
+    rows.push_str(&"{}\n".repeat(49_998));
+    rows.push_str(&description_line("a.txt", "alpha\n", "quillwort"));
+    rows.push_str(&description_line("b.txt", "beta\n", "quillwort"));
+    repo.write(".bran/descriptions.jsonl", &rows);
+    let (code, stdout) = repo.query(&[], "quillwort");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(result_paths(&stdout), ["a.txt"]);
+    assert!(stdout.contains("descriptions_ignored: 50000 rejected, 0 stale"));
+}
+
+#[cfg(unix)]
+#[test]
+fn stalled_test_child_times_out() {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "sleep 5"]);
+    let result = support::output_with_timeout(&mut command, Duration::from_millis(50));
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
 }

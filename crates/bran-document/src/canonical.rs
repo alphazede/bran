@@ -87,8 +87,21 @@ impl Json {
     /// Parses the JSON subset `to_bytes` emits (integers only, no floats).
     /// Anything else, trailing bytes, or nesting past 64 levels is `None`.
     pub fn parse(bytes: &[u8]) -> Option<Json> {
+        Self::parse_object_keys(bytes, false)
+    }
+
+    /// Parse untrusted JSON and reject repeated keys in every object.
+    pub fn parse_unique(bytes: &[u8]) -> Option<Json> {
+        Self::parse_object_keys(bytes, true)
+    }
+
+    fn parse_object_keys(bytes: &[u8], unique_keys: bool) -> Option<Json> {
         let text = std::str::from_utf8(bytes).ok()?;
-        let mut parser = Parser { text, at: 0 };
+        let mut parser = Parser {
+            text,
+            at: 0,
+            unique_keys,
+        };
         let value = parser.value(0)?;
         parser.space();
         (parser.at == text.len()).then_some(value)
@@ -106,6 +119,7 @@ impl Json {
 struct Parser<'a> {
     text: &'a str,
     at: usize,
+    unique_keys: bool,
 }
 
 impl Parser<'_> {
@@ -169,7 +183,9 @@ impl Parser<'_> {
                     if !self.eat(":") {
                         return None;
                     }
-                    map.insert(key, self.value(depth + 1)?);
+                    if map.insert(key, self.value(depth + 1)?).is_some() && self.unique_keys {
+                        return None;
+                    }
                     if self.eat("}") {
                         return Some(Json::Obj(map));
                     }
@@ -209,12 +225,7 @@ impl Parser<'_> {
                     't' => '\t',
                     'b' => '\u{8}',
                     'f' => '\u{c}',
-                    'u' => {
-                        let hex: String = (0..4)
-                            .filter_map(|_| chars.next().map(|(_, c)| c))
-                            .collect();
-                        char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?
-                    }
+                    'u' => Self::unicode_escape(&mut chars)?,
                     _ => return None,
                 }),
                 c if (c as u32) < 0x20 => return None,
@@ -222,6 +233,22 @@ impl Parser<'_> {
             }
         }
         None
+    }
+
+    fn unicode_escape(chars: &mut std::str::CharIndices<'_>) -> Option<char> {
+        let hex_quad = |chars: &mut std::str::CharIndices<'_>| {
+            (0..4).try_fold(0u16, |n, _| {
+                Some(n * 16 + chars.next()?.1.to_digit(16)? as u16)
+            })
+        };
+        let high = hex_quad(chars)?;
+        if (0xd800..=0xdbff).contains(&high) {
+            if chars.next()?.1 != '\\' || chars.next()?.1 != 'u' {
+                return None;
+            }
+            return char::decode_utf16([high, hex_quad(chars)?]).next()?.ok();
+        }
+        char::from_u32(u32::from(high))
     }
 }
 
