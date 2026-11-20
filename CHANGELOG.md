@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- `tools/ci/check.sh` waits for a shared gate slot and caps its CPU cores when `AZ_GATE_SLOTS_SH` names a helper; without it the script runs as before. ([#69](https://github.com/alphazede/bran/pull/69))
 - Lint changed files with [`az-lint`](https://github.com/alphazede/az-lint) as a blocking step before tests, locally and in the hosted gate. ([#68](https://github.com/alphazede/bran/pull/68))
 ## [0.3.0](https://github.com/alphazede/bran/releases/tag/bran-v0.3.0) - 2026-11-19
 
