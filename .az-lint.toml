@@ -1,0 +1,17 @@
+[tools.rust]
+enabled = true
+
+[tools.python]
+enabled = true
+
+[tools.shell]
+enabled = true
+
+[tools.yaml]
+enabled = true
+
+[tools.sql]
+enabled = true
+
+[tools.shfmt]
+args = ["-i", "4", "-ci"]

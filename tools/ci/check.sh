@@ -39,6 +39,16 @@ case "$1" in
         ;;
 esac
 
+if [ -n "${AZ_GATE_SLOTS_SH:-}" ] && [ -f "$AZ_GATE_SLOTS_SH" ]; then
+    exec bash -c '
+        shopt -u sourcepath
+        source -- "$1" && acquire_gate_slot && apply_core_limit || exit 2
+        shift
+        unset AZ_GATE_SLOTS_SH
+        exec /bin/sh -- "$@"
+    ' gate-slot "$AZ_GATE_SLOTS_SH" "$0" "$@"
+fi
+
 script_dir=$(CDPATH="" cd "$(dirname "$0")" && pwd -P)
 bran_root=$(CDPATH="" cd "$script_dir/../.." && pwd -P)
 
@@ -130,6 +140,8 @@ run_tui() {
 
 run_fast() {
     printf '%s\n' 'FAST: running Phase 1 through Slice 3.4 gates.'
+    az_lint="${AZ_LINT:-$(git -C "$bran_root" rev-parse --path-format=absolute --git-common-dir)/../../Alphazedehq/tools/lint/az-lint}"
+    "$az_lint" --repo "$bran_root" --changed "${AZ_LINT_BASE:-origin/main}"
 
     run_budget
     cargo fmt --manifest-path "$bran_root/Cargo.toml" --all -- --check
