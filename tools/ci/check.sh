@@ -41,10 +41,11 @@ esac
 
 if [ -n "${AZ_GATE_SLOTS_SH:-}" ] && [ -f "$AZ_GATE_SLOTS_SH" ]; then
     exec bash -c '
-        source "$1" && acquire_gate_slot && apply_core_limit || exit 2
+        shopt -u sourcepath
+        source -- "$1" && acquire_gate_slot && apply_core_limit || exit 2
         shift
         unset AZ_GATE_SLOTS_SH
-        "$@"
+        exec /bin/sh -- "$@"
     ' gate-slot "$AZ_GATE_SLOTS_SH" "$0" "$@"
 fi
 
