@@ -139,8 +139,12 @@ run_tui() {
 }
 
 run_fast() {
+    az_lint="${AZ_LINT:-az-lint}"
+    if ! command -v "$az_lint" >/dev/null 2>&1; then
+        printf '%s\n' "FAIL az-lint is required. Install it from https://github.com/alphazede/az-lint or set AZ_LINT." >&2
+        exit 127
+    fi
     printf '%s\n' 'FAST: running Phase 1 through Slice 3.4 gates.'
-    az_lint="${AZ_LINT:-$(git -C "$bran_root" rev-parse --path-format=absolute --git-common-dir)/../../Alphazedehq/tools/lint/az-lint}"
     "$az_lint" --repo "$bran_root" --changed "${AZ_LINT_BASE:-origin/main}"
 
     run_budget
