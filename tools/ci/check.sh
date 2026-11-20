@@ -39,6 +39,15 @@ case "$1" in
         ;;
 esac
 
+if [ -n "${AZ_GATE_SLOTS_SH:-}" ] && [ -f "$AZ_GATE_SLOTS_SH" ]; then
+    exec bash -c '
+        source "$1" && acquire_gate_slot && apply_core_limit || exit 2
+        shift
+        unset AZ_GATE_SLOTS_SH
+        "$@"
+    ' gate-slot "$AZ_GATE_SLOTS_SH" "$0" "$@"
+fi
+
 script_dir=$(CDPATH="" cd "$(dirname "$0")" && pwd -P)
 bran_root=$(CDPATH="" cd "$script_dir/../.." && pwd -P)
 
