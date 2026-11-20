@@ -17,10 +17,78 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Check out az-lint
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: alphazede/az-lint
+          ref: 3e01af29e532a7f9f6cbb69722cd37d283cf228e
+          path: .az-lint-runner
+          persist-credentials: false
+
+      - name: Move az-lint outside the checkout
+        run: mv .az-lint-runner "$RUNNER_TEMP/az-lint"
+
       - name: Check out the exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned linters
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            installer_dir=$(mktemp -d "$RUNNER_TEMP/az-lint-installer.XXXXXX")
+            cd "$installer_dir"
+            # Update both blob IDs when changing the hosted installer inputs.
+            git -C "$GITHUB_WORKSPACE" cat-file blob \
+              3d444d5f80186c73e92406c88cf0c430399da63b > install-az-lint.sh
+            git -C "$GITHUB_WORKSPACE" cat-file blob \
+            e921863441ec052270a322eb80b39b826e9baee8 > az-lint-requirements.txt
+            bash install-az-lint.sh
+          else
+            bash .github/scripts/install-az-lint.sh
+          fi
+
+      - name: Resolve lint base
+        env:
+          AZ_LINT_BASE: >-
+            ${{ github.event.pull_request.base.sha || github.event.before }}
+          AZ_LINT_FORCED: ${{ github.event.forced }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            if [[ -z "$AZ_LINT_BASE" || "$AZ_LINT_BASE" =~ ^0+$ ]]; then
+              AZ_LINT_BASE=$(git rev-parse --verify --quiet HEAD^ || true)
+            fi
+            if [[ "$AZ_LINT_FORCED" == true || -z "$AZ_LINT_BASE" ]]; then
+              # Use a commit so az-lint can diff the entire published tree.
+              empty_tree=$(git hash-object -t tree -w --stdin < /dev/null)
+              AZ_LINT_BASE=$(git -c user.name=CI \
+                -c user.email=ci@example.invalid \
+                commit-tree "$empty_tree" -m 'Empty lint baseline')
+            fi
+          fi
+          if ! git cat-file -e "$AZ_LINT_BASE^{commit}"; then
+            git fetch --no-tags origin "$AZ_LINT_BASE"
+          fi
+          printf 'AZ_LINT_BASE=%s\n' "$AZ_LINT_BASE" >> "$GITHUB_ENV"
+
+      - name: Lint pull request files
+        if: github.event_name == 'pull_request'
+        run: |
+          export PATH="$RUNNER_TEMP/az-lint-tools/bin:$PATH"
+          AZ_LINT_CONFIG="$RUNNER_TEMP/az-lint-base.toml"
+          git show "$AZ_LINT_BASE:.az-lint.toml" > "$AZ_LINT_CONFIG"
+          # Keep the fast gate's lint call bound to the same PR inputs.
+          cat > "$RUNNER_TEMP/az-lint/az-lint-pr" <<'BASH'
+          #!/usr/bin/env bash
+          AZ_LINT_CONFIG="$RUNNER_TEMP/az-lint-base.toml"
+          exec "$RUNNER_TEMP/az-lint/az-lint" --repo "$GITHUB_WORKSPACE" \
+            --untrusted --config "$AZ_LINT_CONFIG" --changed "$AZ_LINT_BASE"
+          BASH
+          chmod +x "$RUNNER_TEMP/az-lint/az-lint-pr"
+          "$RUNNER_TEMP/az-lint/az-lint-pr"
+          printf 'AZ_LINT=%s\n' "$RUNNER_TEMP/az-lint/az-lint-pr" \
+            >> "$GITHUB_ENV"
 
       - name: Install pinned Rust toolchain
         run: >-
@@ -33,31 +101,9 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --version 0.19.0 --locked
 
-      - name: Check out az-lint
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: alphazede/az-lint
-          ref: c4629f01731fa46d8810f1f565002f02a69b986d
-          path: .az-lint-runner
-          persist-credentials: false
-
-      - name: Install pinned linters
-        run: |
-          mv .az-lint-runner "$RUNNER_TEMP/az-lint"
-          bash .github/scripts/install-az-lint.sh
-
       - name: Run the public fast gate
-        env:
-          AZ_LINT_BASE: >-
-            ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [[ -z "$AZ_LINT_BASE" || "$AZ_LINT_BASE" =~ ^0+$ ]]; then
-            AZ_LINT_BASE=$(git rev-parse HEAD^)
-          fi
-          if ! git cat-file -e "$AZ_LINT_BASE^{commit}"; then
-            git fetch --no-tags origin "$AZ_LINT_BASE"
-          fi
           export PATH="$RUNNER_TEMP/az-lint-tools/bin:$PATH"
           cargo fetch --locked
-          export AZ_LINT_BASE AZ_LINT="$RUNNER_TEMP/az-lint/az-lint"
+          export AZ_LINT="${AZ_LINT:-$RUNNER_TEMP/az-lint/az-lint}"
           ./tools/ci/check.sh --fast
