@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--brief` treats `.jsx`, `.mjs`, `.cjs`, `.tsx`, `.mts` and `.cts` files with `test`, `tests`, `spec` or `specs` in their path as test files, so a non-test question demotes them like `.ts` tests.
+- `--brief` matches a filename word through its agent-noun verb form in both directions: `parser` in a question matches a file named `parse`, and the reverse. Only the filename field uses this form.
+- `--brief` adds the directory name to the filename field of an `index` or `README` document, so the page that describes a directory matches that directory's name.
+- `--brief` applies the value-source rule to set questions (`which owners may ...`), so the configuration file that lists the members can rank above the script that reads it. `which <noun>` and `which <plural> <verb>` questions are unchanged.
+
 - `tools/ci/check.sh` waits for a shared gate slot and caps its CPU cores when `AZ_GATE_SLOTS_SH` names a helper; without it the script runs as before. ([#69](https://github.com/alphazede/bran/pull/69))
 - Lint changed files with [`az-lint`](https://github.com/alphazede/az-lint) as a blocking step before tests, locally and in the hosted gate. ([#68](https://github.com/alphazede/bran/pull/68))
 - `--brief` ranks with a fielded lexical index: filename, enclosing path,

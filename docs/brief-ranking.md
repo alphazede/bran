@@ -10,7 +10,7 @@ Each file has four fields:
 
 | Field | Text | Weight | Length normalization `b` |
 |---|---|---|---|
-| `filename` | final path component without its last extension | 3 | 0.2 |
+| `filename` | final path component without its last extension; for an `index` or `README` document, also the enclosing directory name | 3 | 0.2 |
 | `path` | enclosing directories | 1 | 0.2 |
 | `body` | whole file text, including any header | 1 | 0.75 |
 | `description` | leading lines (see below), plus a sidecar description | 1.5 | 0.6 |
@@ -27,6 +27,19 @@ tokens. Tokens of one character and English function words are dropped. The
 remaining letter tokens are reduced with the English Snowball (Porter2)
 stemmer, so `studies`, `study` and `studied` match.
 
+In the `filename` field only, a word that does not match directly also
+matches through its agent-noun verb form. A stem that ends in `-er` after a
+consonant loses that ending, and a doubled final consonant loses one copy.
+So `parser` in a question matches a file named `parse`, and `parse` matches
+a file named `parser`; `scanner` meets `scan`. The `body` and `description`
+fields do not use this form, because it would merge common words such as
+`runner` and `run` across all text.
+
+An `index` or `README` document (`.md`, `.rst`, `.adoc`, `.sdoc`, `.html`)
+describes its directory, so its `filename` field also holds the directory
+name: `docs/garnet/README.md` matches `garnet` in its filename. A code file
+named `index` usually only re-exports its siblings and keeps its own name.
+
 For each distinct query stem and field, a file gains
 
 ```
@@ -40,11 +53,20 @@ files in the leading tier of `.bran/ranking.yaml`. The score also adds
 public-safe and confidence. Two rules adjust the score:
 
 - **Test intent.** A test file (a code file with `test`, `tests`, `spec` or
-  `specs` in its path) gains 4 when the question says `test`, `tests` or
+  `specs` in its path; code extensions are `.sh`, `.py`, `.js`, `.jsx`,
+  `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`, `.rs`, `.go`, `.rb`, `.cpp`
+  and `.java`) gains 4 when the question says `test`, `tests` or
   `testing`, and loses 4 otherwise.
 - **Value source.** For a quantity or frequency question (`how often`,
-  `how frequently`, `how long`, `how many`, `how much`, `frequency`), a
-  configuration or list file can gain score. A relevant document or code
+  `how frequently`, `how long`, `how many`, `how much`, `frequency`), or a
+  set question, a configuration or list file can gain score. A set question
+  has `which`, an optional modifier, a plural noun and an auxiliary verb
+  (`are`, `were`, `do`, `does`, `did`, `may`, `can`, `could`, `must`,
+  `should`, `will`, `would`, `have`): `which owners may ...` or
+  `which repository owners may ...`. A plural ends in `s` but not `ss`,
+  `us` or `is` and has more than three letters. `which <noun> ...` asks for
+  one file and `which <plural> <verb> ...` (`which scripts remove ...`) asks
+  for the files that act, so neither is a set question. A relevant document or code
   file must name it (relative to the referring file, then to the root, then
   by a unique path suffix), or the configuration file must have a structured
   key that shares a query stem. For frequency questions, a schedule also
