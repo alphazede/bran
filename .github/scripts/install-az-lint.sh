@@ -3,22 +3,20 @@ set -euo pipefail
 
 tools_dir="$RUNNER_TEMP/az-lint-tools"
 bin_dir="$tools_dir/bin"
+script_dir=$(dirname -- "${BASH_SOURCE[0]}")
 
 if [[ "${1:-}" == --check ]]; then
     status=0
-    for tool in ruff yamllint sqlfluff semgrep gitleaks actionlint shellcheck shfmt; do
+    for tool in ruff yamllint sqlfluff gitleaks actionlint shellcheck shfmt; do
         "$bin_dir/$tool" --version || status=1
     done
     exit "$status"
 fi
 
 python3 -m venv "$tools_dir"
-"$bin_dir/python" -m pip install --disable-pip-version-check \
-    --only-binary=:all: \
-    "https://files.pythonhosted.org/packages/f0/20/fecedea2209f574ab92033b344e01a7f0c2dc76c6d6d19a14c9f8141173f/ruff-0.17.3-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=7fa4b0f931cdbcb8a52044f370a3eb429fb42eb88807b0e800fcaa98dd42b24e" \
-    "https://files.pythonhosted.org/packages/05/92/aed08e68de6e6a3d7c2328ce7388072cd6affc26e2917197430b646aed02/yamllint-1.38.0-py3-none-any.whl#sha256=fc394a5b3be980a4062607b8fdddc0843f4fa394152b6da21722f5d59013c220" \
-    "https://files.pythonhosted.org/packages/f3/de/78c2f6d023a2dada127baf9a41a7186707d500de89947dd7259d33700bb2/sqlfluff-4.5.0-py3-none-any.whl#sha256=471a9abcad8061e36b69f711a6d89393241e30f9d1e0869f79965c0ae2c889c7" \
-    "https://files.pythonhosted.org/packages/c5/fd/85ac31a5ec53feee54ebdce933ab1c94af81695a2b244b0baefdbcdba92a/semgrep-1.183.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-manylinux_2_34_x86_64.whl#sha256=f36115c4d0cb43056ceb308273421a2f6a35e055e7e029601e130850f836646e"
+"$bin_dir/python" -m pip --isolated install --disable-pip-version-check \
+    --only-binary=:all: --require-hashes --no-deps \
+    -r "$script_dir/az-lint-requirements.txt"
 
 download() {
     local url=$1 checksum=$2 file=$3
