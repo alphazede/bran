@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/alphazede/bran/releases/tag/bran-v0.4.0) - 2026-11-20
+
 ### Changed
 
 - `--brief` treats `.jsx`, `.mjs`, `.cjs`, `.tsx`, `.mts` and `.cts` files with `test`, `tests`, `spec` or `specs` in their path as test files, so a non-test question demotes them like `.ts` tests.

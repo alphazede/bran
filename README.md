@@ -59,16 +59,16 @@ ranked, with the reason attached.
 
 ## Install
 
-Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.3.0`):
+Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.4.0`):
 
 ```sh
-https://github.com/alphazede/bran/releases/download/bran-v0.3.0/
+https://github.com/alphazede/bran/releases/download/bran-v0.4.0/
 ```
 
-Or install `bran-v0.3.0` from source:
+Or install `bran-v0.4.0` from source:
 
 ```sh
-cargo install --git https://github.com/alphazede/bran --tag bran-v0.3.0 bran-cli
+cargo install --git https://github.com/alphazede/bran --tag bran-v0.4.0 bran-cli
 ```
 
 ## Quickstart
@@ -322,7 +322,7 @@ manage or leak. Verify a download:
 ```sh
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore \
-  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.3.0" \
+  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.4.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 sha256sum -c SHA256SUMS --ignore-missing
 ```
