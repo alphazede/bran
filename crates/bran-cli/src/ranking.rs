@@ -28,6 +28,9 @@ const WEIGHT_FACT_SUB: u64 = 120;
 const WEIGHT_PARENT_FACT: u64 = 30;
 const WEIGHT_BODY_WORD: u64 = 25;
 const WEIGHT_BODY_HIT: u64 = 10;
+// Morphological evidence scores 3/4 of the same exact-token evidence.
+const WEIGHT_FILENAME_STEM: u64 = WEIGHT_FILENAME_SEG * 3 / 4;
+const WEIGHT_PATH_STEM: u64 = WEIGHT_PATH_SEG * 3 / 4;
 
 /// English function and interrogative words that do not carry domain identity
 /// when computing the brief defining-file score (coverage JSON stays unchanged).
@@ -48,14 +51,17 @@ pub fn is_brief_stop_word(term: &str) -> bool {
 
 /// Conservative ASCII morphological stem for fallback matching in brief mode
 /// (e.g. `tests` -> `test`, `pinned` -> `pin`, `indexed` -> `index`,
-/// `repositories` -> `repositor`). Returns `None` when no safe stem exists.
+/// `studies` -> `study`). Applied to query words and document tokens alike, so
+/// two words match morphologically when their normalized forms are equal.
+/// Returns `None` when no safe stem exists.
 pub fn ascii_stem(word: &str) -> Option<String> {
     if word.len() < 5 || !word.bytes().all(|b| b.is_ascii_alphabetic()) {
         return None;
     }
-    let stem = if let Some(base) = word.strip_suffix("ies") {
-        base
-    } else if word.ends_with("es")
+    if let Some(base) = word.strip_suffix("ies") {
+        return (base.len() >= 2).then(|| format!("{base}y"));
+    }
+    let stem = if word.ends_with("es")
         && (word.ends_with("shes")
             || word.ends_with("ches")
             || word.ends_with("sses")
@@ -77,17 +83,6 @@ pub fn ascii_stem(word: &str) -> Option<String> {
         } else {
             return None;
         }
-    } else if let Some(base) = word.strip_suffix('y') {
-        if base.len() >= 5
-            && !matches!(
-                base.as_bytes().last(),
-                Some(b'a' | b'e' | b'i' | b'o' | b'u')
-            )
-        {
-            base
-        } else {
-            return None;
-        }
     } else {
         return None;
     };
@@ -96,6 +91,68 @@ pub fn ascii_stem(word: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Normalized form of a query word for morphological fallback, or `None` when
+/// no document token can match it morphologically without also containing the
+/// word itself (the surface pass already covers that case).
+pub fn morph_norm(word: &str) -> Option<String> {
+    if word.len() < 3 || !word.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    match ascii_stem(word) {
+        Some(stem) => Some(stem),
+        // `study` also matches the token `studies`, which does not contain it.
+        None => word.ends_with('y').then(|| word.to_owned()),
+    }
+}
+
+/// True when `haystack` has an alphanumeric token whose normal form (the token
+/// itself, or its `ascii_stem`) equals `norm`, ASCII case-insensitively. Whole tokens only: a stem never matches inside an
+/// unrelated longer word.
+pub fn has_morph_token(haystack: &str, norm: &str) -> bool {
+    // Every token normalizing to `norm` contains `norm` minus a trailing `y`.
+    let root = norm.strip_suffix('y').unwrap_or(norm);
+    if root.is_empty() || !contains_ascii_ci(haystack, root) {
+        return false;
+    }
+    let mut lower = String::new();
+    haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| token.len() >= root.len() && token.is_ascii())
+        .any(|token| {
+            lower.clear();
+            lower.push_str(token);
+            lower.make_ascii_lowercase();
+            lower == norm || ascii_stem(&lower).as_deref() == Some(norm)
+        })
+}
+
+/// True when `root` (ASCII, at least `min_len` bytes) occurs in `haystack`
+/// starting at a sub-word boundary: a token start, a lower-to-upper camelCase
+/// hump, or a letter/digit transition. Finds morphological matches inside
+/// compound identifiers (`IndexBuilder`) but never mid-word (`Install`).
+pub fn has_morph_subword(haystack: &str, root: &str, min_len: usize) -> bool {
+    if root.len() < min_len || !root.is_ascii() {
+        return false;
+    }
+    let h = haystack.as_bytes();
+    let mut pos = 0usize;
+    while let Some(idx) = find_ascii_ci_from(h, root.as_bytes(), pos) {
+        let cur = h[idx];
+        let starts_subword = idx == 0 || {
+            let prev = h[idx - 1];
+            (prev < 0x80 && !prev.is_ascii_alphanumeric())
+                || ((prev.is_ascii_lowercase() || prev.is_ascii_digit())
+                    && cur.is_ascii_uppercase())
+                || prev.is_ascii_digit() != cur.is_ascii_digit()
+        };
+        if starts_subword {
+            return true;
+        }
+        pos = idx + 1;
+    }
+    false
 }
 
 fn collapse_double_consonant(base: &str) -> &str {
@@ -293,9 +350,14 @@ impl ParsedClass {
 fn strip_yaml_comment(line: &str) -> Result<&str, String> {
     let bytes = line.as_bytes();
     let mut quote: Option<u8> = None;
+    // A quote opens a quoted scalar only where a scalar starts; inside a plain
+    // scalar (`team's-docs`) it is an ordinary character.
+    let mut scalar_start = true;
+    let mut in_flow = false;
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
+        let next_is_space = bytes.get(i + 1).is_none_or(u8::is_ascii_whitespace);
         match quote {
             Some(b'"') => {
                 if b == b'\\' {
@@ -317,11 +379,24 @@ fn strip_yaml_comment(line: &str) -> Result<&str, String> {
             }
             Some(_) => unreachable!(),
             None => {
-                if b == b'"' || b == b'\'' {
-                    quote = Some(b);
-                } else if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+                if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
                     return Ok(&line[..i]);
                 }
+                if b.is_ascii_whitespace() {
+                    i += 1;
+                    continue;
+                }
+                if scalar_start && (b == b'"' || b == b'\'') {
+                    quote = Some(b);
+                } else if scalar_start && b == b'[' {
+                    in_flow = true;
+                } else if in_flow && b == b']' {
+                    in_flow = false;
+                }
+                let line_start = bytes[..i].iter().all(u8::is_ascii_whitespace);
+                scalar_start = (b == b':' && next_is_space)
+                    || (b == b'-' && line_start && next_is_space)
+                    || (in_flow && (b == b'[' || b == b','));
             }
         }
         i += 1;
@@ -375,6 +450,7 @@ fn parse_inline_list(inner: &str, line_no: usize) -> Result<Vec<String>, String>
     let mut start = 0usize;
     let bytes = inner.as_bytes();
     let mut quote: Option<u8> = None;
+    let mut item_start = true;
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
@@ -399,7 +475,7 @@ fn parse_inline_list(inner: &str, line_no: usize) -> Result<Vec<String>, String>
             }
             Some(_) => unreachable!(),
             None => {
-                if b == b'"' || b == b'\'' {
+                if item_start && (b == b'"' || b == b'\'') {
                     quote = Some(b);
                 } else if b == b',' {
                     let piece = inner[start..i].trim();
@@ -408,6 +484,12 @@ fn parse_inline_list(inner: &str, line_no: usize) -> Result<Vec<String>, String>
                     }
                     items.push(parse_yaml_scalar(piece, line_no)?);
                     start = i + 1;
+                    item_start = true;
+                    i += 1;
+                    continue;
+                }
+                if !b.is_ascii_whitespace() {
+                    item_start = false;
                 }
             }
         }
@@ -563,6 +645,8 @@ impl RankingConfig {
         let mut classes_inline_empty = false;
         let mut current: Option<(usize, ParsedClass)> = None;
         let mut item_indent: Option<usize> = None;
+        // Column of the current class's fields; every sibling key must align.
+        let mut field_indent: Option<usize> = None;
         let mut in_globs_block = false;
         let mut globs_indent: Option<usize> = None;
 
@@ -641,7 +725,10 @@ impl RankingConfig {
                 }
                 item_indent = Some(indent);
                 let mut partial = ParsedClass::default();
-                let after_dash = trimmed.strip_prefix('-').unwrap().trim();
+                let after_dash_raw = trimmed.strip_prefix('-').unwrap();
+                let after_dash = after_dash_raw.trim();
+                field_indent = (!after_dash.is_empty())
+                    .then(|| indent + 1 + after_dash_raw.len() - after_dash_raw.trim_start().len());
                 if !after_dash.is_empty() {
                     apply_class_field(
                         &mut partial,
@@ -661,6 +748,9 @@ impl RankingConfig {
                     if indent <= expected_item_indent {
                         return Err(format!("line {line_no}: invalid indentation"));
                     }
+                }
+                if *field_indent.get_or_insert(indent) != indent {
+                    return Err(format!("line {line_no}: invalid indentation"));
                 }
                 apply_class_field(
                     partial,
@@ -1013,27 +1103,6 @@ pub fn count_and_word_lower(
     (count, is_word)
 }
 
-/// Check whether `haystack` (aligned byte-for-byte with `haystack_lower`) has
-/// an alphanumeric token equal to ASCII-lowercase `needle`.
-pub fn has_alnum_token_lower(haystack: &str, haystack_lower: &str, needle: &str) -> bool {
-    if needle.is_empty() || !needle.is_ascii() {
-        return has_alnum_token_ascii_ci(haystack, needle);
-    }
-    if !needle.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return false;
-    }
-    let mut pos = 0usize;
-    while let Some(rel) = haystack_lower[pos..].find(needle) {
-        let idx = pos + rel;
-        let end = idx + needle.len();
-        if is_alnum_word_boundary(haystack, idx, end) {
-            return true;
-        }
-        pos = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
-    }
-    false
-}
-
 /// Copy-free check whether `haystack` has an alphanumeric token equal (ASCII
 /// case-insensitively) to `needle`, matching `split(|c: char| !c.is_alphanumeric())`.
 pub fn has_alnum_token_ascii_ci(haystack: &str, needle: &str) -> bool {
@@ -1073,7 +1142,10 @@ pub struct BriefUnitHit {
     pub parent_fact: bool,
     pub body_word: bool,
     pub body_hits: u8,
+    /// Morphological whole-token match in the locator (any segment).
     pub stem_path: bool,
+    /// Morphological whole-token match in the filename segment.
+    pub stem_filename: bool,
     pub stem_body: bool,
 }
 
@@ -1118,9 +1190,14 @@ pub fn term_rarity_weights(total_docs: usize, doc_freqs: &[usize]) -> Vec<u64> {
         .collect()
 }
 
-/// Single integer brief score prioritizing term coverage and path/filename
-/// precedence, using rarity only to order ties within equal coverage and
-/// structural match class, followed by capped body repeats and document traits.
+/// Brief relevance key, compared lexicographically (larger is better):
+/// `(structural, rarity, detail, document traits)`. Each component is a full
+/// `u64`, so no component saturates into the next at realistic query sizes.
+pub type BriefScore = (u64, u64, u64, u64);
+
+/// Brief score prioritizing term coverage and path/filename precedence, using
+/// rarity only to order ties within equal coverage and structural match class,
+/// followed by capped body repeats and document traits.
 pub fn compute_brief_score(
     hits: &[ScoredUnitHit],
     rarity: &[u64],
@@ -1129,7 +1206,7 @@ pub fn compute_brief_score(
     canonical: u8,
     public_safe: u8,
     confidence: u8,
-) -> u64 {
+) -> BriefScore {
     let mut structural_base = 0u64;
     let mut rarity_sum = 0u64;
     let mut detail_bonus = 0u64;
@@ -1139,36 +1216,34 @@ pub fn compute_brief_score(
             continue;
         }
         let weight = rarity.get(scored.unit_index).copied().unwrap_or(0);
-        if !hit.matched() {
-            // Morphological stem fallback: slightly below surface-form coverage
-            // so exact word matches always win when coverage is otherwise tied.
-            let stem_cov = (WEIGHT_COVERAGE * 3) / 4;
-            if hit.stem_path {
-                structural_base = structural_base.saturating_add(stem_cov + WEIGHT_FILENAME_SUB);
-            } else {
-                structural_base = structural_base.saturating_add(stem_cov);
-                detail_bonus = detail_bonus.saturating_add(WEIGHT_BODY_HIT);
-            }
-            rarity_sum = rarity_sum.saturating_add((weight * 3) / 4);
-            continue;
-        }
-        let cov = if hit.is_entity {
+        let surface = hit.matched();
+        let full_cov = if hit.is_entity {
             WEIGHT_ENTITY_COVERAGE
         } else {
             WEIGHT_COVERAGE
         };
-        let exact_bonus = u64::from(hit.exact) * WEIGHT_EXACT;
-        let path_bonus = if hit.filename_seg {
-            WEIGHT_FILENAME_SEG
-        } else if hit.filename_sub {
-            WEIGHT_FILENAME_SUB
-        } else if hit.path_seg {
-            WEIGHT_PATH_SEG
-        } else if hit.path_sub {
-            WEIGHT_PATH_SUB
+        // Stem-only coverage sits below surface coverage so exact word
+        // matches win when coverage is otherwise tied.
+        let (cov, unit_rarity) = if surface {
+            (full_cov, weight)
         } else {
-            0
+            ((full_cov * 3) / 4, (weight * 3) / 4)
         };
+        let exact_bonus = u64::from(hit.exact) * WEIGHT_EXACT;
+        // The strongest applicable location signal counts, never a weaker
+        // coincident one.
+        let path_bonus = [
+            (hit.filename_seg, WEIGHT_FILENAME_SEG),
+            (hit.filename_sub, WEIGHT_FILENAME_SUB),
+            (hit.path_seg, WEIGHT_PATH_SEG),
+            (hit.path_sub, WEIGHT_PATH_SUB),
+            (hit.stem_filename, WEIGHT_FILENAME_STEM),
+            (hit.stem_path, WEIGHT_PATH_STEM),
+        ]
+        .into_iter()
+        .filter_map(|(on, w)| on.then_some(w))
+        .max()
+        .unwrap_or(0);
         let fact_bonus = if hit.fact_word {
             WEIGHT_FACT_WORD
         } else if hit.fact_sub {
@@ -1177,22 +1252,21 @@ pub fn compute_brief_score(
             0
         };
         structural_base = structural_base.saturating_add(cov + exact_bonus + path_bonus);
-        rarity_sum = rarity_sum.saturating_add(weight);
+        rarity_sum = rarity_sum.saturating_add(unit_rarity);
         let parent_bonus = u64::from(hit.parent_fact) * WEIGHT_PARENT_FACT;
         let capped_body = u64::from(hit.body_hits.min(BODY_HIT_CAP as u8));
-        let body_bonus =
-            u64::from(hit.body_word) * WEIGHT_BODY_WORD + capped_body * WEIGHT_BODY_HIT;
+        let body_bonus = if hit.body_hits == 0 && hit.stem_body {
+            WEIGHT_BODY_HIT
+        } else {
+            u64::from(hit.body_word) * WEIGHT_BODY_WORD + capped_body * WEIGHT_BODY_HIT
+        };
         detail_bonus = detail_bonus.saturating_add(fact_bonus + parent_bonus + body_bonus);
     }
-    let tie = (u64::from(active) * 100
+    let tie = u64::from(active) * 100
         + u64::from(canonical) * 50
         + u64::from(public_safe) * 20
-        + u64::from(confidence))
-    .min(1_023);
-    (structural_base.min(1_048_575) << 44)
-        | (rarity_sum.min(262_143) << 26)
-        | (detail_bonus.min(65_535) << 10)
-        | tie
+        + u64::from(confidence);
+    (structural_base, rarity_sum, detail_bonus, tie)
 }
 
 #[cfg(test)]
@@ -1267,8 +1341,20 @@ mod tests {
         }];
         let with_content = compute_brief_score(&stop_only_hit, &rarity, true, 0, 0, 0, 0);
         let only_stops = compute_brief_score(&stop_only_hit, &rarity, false, 0, 0, 0, 0);
-        assert_eq!(with_content, 0);
-        assert!(only_stops > 0);
+        assert_eq!(with_content, (0, 0, 0, 0));
+        assert!(only_stops > (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn parser_handles_non_ascii_and_apostrophes_inside_plain_scalars() {
+        let cfg = RankingConfig::parse_from_str(
+            "classes:\n  - name: caf\u{e9}'s-d\u{f6}cs \u{2013} team's\n    tier: 1\n    globs: [\"**/*.txt\", d\u{e9}j\u{e0}'s/**]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.classify("d\u{e9}j\u{e0}'s/x.md"),
+            (1, Some("caf\u{e9}'s-d\u{f6}cs \u{2013} team's"))
+        );
     }
 
     #[test]

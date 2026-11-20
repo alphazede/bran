@@ -1,7 +1,9 @@
 mod document_evidence;
+mod fielded;
 mod ranking;
 mod select;
 mod source_revision;
+mod stem;
 
 use source_revision::SourceRevision;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1813,7 +1815,7 @@ struct SourceRanking {
     confidence: u8,
     freshness: String,
     brief_tier: u8,
-    brief_score: u64,
+    brief_score: ranking::BriefScore,
 }
 
 const RANKED_FACT_KEYS: &[&str] = &[
@@ -1846,36 +1848,25 @@ const QUERY_STOP_WORDS: &[&str] = &["about", "and", "for", "from", "not", "the",
 fn query_terms_and_entities(query_text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut terms = BTreeSet::new();
     let mut entities = BTreeSet::new();
-    let mut run = String::new();
-    for character in query_text.chars() {
-        if character.is_alphanumeric() || matches!(character, '-' | '_' | '.') {
-            run.push(character.to_ascii_lowercase());
-        } else {
-            classify_query_run(&run, &mut terms, &mut entities);
-            run.clear();
+    for run in query_identifier_runs(query_text) {
+        let label = run.to_ascii_lowercase();
+        if label.contains(['-', '_', '.']) {
+            if label.len() >= 6 {
+                entities.insert(label);
+            }
+        } else if label.len() >= 3 && !QUERY_STOP_WORDS.contains(&label.as_str()) {
+            terms.insert(label);
         }
     }
-    classify_query_run(&run, &mut terms, &mut entities);
     (terms, entities)
 }
 
-/// One maximal identifier-character run becomes either a high-specificity
-/// entity unit or a plain word. Short separator fragments ("e.g.", "v0.2")
-/// are dropped entirely rather than treated as words.
-fn classify_query_run(run: &str, terms: &mut BTreeSet<String>, entities: &mut BTreeSet<String>) {
-    if run.is_empty() {
-        return;
-    }
-    let trimmed = run.trim_matches(['-', '_', '.']);
-    if trimmed.contains(['-', '_', '.']) {
-        if trimmed.len() >= 6 {
-            entities.insert(trimmed.to_owned());
-        }
-        return;
-    }
-    if trimmed.len() >= 3 && !QUERY_STOP_WORDS.contains(&trimmed) {
-        terms.insert(trimmed.to_owned());
-    }
+/// Keep the original case for fielded tokenization of identifier stems.
+fn query_identifier_runs(query: &str) -> impl Iterator<Item = &str> {
+    query
+        .split(|c: char| !c.is_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+        .map(|run| run.trim_matches(['-', '_', '.']))
+        .filter(|run| !run.is_empty())
 }
 
 /// The body content of one scanned entry: source slice after the frontmatter
@@ -2172,7 +2163,7 @@ fn score_source_candidates(
                 confidence: node.confidence().value(),
                 freshness,
                 brief_tier: 0,
-                brief_score: 0,
+                brief_score: Default::default(),
             })
         })
         .collect::<Vec<_>>();
@@ -2275,11 +2266,11 @@ fn brief_source_candidates(
     let term_list: Vec<&str> = terms.iter().map(String::as_str).collect();
     let has_content_units =
         !entity_list.is_empty() || term_list.iter().any(|&t| !ranking::is_brief_stop_word(t));
-    let term_stems: Vec<Option<String>> = term_list
+    let term_norms: Vec<Option<String>> = term_list
         .iter()
         .map(|&t| {
             (!ranking::is_brief_stop_word(t))
-                .then(|| ranking::ascii_stem(t))
+                .then(|| ranking::morph_norm(t))
                 .flatten()
         })
         .collect();
@@ -2308,9 +2299,7 @@ fn brief_source_candidates(
     {
         let raw_locator = node.provenance().locator();
         let locator_original = long_paths.get(raw_locator).copied().unwrap_or(raw_locator);
-        // Enterprise documents rank only as document evidence (#46), never as
-        // Markdown sources: refused files must not be selectable by path.
-        if document_evidence::is_document_path(locator_original) {
+        if brief_source_excluded(locator_original) {
             continue;
         }
         total_docs += 1;
@@ -2414,15 +2403,14 @@ fn brief_source_candidates(
             } else if ranking::contains_ascii_ci(locator_original, term) {
                 partial_matches += 1;
                 partial_fields_mask |= brief_field_bit("path");
-                if ranking::has_alnum_token_ascii_ci(filename, term) {
-                    hit.filename_seg = true;
-                } else if ranking::contains_ascii_ci(filename, term) {
-                    hit.filename_sub = true;
-                } else if ranking::has_alnum_token_ascii_ci(locator_original, term) {
-                    hit.path_seg = true;
-                } else {
-                    hit.path_sub = true;
-                }
+                // Every applicable location signal is recorded; scoring takes
+                // the strongest, so a filename substring cannot mask a whole
+                // directory token.
+                hit.filename_seg = ranking::has_alnum_token_ascii_ci(filename, term);
+                hit.filename_sub = !hit.filename_seg && ranking::contains_ascii_ci(filename, term);
+                hit.path_seg =
+                    !hit.filename_seg && ranking::has_alnum_token_ascii_ci(locator_original, term);
+                hit.path_sub = !hit.filename_seg && !hit.filename_sub && !hit.path_seg;
             }
 
             for &(key, value) in &ranked_facts {
@@ -2456,41 +2444,45 @@ fn brief_source_candidates(
                 hit.body_word = body_words[u_idx];
             }
 
-            if hit.matched() {
-                matched_terms.insert(term.to_owned());
+            // Morphological evidence: whole tokens normalized like the query
+            // word, or its stem at a sub-word start inside a compound
+            // identifier; location evaluated independently of body hits.
+            if let Some(norm) = term_norms[t_offset].as_deref() {
+                let root = norm.strip_suffix('y').unwrap_or(norm);
+                if ranking::has_morph_token(locator_original, norm)
+                    || ranking::has_morph_subword(locator_original, root, 4)
+                {
+                    hit.stem_path = true;
+                    hit.stem_filename = ranking::has_morph_token(filename, norm);
+                    partial_fields_mask |= brief_field_bit("path");
+                }
+                if hit.body_hits == 0 {
+                    if let Some(body) = body {
+                        if ranking::has_morph_token(body, norm)
+                            || ranking::has_morph_subword(body, root, 5)
+                        {
+                            hit.stem_body = true;
+                            partial_fields_mask |= brief_field_bit("body");
+                        }
+                    }
+                }
+            }
+
+            if hit.scored_match() {
+                if hit.matched() {
+                    matched_terms.insert(term.to_owned());
+                }
                 doc_freqs[u_idx] += 1;
                 hits.push(ranking::ScoredUnitHit {
                     unit_index: u_idx,
                     hit,
                 });
-            } else if let Some(stem) = term_stems[t_offset].as_deref() {
-                if ranking::has_alnum_token_ascii_ci(locator_original, stem)
-                    || (stem.len() >= 4 && ranking::contains_ascii_ci(locator_original, stem))
-                {
-                    hit.stem_path = true;
-                    partial_fields_mask |= brief_field_bit("path");
-                    doc_freqs[u_idx] += 1;
-                    hits.push(ranking::ScoredUnitHit {
-                        unit_index: u_idx,
-                        hit,
-                    });
-                } else if let Some(body) = body {
-                    if ranking::has_alnum_token_lower(body, &body_lower_buf, stem)
-                        || (stem.len() >= 5 && body_lower_buf.contains(stem))
-                    {
-                        hit.stem_body = true;
-                        partial_fields_mask |= brief_field_bit("body");
-                        doc_freqs[u_idx] += 1;
-                        hits.push(ranking::ScoredUnitHit {
-                            unit_index: u_idx,
-                            hit,
-                        });
-                    }
-                }
             }
         }
 
-        if hits.is_empty() {
+        // A query with a content word admits only documents with evidence for
+        // a content unit; ignored words alone still count toward coverage.
+        if hits.is_empty() || (has_content_units && hits.iter().all(|h| h.hit.is_stop_word)) {
             continue;
         }
         let (status_rank, canonical, public_safe, freshness) = node_ranking_traits(node);
@@ -2515,7 +2507,7 @@ fn brief_source_candidates(
                 confidence: node.confidence().value(),
                 freshness,
                 brief_tier: tier,
-                brief_score: 0,
+                brief_score: Default::default(),
             },
             hits,
         });
@@ -2580,13 +2572,43 @@ fn finalize_brief_rankings(
     matches
 }
 
+const BRIEF_RESULTS_DIRECTORY: &str = ".bran/results";
+
+fn brief_source_excluded(locator: &str) -> bool {
+    // Enterprise documents rank through document evidence (#46). Generated
+    // results and description metadata stay outside the source ranking.
+    document_evidence::is_document_path(locator)
+        || locator == fielded::DESCRIPTIONS_FILENAME
+        || Path::new(locator).starts_with(BRIEF_RESULTS_DIRECTORY)
+}
+
 fn brief_source_rankings(
+    root: &Path,
     graph_input: &GraphInput,
     snapshot: &ScanSnapshot,
     query_text: &str,
     max_sources: usize,
     ranking_config: &ranking::RankingConfig,
-) -> (Vec<SourceRanking>, BTreeSet<String>) {
+) -> (Vec<SourceRanking>, BTreeSet<String>, Vec<String>) {
+    let fielded_root = fielded::Root {
+        bundle: "",
+        path: root,
+        graph_input,
+        snapshot,
+        ranking_config,
+    };
+    if let Some(ranked) = fielded::rank(&[fielded_root], query_text) {
+        let matches = suppress_unanchored_entity_matches(
+            ranked.rankings,
+            &ranked.matched_terms,
+            &ranked.entities,
+        );
+        return (
+            finalize_brief_rankings(matches, max_sources, false),
+            ranked.matched_terms,
+            ranked.warnings,
+        );
+    }
     let (candidates, matched_terms, entities, total_docs, doc_freqs, has_content_units) =
         brief_source_candidates(graph_input, snapshot, query_text, ranking_config);
     let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
@@ -2594,6 +2616,7 @@ fn brief_source_rankings(
     (
         finalize_brief_rankings(matches, max_sources, false),
         matched_terms,
+        Vec::new(),
     )
 }
 
@@ -3317,6 +3340,14 @@ fn do_query(root: String, query_text: String, record: bool) -> QueryPacketResult
 
 const BRIEF_DEFAULT_TOP: usize = 8;
 const BRIEF_CHAR_LIMIT: usize = 2_000;
+/// Extra budget per result an explicit `--top` requests beyond the default.
+const BRIEF_CHARS_PER_EXTRA_RESULT: usize = 250;
+
+/// Brief output budget in characters: 2,000 for up to the default 8 results,
+/// plus 250 for each further result an explicit `--top` requests.
+fn brief_char_limit(top: usize) -> usize {
+    BRIEF_CHAR_LIMIT + top.saturating_sub(BRIEF_DEFAULT_TOP) * BRIEF_CHARS_PER_EXTRA_RESULT
+}
 const BRIEF_ANSWER_KIND: &str = "bran-brief-query-v1";
 
 fn one_line_reason(reason: &str) -> String {
@@ -3445,10 +3476,12 @@ fn brief_data_within_budget(
     result_id: Option<&str>,
     selection_source: &str,
     rankings: &[SourceRanking],
-    warns: &[String],
+    top: usize,
+    warns: &mut Vec<String>,
     effective_provenance: &str,
     metrics: &str,
 ) -> String {
+    let limit = brief_char_limit(top);
     let mut items: Vec<BriefItem<'_>> = rankings
         .iter()
         .map(|r| BriefItem {
@@ -3458,20 +3491,25 @@ fn brief_data_within_budget(
             reason: one_line_reason(&r.match_reason),
         })
         .collect();
+    let fits_with =
+        |items: &[BriefItem<'_>], m: &[String], u: &[String], warns: &[String]| -> (bool, String) {
+            let coverage = format_query_coverage(m, u);
+            let data =
+                brief_data_json(query_outcome, &coverage, result_id, selection_source, items);
+            let envelope = make_envelope(
+                "query",
+                status,
+                &data,
+                warns,
+                &[],
+                effective_provenance,
+                metrics,
+            );
+            // Reserve 1 code point for write_to_stdio's trailing newline.
+            (envelope.chars().count() < limit, data)
+        };
     let fits = |items: &[BriefItem<'_>], m: &[String], u: &[String]| -> (bool, String) {
-        let coverage = format_query_coverage(m, u);
-        let data = brief_data_json(query_outcome, &coverage, result_id, selection_source, items);
-        let envelope = make_envelope(
-            "query",
-            status,
-            &data,
-            warns,
-            &[],
-            effective_provenance,
-            metrics,
-        );
-        // Reserve 1 code point for write_to_stdio's trailing newline.
-        (envelope.chars().count() < BRIEF_CHAR_LIMIT, data)
+        fits_with(items, m, u, warns)
     };
     let (ok, data) = fits(&items, matched, unmatched);
     if ok {
@@ -3507,13 +3545,35 @@ fn brief_data_within_budget(
     let bounded_matched = bound_term_list(matched, |candidate_m| {
         fits(&items, candidate_m, &bounded_unmatched).0
     });
-    let coverage = format_query_coverage(&bounded_matched, &bounded_unmatched);
-    brief_data_json(
-        query_outcome,
-        &coverage,
-        result_id,
-        selection_source,
-        &items,
+    let (ok, data) = fits(&items, &bounded_matched, &bounded_unmatched);
+    if ok {
+        return data;
+    }
+    // The locators alone exceed the budget: keep whole results from the top
+    // and report the omission, so the character budget always wins.
+    let total = items.len();
+    let mut with_notice = warns.clone();
+    with_notice.push(String::new());
+    let mut data = data;
+    while !items.is_empty() {
+        items.pop();
+        let notice = brief_truncation_warning(total - items.len(), total, limit);
+        *with_notice.last_mut().expect("notice slot") = notice;
+        let (ok, candidate) = fits_with(&items, &bounded_matched, &bounded_unmatched, &with_notice);
+        data = candidate;
+        if ok {
+            break;
+        }
+    }
+    if items.len() < total {
+        warns.push(brief_truncation_warning(total - items.len(), total, limit));
+    }
+    data
+}
+
+fn brief_truncation_warning(omitted: usize, total: usize, limit: usize) -> String {
+    format!(
+        "brief_truncated: {omitted} of {total} results omitted to fit the {limit}-character brief budget; run default query for all results"
     )
 }
 
@@ -3716,7 +3776,7 @@ fn do_query_brief(
     if !root_path.join(POLICY_FILENAME).is_file() {
         let provenance = "{\"sources\":[\"repository-policy-check\"]}".to_owned();
         let metrics = "{}".to_owned();
-        let warns = vec!["native_policy_unavailable".to_owned()];
+        let mut warns = vec!["native_policy_unavailable".to_owned()];
         let data = brief_data_within_budget(
             "unavailable",
             "unavailable",
@@ -3725,7 +3785,8 @@ fn do_query_brief(
             None,
             "rule",
             &[],
-            &warns,
+            top,
+            &mut warns,
             &registered_provenance(&provenance, revisions),
             &metrics,
         );
@@ -3740,7 +3801,8 @@ fn do_query_brief(
         .graph_input()
         .map_err(|e| format!("graph_input_error: {:?}", e))?;
     log_timing("graph_input");
-    let (rankings, matched_terms) = brief_source_rankings(
+    let (rankings, matched_terms, fielded_warnings) = brief_source_rankings(
+        root_path,
         &graph_input,
         &snapshot,
         &query_text,
@@ -3756,6 +3818,7 @@ fn do_query_brief(
     let (matched, unmatched) = query_term_coverage(&query_text, &matched_terms);
     let mut warns: Vec<String> = brief_scan_warning_summary(snapshot.diagnostics.len())
         .into_iter()
+        .chain(fielded_warnings)
         .collect();
 
     let result_id = if !allow_store {
@@ -3806,7 +3869,8 @@ fn do_query_brief(
         result_id.as_deref(),
         selection_source.as_str(),
         &rankings,
-        &warns,
+        top,
+        &mut warns,
         &registered_provenance(&provenance, revisions),
         &metrics,
     );
@@ -3883,13 +3947,30 @@ fn do_query_brief_multi(
     }
     log_timing("graph_input");
 
+    let fielded_roots: Vec<fielded::Root> = scanned
+        .iter()
+        .zip(ranking_configs.iter())
+        .map(|(root, ranking_config)| fielded::Root {
+            bundle: &root.requested,
+            path: Path::new(&root.requested),
+            graph_input: &root.graph_input,
+            snapshot: &root.snapshot,
+            ranking_config,
+        })
+        .collect();
+    let fielded_ranked = fielded::rank(&fielded_roots, &query_text);
+    let mut fielded_warnings = Vec::new();
     let mut matched_terms = BTreeSet::new();
     let mut entities = BTreeSet::new();
     let mut candidates = Vec::new();
     let mut total_docs = 0usize;
     let mut doc_freqs = Vec::new();
     let mut has_content_units = false;
-    for (root, ranking_config) in scanned.iter().zip(ranking_configs.iter()) {
+    for (root, ranking_config) in scanned
+        .iter()
+        .zip(ranking_configs.iter())
+        .filter(|_| fielded_ranked.is_none())
+    {
         let (
             mut root_candidates,
             root_matched,
@@ -3919,7 +4000,13 @@ fn do_query_brief_multi(
         entities = root_entities;
         candidates.extend(root_candidates);
     }
-    let matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
+    let mut matches = score_brief_candidates(candidates, total_docs, &doc_freqs, has_content_units);
+    if let Some(ranked) = fielded_ranked {
+        matches = ranked.rankings;
+        matched_terms = ranked.matched_terms;
+        entities = ranked.entities;
+        fielded_warnings = ranked.warnings;
+    }
     let matches = suppress_unanchored_entity_matches(matches, &matched_terms, &entities);
     let rankings = finalize_brief_rankings(matches, QUERY_RESULT_LIMIT, true);
     let root_paths: Vec<&Path> = roots.iter().map(Path::new).collect();
@@ -3930,6 +4017,7 @@ fn do_query_brief_multi(
     let scan_diag_count: usize = scanned.iter().map(|r| r.snapshot.diagnostics.len()).sum();
     let mut warns: Vec<String> = brief_scan_warning_summary(scan_diag_count)
         .into_iter()
+        .chain(fielded_warnings)
         .collect();
     let (query_outcome, _, _) =
         query_semantic_outcome(&query_text, &matched_terms, !rankings.is_empty());
@@ -3991,7 +4079,8 @@ fn do_query_brief_multi(
         result_id.as_deref(),
         selection_source.as_str(),
         &rankings,
-        &warns,
+        top,
+        &mut warns,
         &registered_provenance(&provenance, revisions),
         &metrics,
     );
@@ -7161,7 +7250,7 @@ impl FilesystemResultStore {
         let root = fs::canonicalize(root).map_err(|_| ResultStoreError::Unavailable)?;
         let state = root.join(".bran");
         checked_directory(&state)?;
-        let directory = state.join("results");
+        let directory = root.join(BRIEF_RESULTS_DIRECTORY);
         checked_directory(&directory)?;
         Ok(Self { directory })
     }
@@ -8696,7 +8785,7 @@ mod tests {
 
         for alias in ["-V", "--version"] {
             let version = CliApp::run([alias.to_owned()]);
-            assert_eq!(version.output, "bran 0.3.0");
+            assert_eq!(version.output, "bran 0.4.0");
             assert_eq!(version.exit_code, ExitCode::SUCCESS);
             assert!(!version.is_error);
         }

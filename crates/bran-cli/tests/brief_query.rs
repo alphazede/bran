@@ -2,6 +2,8 @@
 //! exercised through the real CLI on the synthetic recall fixture.
 use bran_core::agent::receipt::InlineResult;
 use bran_core::agent::result_store::ResultId;
+mod support;
+
 use bran_document::canonical::Json;
 use std::collections::BTreeSet;
 use std::fs;
@@ -91,7 +93,8 @@ impl Repo {
     }
 
     fn git(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .args([
                 "-c",
                 "user.name=fixture",
@@ -99,9 +102,8 @@ impl Repo {
                 "user.email=fixture@example.invalid",
             ])
             .args(args)
-            .current_dir(&self.0)
-            .output()
-            .expect("git runs");
+            .current_dir(&self.0);
+        let output = support::output(&mut command).expect("git runs");
         assert!(output.status.success(), "git {args:?} failed");
         String::from_utf8(output.stdout).unwrap()
     }
@@ -129,7 +131,7 @@ impl Repo {
         for (k, v) in envs {
             cmd.env(k, v);
         }
-        let output = cmd.output().expect("bran runs");
+        let output = support::output(&mut cmd).expect("bran runs");
         (
             output.status.code().unwrap_or(-1),
             String::from_utf8(output.stdout).unwrap(),
@@ -268,9 +270,9 @@ fn brief_ranks_the_hand_derived_answer_first() {
 #[test]
 fn brief_top_bounds_the_result_count() {
     let repo = Repo::recall("top", true);
-    // All ten fixture files match one of these terms.
-    let broad = "zone valve sensor pump frost pipes rain schedule label";
-    let (envelope, _) = repo.brief(&[], broad);
+    // All ten fixture files carry this tag with equal relevance, so all ten
+    // pass the selection cut and only the default --top bounds the count.
+    let (envelope, _) = repo.brief(&[], "developer");
     assert_eq!(results(&envelope).len(), 8);
     let (envelope, _) = repo.brief(&["--top", "2"], "weekly watering schedule");
     let paths: Vec<_> = results(&envelope).into_iter().map(|r| r.1).collect();
@@ -292,15 +294,32 @@ fn brief_keeps_long_paths_exact_and_shortens_reasons_first() {
     let (envelope, chars) = repo.brief(&[], "lantern");
     let items = results(&envelope);
     let paths: BTreeSet<_> = items.iter().map(|r| r.1.clone()).collect();
-    assert_eq!(paths, expected, "paths are byte-equal, never elided");
+    assert!(!paths.is_empty(), "the top results survive");
+    assert!(
+        paths.is_subset(&expected),
+        "paths are byte-equal, never elided"
+    );
+    let (full, _) = repo.brief(&["--top", "32"], "lantern");
+    let complete = results(&full);
+    assert_eq!(complete.len(), expected.len());
+    for (kept, expected) in items.iter().zip(&complete) {
+        assert_eq!(kept.1, expected.1, "only trailing results may be dropped");
+    }
     for (_, _, reason) in &items {
         assert!(
             reason == "exact" || reason == "partial",
             "over budget, reason is cut to the match kind: {reason:?}"
         );
     }
-    // The size finding: exact paths alone exceed the budget, so the output does too.
-    assert!(chars > LIMIT_CHARS);
+    // Exact paths alone exceed the budget: whole results are dropped from the
+    // end and the omission is reported, so the budget holds.
+    assert!(chars < LIMIT_CHARS, "{chars} chars");
+    let omitted = format!("brief_truncated: {} of 8 results omitted", 8 - paths.len());
+    assert!(
+        warnings(&envelope).iter().any(|w| w.starts_with(&omitted)),
+        "{:?}",
+        warnings(&envelope)
+    );
 }
 
 #[test]

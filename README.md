@@ -35,6 +35,12 @@ ranked, with the reason attached.
 | Reports a miss | n/a | rarely | yes, explicitly |
 | Offline | yes | rarely | yes |
 
+## What is new in 0.4.0
+
+- Brief search ranks the filename, enclosing path, body, and description as separate fields. An optional `.bran/descriptions.jsonl` supplies descriptions that BRAN checks against the current file bytes. [Brief ranking](docs/brief-ranking.md)
+- A caller-configured advisor can reorder candidates with scores. The caller can opt in to sending bounded excerpts. [Advisor protocol](docs/brief-advisor.md)
+- Explicit `--top` values above 8 expand the character budget. BRAN reports any results it omits to fit that budget.
+
 ## What is new in 0.3.0
 
 - `bran query <root> --brief "<question>"` returns up to 8 ranked exact paths, each with a one-line reason, in at most 2,000 characters, plus a `result_id`. Start here; the default `bran query` output is unchanged.
@@ -58,16 +64,16 @@ ranked, with the reason attached.
 
 ## Install
 
-Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.3.0`):
+Prebuilt archives for Linux, macOS, and Windows are attached to the latest release (`bran-v0.4.0`):
 
 ```sh
-https://github.com/alphazede/bran/releases/download/bran-v0.3.0/
+https://github.com/alphazede/bran/releases/download/bran-v0.4.0/
 ```
 
-Or install `bran-v0.3.0` from source:
+Or install `bran-v0.4.0` from source:
 
 ```sh
-cargo install --git https://github.com/alphazede/bran --tag bran-v0.3.0 bran-cli
+cargo install --git https://github.com/alphazede/bran --tag bran-v0.4.0 bran-cli
 ```
 
 ## Quickstart
@@ -98,7 +104,7 @@ bran query . --brief "valid_sha256"
 }
 ```
 
-Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`) and `query_coverage` is bounded to fit. Repository scan diagnostics are summarized in a single `scan_warnings` line (`warnings` keeps brief-relevant items; run default `bran query` or `bran get <id> --full` for the full diagnostic list). Multi-root `--brief` queries (`--add-dir`) include `"bundle"` on each result item to distinguish identical relative paths across roots. `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
+Use `--top N` (default `8`, max `32`) to change depth. Paths are always exact; when an answer would exceed 2,000 characters, `reason` is shortened first down to the match kind (`exact` or `partial`) and `query_coverage` is bounded to fit; if the exact paths alone still do not fit, whole results are dropped from the end and a `brief_truncated: <omitted> of <total> results omitted ...` warning reports it. An explicit `--top N` above 8 raises the budget by 250 characters per extra result (8,000 at `--top 32`). Repository scan diagnostics are summarized in a single `scan_warnings` line (`warnings` keeps brief-relevant items; run default `bran query` or `bran get <id> --full` for the full diagnostic list). Multi-root `--brief` queries (`--add-dir`) include `"bundle"` on each result item to distinguish identical relative paths across roots. `coverage_basis` is `"sources"` because brief mode derives outcome and coverage from source rankings without enterprise document evidence.
 
 Expand a stored result from the query root:
 
@@ -321,7 +327,7 @@ manage or leak. Verify a download:
 ```sh
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore \
-  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.3.0" \
+  --certificate-identity "https://github.com/alphazede/bran/.github/workflows/release.yml@refs/tags/bran-v0.4.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 sha256sum -c SHA256SUMS --ignore-missing
 ```

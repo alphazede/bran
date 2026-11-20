@@ -5,12 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Brief output stays inside its character budget by dropping whole results and
+# warning with this text (README "Use --top N").
+BRIEF_TRUNCATED = re.compile(r"brief_truncated: (\d+) of (\d+) results omitted")
+BRIEF_CHAR_LIMIT = 2000
+QUERY_TIMEOUT_SECONDS = 605
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -92,27 +99,40 @@ def resolve_bran(bran_arg: str) -> str:
     sys.exit(1)
 
 
+def truncation_notice(payload: dict[str, object]) -> tuple[int, int] | None:
+    """Return (omitted, total) from a `brief_truncated` warning, if present."""
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list):
+        return None
+    for warning in warnings:
+        if isinstance(warning, str):
+            match = BRIEF_TRUNCATED.match(warning)
+            if match:
+                return int(match[1]), int(match[2])
+    return None
+
+
 def extract_rank(
     stdout: str,
     mode: str,
     expected: str,
-) -> tuple[int | None, int, str | None]:
+) -> tuple[int | None, int, tuple[int, int] | None, str | None]:
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        return None, 0, f"invalid JSON output: {exc}"
+        return None, 0, None, f"invalid JSON output: {exc}"
 
     if not isinstance(payload, dict):
-        return None, 0, "query output JSON root is not an object"
+        return None, 0, None, "query output JSON root is not an object"
     data = payload.get("data")
     if not isinstance(data, dict):
-        return None, 0, "query output missing 'data' object"
+        return None, 0, None, "query output missing 'data' object"
 
     list_key = "results" if mode == "brief" else "source_rankings"
     path_key = "path" if mode == "brief" else "locator"
     items = data.get(list_key)
     if not isinstance(items, list):
-        return None, 0, f"query output missing 'data.{list_key}' array"
+        return None, 0, None, f"query output missing 'data.{list_key}' array"
 
     rank: int | None = None
     path_chars = 0
@@ -124,7 +144,7 @@ def extract_rank(
             path_chars += len(item_path)
             if rank is None and item_path == expected:
                 rank = idx
-    return rank, path_chars, None
+    return rank, path_chars, truncation_notice(payload), None
 
 
 def run_once(
@@ -133,14 +153,31 @@ def run_once(
     question: str,
     expected: str,
     mode: str,
-) -> tuple[int | None, str | None, float, int, int]:
+) -> tuple[int | None, str | None, float, int, int, tuple[int, int] | None]:
     cmd = [bran_bin, "query", root]
     if mode == "brief":
         cmd.append("--brief")
     cmd.append(question)
 
     started = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=QUERY_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.perf_counter() - started
+        return (
+            None,
+            f"query timed out after {QUERY_TIMEOUT_SECONDS} s",
+            elapsed,
+            0,
+            0,
+            None,
+        )
     elapsed = time.perf_counter() - started
     out_chars = len(proc.stdout.rstrip("\n"))
 
@@ -148,10 +185,10 @@ def run_once(
         err = (
             proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
         )
-        return None, err, elapsed, out_chars, 0
+        return None, err, elapsed, out_chars, 0, None
 
-    rank, path_chars, parse_err = extract_rank(proc.stdout, mode, expected)
-    return rank, parse_err, elapsed, out_chars, path_chars
+    rank, path_chars, truncated, parse_err = extract_rank(proc.stdout, mode, expected)
+    return rank, parse_err, elapsed, out_chars, path_chars, truncated
 
 
 def evaluate(
@@ -185,9 +222,11 @@ def evaluate(
         rep_out_chars = 0
         worst_ok_out_chars: int | None = None
         worst_ok_path_chars = 0
+        worst_ok_trunc: tuple[int, int] | None = None
+        worst_trunc: tuple[int, int, int, int] | None = None
 
         for rep in range(repeat):
-            rank, err, elapsed, out_chars, path_chars = run_once(
+            rank, err, elapsed, out_chars, path_chars, truncated = run_once(
                 bran_bin, root, question, expected, mode
             )
             q_latencies.append(elapsed)
@@ -203,6 +242,13 @@ def evaluate(
             ):
                 worst_ok_out_chars = out_chars
                 worst_ok_path_chars = path_chars
+                worst_ok_trunc = truncated
+            if (
+                err is None
+                and truncated
+                and (worst_trunc is None or truncated[0] > worst_trunc[0])
+            ):
+                worst_trunc = (*truncated, path_chars, out_chars)
 
         bucket = classes.setdefault(
             q_class,
@@ -238,13 +284,27 @@ def evaluate(
         if (
             mode == "brief"
             and worst_ok_out_chars is not None
-            and worst_ok_out_chars > 2000
+            and worst_ok_out_chars > BRIEF_CHAR_LIMIT
         ):
+            omitted, total = worst_ok_trunc or (0, 0)
             size_findings.append(
                 {
                     "question": question,
                     "output_chars": worst_ok_out_chars,
                     "path_chars": worst_ok_path_chars,
+                    "omitted": omitted,
+                    "total": total,
+                }
+            )
+        elif mode == "brief" and worst_trunc is not None:
+            omitted, total, path_chars, out_chars = worst_trunc
+            size_findings.append(
+                {
+                    "question": question,
+                    "output_chars": out_chars,
+                    "path_chars": path_chars,
+                    "omitted": omitted,
+                    "total": total,
                 }
             )
 
