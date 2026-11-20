@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: alphazede/az-lint
-          ref: cc79b7a1dc533822aa5e67cccca4fb8c0e52d117
+          ref: c4629f01731fa46d8810f1f565002f02a69b986d
           path: .az-lint-runner
           persist-credentials: false
 
