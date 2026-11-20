@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain
         run: >-
@@ -37,7 +38,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: alphazede/az-lint
-          ref: c4629f01731fa46d8810f1f565002f02a69b986d
+          ref: 3e01af29e532a7f9f6cbb69722cd37d283cf228e
           path: .az-lint-runner
           persist-credentials: false
 
@@ -60,4 +61,15 @@ jobs:
           export PATH="$RUNNER_TEMP/az-lint-tools/bin:$PATH"
           cargo fetch --locked
           export AZ_LINT_BASE AZ_LINT="$RUNNER_TEMP/az-lint/az-lint"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            export AZ_LINT_CONFIG="$RUNNER_TEMP/az-lint-base.toml"
+            git show "$AZ_LINT_BASE:.az-lint.toml" > "$AZ_LINT_CONFIG"
+            cat > "$RUNNER_TEMP/az-lint/az-lint-pr" <<'BASH'
+          #!/usr/bin/env bash
+          exec "$RUNNER_TEMP/az-lint/az-lint" \
+            --untrusted --config "$AZ_LINT_CONFIG" "$@"
+          BASH
+            chmod +x "$RUNNER_TEMP/az-lint/az-lint-pr"
+            export AZ_LINT="$RUNNER_TEMP/az-lint/az-lint-pr"
+          fi
           ./tools/ci/check.sh --fast
