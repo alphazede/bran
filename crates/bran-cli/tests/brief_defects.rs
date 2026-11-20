@@ -326,3 +326,114 @@ fn description_sidecar_oversize_is_ignored() {
         "{stdout}"
     );
 }
+
+/// Recall cause: a test file in a language outside the original extension
+/// list (`.tsx`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`) was not treated as a
+/// test, so it escaped the non-test-question demotion and outranked the
+/// component it tests. Control: the same test file as `.ts` is demoted.
+#[test]
+fn test_file_in_any_script_language_is_demoted_for_a_non_test_question() {
+    let question = "which dial animates drifting glyphs and sigils?";
+    for ext in ["ts", "tsx", "jsx", "mjs", "cjs", "mts", "cts"] {
+        let test_file = format!("src/dial/dial.test.{ext}");
+        let repo = Repo::with(&[
+            (
+                "src/dial/OrbitDial.tsx",
+                "export function OrbitDial() { return glyphs.map(drift) }\n",
+            ),
+            (
+                test_file.as_str(),
+                "test('animates drifting glyphs and sigils', () => { animates(drifting, glyphs, sigils) });\n",
+            ),
+        ]);
+        assert_eq!(
+            repo.paths(&[], question),
+            ["src/dial/OrbitDial.tsx", test_file.as_str()],
+            "{ext}: the component outranks its test file"
+        );
+    }
+}
+
+/// Recall cause: an agent noun in the question (`parser`) did not match the
+/// verb in a filename (`parse`), so a file that repeats the other words in its
+/// body outranked the file named for the action. Control: the question
+/// `parse` already ranks the named file first.
+#[test]
+fn agent_noun_in_question_matches_verb_in_filename() {
+    let files = [
+        (
+            "tools/relay-parse.py",
+            "# derive a quill match from a command\ndef parse(cmd): return quill\n",
+        ),
+        (
+            "hooks/route.py",
+            "# route commands; quill match derive command derive\nquill = derive(command)\n",
+        ),
+        ("docs/notes.md", "# notes\nquill match command\n"),
+    ];
+    for question in [
+        "which parse derives a quill match from a command?",
+        "which parser derives a quill match from a command?",
+    ] {
+        // Separate repositories: a stored brief result is itself scannable text.
+        assert_eq!(
+            Repo::with(&files).paths(&[], question)[0],
+            "tools/relay-parse.py",
+            "{question}"
+        );
+    }
+}
+
+/// Recall cause: a directory's `index` or `README` page defines the
+/// directory, but only a page named with the query word gained a filename
+/// match, so a sibling page that repeats the word outranked it. Control: the
+/// same page named `garnet.md` already ranks first.
+#[test]
+fn directory_index_page_counts_the_directory_name_as_its_filename() {
+    for name in ["garnet", "index", "README"] {
+        let page = format!("docs/garnet/{name}.md");
+        let repo = Repo::with(&[
+            (page.as_str(), "# Overview\n\nProduct naming for the line.\n"),
+            ("docs/garnet/palette.md", "# Palette\n\nColors for the line.\n"),
+            (
+                "docs/overview.md",
+                "# Overview\n\nCurrent garnet naming: the garnet product naming rules. garnet naming.\n",
+            ),
+        ]);
+        assert_eq!(
+            repo.paths(&[], "current garnet product naming")[0],
+            page,
+            "{name}: the directory's page ranks first"
+        );
+    }
+}
+
+/// Recall cause: for a question that asks which members of a set apply
+/// (`which owners may ...`), the configuration file that lists them, named by
+/// the matching script and keyed by a query word, stayed below the script.
+/// The value-source rule promoted it only for quantity questions. Control:
+/// `how many owners ...` already ranks the configuration file first.
+#[test]
+fn set_question_promotes_the_referenced_configuration_file() {
+    let files = [
+        (
+            "tools/ledger.py",
+            "# Ledger tool: write entries into allowed owners.\nimport json\nPOLICY = 'tools/ledger-policy.json'\ndef owners(): return json.load(open(POLICY))['owners']\n# the ledger tool may write into owners listed in policy\n",
+        ),
+        (
+            "tools/install-ledger.py",
+            "# install the ledger tool for owners\nledger owners write tool\n",
+        ),
+        ("tools/ledger-policy.json", "{\"owners\": [\"acme\", \"zenith\"]}\n"),
+    ];
+    for question in [
+        "how many owners may the ledger tool write into",
+        "which owners may the ledger tool write into",
+    ] {
+        assert_eq!(
+            Repo::with(&files).paths(&[], question)[0],
+            "tools/ledger-policy.json",
+            "{question}"
+        );
+    }
+}
