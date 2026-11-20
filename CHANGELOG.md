@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The local fast gate finds `az-lint` through `AZ_LINT` or `PATH` and prints install instructions when the runner is missing. ([#71](https://github.com/alphazede/bran/pull/71))
 - Pin `az-lint` to its re-authored `v0.1.0` commit; the files are unchanged. ([#70](https://github.com/alphazede/bran/pull/70))
 - `--brief` treats `.jsx`, `.mjs`, `.cjs`, `.tsx`, `.mts` and `.cts` files with `test`, `tests`, `spec` or `specs` in their path as test files, so a non-test question demotes them like `.ts` tests. ([#72](https://github.com/alphazede/bran/pull/72))
 - `--brief` matches a filename word through its agent-noun verb form in both directions: `parser` in a question matches a file named `parse`, and the reverse. Only the filename field uses this form. ([#72](https://github.com/alphazede/bran/pull/72))
