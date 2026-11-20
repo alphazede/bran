@@ -142,7 +142,7 @@ class RecallCheckTest(unittest.TestCase):
         root = Path(self.tmp.name) / "long"
         (root / ".bran").mkdir(parents=True)
         shutil.copy(FIXTURE / "policy.yaml", root / ".bran/policy.yaml")
-        path_chars = 0
+        path_lengths = []
         for n in range(8):
             segments = [f"segment-{n}-{k}-" + "x" * 48 for k in range(5)]
             path = Path("long", *segments, f"lantern-{n}.md")
@@ -151,16 +151,22 @@ class RecallCheckTest(unittest.TestCase):
                 f"---\ntype: concept\ntitle: Lantern {n}\nokf_status: active\n"
                 f"tags: [developer]\n---\n\n# Lantern {n}\n\nThe lantern note {n}.\n"
             )
-            path_chars += len(str(path))
+            path_lengths.append(len(str(path)))
         questions = Path(self.tmp.name) / "long.jsonl"
         questions.write_text(
             json.dumps({"question": "lantern", "expected": str(path)}) + "\n"
         )
         summary = self.summary("brief", questions=questions, root=root)
+        # The brief budget wins: whole results are omitted (README, "Use --top
+        # N"), so the finding reports the omission, not an over-budget output.
         [finding] = summary["size_findings"]
         self.assertEqual(finding["question"], "lantern")
-        self.assertEqual(finding["path_chars"], path_chars)
-        self.assertGreater(finding["output_chars"], 2000)
+        self.assertEqual(finding["total"], 8)
+        self.assertGreaterEqual(finding["omitted"], 1)
+        kept = finding["total"] - finding["omitted"]
+        # Equal scores tie-break on path, so the first `kept` paths are listed.
+        self.assertEqual(finding["path_chars"], sum(path_lengths[:kept]))
+        self.assertLessEqual(finding["output_chars"], 2000)
 
     def test_repeat_records_worst_successful_response_in_size_findings(self):
         state = Path(self.tmp.name) / "calls.txt"
@@ -220,6 +226,7 @@ class RecallCheckTest(unittest.TestCase):
         [finding] = summary["size_findings"]
         self.assertEqual(finding["output_chars"], len(second_payload))
         self.assertEqual(finding["path_chars"], len(long_path))
+        self.assertEqual(finding["omitted"], 0)
 
 
 if __name__ == "__main__":
