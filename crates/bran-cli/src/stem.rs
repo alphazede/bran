@@ -71,6 +71,29 @@ pub fn stem(word: &str) -> String {
     finish(w)
 }
 
+/// Verb of an agent-noun stem: a stem ending in `-er` after a consonant
+/// (`parser`, `builder`, `scanner`) loses that ending and is stemmed again
+/// (`pars`, `build`, `scan`), so it meets the stem of its verb. Other stems are
+/// returned unchanged.
+pub fn agent_verb(stem_form: &str) -> String {
+    let b = stem_form.as_bytes();
+    let n = b.len();
+    if n >= 6
+        && stem_form.ends_with("er")
+        && b.iter().all(u8::is_ascii_lowercase)
+        && !is_vowel(b[n - 3])
+    {
+        // A doubled final consonant (`scanner`) drops one copy with the `-er`.
+        let base = if b[n - 3] == b[n - 4] {
+            &stem_form[..n - 3]
+        } else {
+            &stem_form[..n - 1]
+        };
+        return stem(base);
+    }
+    stem_form.to_owned()
+}
+
 fn finish(mut w: Vec<u8>) -> String {
     for c in &mut w {
         if *c == b'Y' {
@@ -290,6 +313,25 @@ fn step_5(w: &mut Vec<u8>, p1: usize, p2: usize) {
 #[cfg(test)]
 mod tests {
     use super::stem;
+
+    #[test]
+    fn agent_nouns_meet_their_verbs() {
+        use super::agent_verb;
+        let verb_of = |w: &str| agent_verb(&stem(w));
+        for (noun, verb) in [
+            ("parser", "parse"),
+            ("parsers", "parse"),
+            ("builder", "build"),
+            ("browsers", "browse"),
+            ("scanner", "scan"),
+        ] {
+            assert_eq!(verb_of(noun), verb_of(verb), "{noun}");
+        }
+        // Short words, vowel-led endings and non-agent forms keep their stem.
+        for word in ["water", "player", "engineer", "parse", "tier"] {
+            assert_eq!(verb_of(word), stem(word), "{word}");
+        }
+    }
 
     #[test]
     fn reference_vocabulary() {

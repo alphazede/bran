@@ -15,7 +15,7 @@ use bran_core::graph::{GraphInput, NodeRole};
 use bran_core::scan::ScanSnapshot;
 use bran_document::canonical::{sha256_hex, Json};
 
-use crate::stem::{stem, EXCEPTIONS};
+use crate::stem::{agent_verb, stem, EXCEPTIONS};
 use crate::{
     document_evidence, node_ranking_traits, query_terms_and_entities, ranking,
     snapshot_long_path_map, SourceRanking, RANKED_FACT_KEYS,
@@ -131,6 +131,18 @@ fn split_name(locator: &str) -> (&str, &str) {
     }
 }
 
+/// Filename field text: the name without its extension, plus the enclosing
+/// directory's name for an `index` or `README` document, which describes that
+/// directory. A code `index` module only re-exports and keeps its own name.
+fn filename_words(locator: &str) -> String {
+    let name = split_name(locator).0;
+    let index = name.eq_ignore_ascii_case("index") || name.eq_ignore_ascii_case("readme");
+    match locator.rsplit('/').nth(1) {
+        Some(dir) if index && path_role(locator) == Role::Doc => format!("{dir} {name}"),
+        _ => name.to_owned(),
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Role {
     Test,
@@ -139,15 +151,19 @@ enum Role {
     Code,
 }
 
+/// Code extensions whose files count as tests when a path word says so.
+const SCRIPT_EXTENSIONS: [&str; 15] = [
+    "sh", "py", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "rs", "go", "rb", "cpp",
+    "java",
+];
+
 fn path_role(locator: &str) -> Role {
     let ext = split_name(locator).1.to_ascii_lowercase();
     let ext = ext.as_str();
-    if matches!(
-        ext,
-        "sh" | "py" | "js" | "ts" | "rs" | "go" | "rb" | "cpp" | "java"
-    ) && words(locator)
-        .iter()
-        .any(|w| matches!(w.as_str(), "test" | "tests" | "spec" | "specs"))
+    if SCRIPT_EXTENSIONS.contains(&ext)
+        && words(locator)
+            .iter()
+            .any(|w| matches!(w.as_str(), "test" | "tests" | "spec" | "specs"))
     {
         return Role::Test;
     }
@@ -239,6 +255,9 @@ fn lead(locator: &str, source: &str) -> String {
 /// so most document tokens are rejected before stemming.
 struct Query {
     stems: Vec<String>,
+    /// Agent-noun verb form of each stem (`parser` and `parse` both give
+    /// `pars`), sorted, with the stem index; used for filename words only.
+    verbs: Vec<(String, u16)>,
     surface: BTreeSet<Vec<u8>>,
     pairs: Vec<bool>,
     unfiltered: bool,
@@ -273,8 +292,15 @@ impl Query {
         for_each_token(text.as_bytes(), &mut Vec::new(), |t, _| {
             surface.insert(t.to_vec());
         });
+        let mut verbs: Vec<(String, u16)> = stems
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (agent_verb(s), i as u16))
+            .collect();
+        verbs.sort();
         Self {
             stems,
+            verbs,
             surface,
             pairs,
             unfiltered,
@@ -288,6 +314,21 @@ impl Query {
             // its second letter.
             || (b"aeiouy".contains(&w[0])
                 && matches!(&w[1..], b"ed" | b"edly" | b"ing" | b"ingly"))
+    }
+
+    /// Filename match through the agent-noun verb form, when the direct
+    /// match failed: `parser` in the question meets `parse` in a filename and
+    /// the reverse.
+    fn match_verb(&self, token: &[u8]) -> Option<u16> {
+        let text = std::str::from_utf8(token).ok()?;
+        let verb = agent_verb(&stem(text));
+        let i = self
+            .verbs
+            .partition_point(|(v, _)| v.as_str() < verb.as_str());
+        self.verbs
+            .get(i)
+            .filter(|(v, _)| *v == verb)
+            .map(|&(_, idx)| idx)
     }
 
     fn match_token(
@@ -351,7 +392,8 @@ fn analyze(doc: &Doc, q: &Query, memo: &mut HashMap<Vec<u8>, Option<u16>>) -> St
         description.push(' ');
         description.push_str(extra);
     }
-    let fields: [&str; 4] = [split_name(doc.locator).0, dir, doc.source, &description];
+    let name = filename_words(doc.locator);
+    let fields: [&str; 4] = [&name, dir, doc.source, &description];
     let mut buf = Vec::new();
     for (k, text) in fields.iter().enumerate() {
         for_each_token(text.as_bytes(), &mut buf, |token, digits| {
@@ -359,7 +401,12 @@ fn analyze(doc: &Doc, q: &Query, memo: &mut HashMap<Vec<u8>, Option<u16>>) -> St
                 return;
             }
             stats.len[k] += 1;
-            if let Some(i) = q.match_token(token, digits, memo) {
+            let hit = q.match_token(token, digits, memo).or_else(|| {
+                (k == 0 && !digits && q.may_match(token))
+                    .then(|| q.match_verb(token))
+                    .flatten()
+            });
+            if let Some(i) = hit {
                 stats.tf[k * n + usize::from(i)] += 1;
                 if k == 0 && q.surface.contains(token) {
                     stats.literal_filename += 1;
@@ -476,10 +523,11 @@ impl Intent {
         let test = w
             .iter()
             .any(|x| matches!(x.as_str(), "test" | "tests" | "testing"));
-        // Bare "which"/"what" also asks for files, so only explicit quantity
-        // and frequency questions trigger the value-source rule.
+        // Bare "which"/"what" also asks for files, so only explicit quantity,
+        // frequency and set questions trigger the value-source rule.
         let asks_value = pair(&["how"], &["often", "frequently", "long", "many", "much"])
-            || w.iter().any(|x| x == "frequency");
+            || w.iter().any(|x| x == "frequency")
+            || asks_set(&w);
         let code_request = pair(
             &["function", "command", "hook", "script", "manual", "guide"],
             &["is", "does", "implements"],
@@ -491,6 +539,27 @@ impl Intent {
                 || w.iter().any(|x| x == "frequency"),
         }
     }
+}
+
+/// A set question asks which members of a group apply: `which`, an optional
+/// modifier, a plural noun and an auxiliary verb (`which owners may ...`,
+/// `which repository owners may ...`). A singular `which <noun>` asks for one
+/// file, and `which <plural> <verb>` (`which scripts remove ...`) asks for
+/// the files that act, so neither is a set question.
+fn asks_set(w: &[String]) -> bool {
+    const AUXILIARIES: [&str; 13] = [
+        "are", "were", "do", "does", "did", "may", "can", "could", "must", "should", "will",
+        "would", "have",
+    ];
+    let plural = |x: &str| {
+        x.len() > 3 && x.ends_with('s') && !["ss", "us", "is"].iter().any(|e| x.ends_with(e))
+    };
+    let at = |i: usize| w.get(i).map_or("", String::as_str);
+    (0..w.len()).any(|i| {
+        at(i) == "which"
+            && (plural(at(i + 1)) && AUXILIARIES.contains(&at(i + 2))
+                || plural(at(i + 2)) && AUXILIARIES.contains(&at(i + 3)))
+    })
 }
 
 /// Ranks the brief corpus of `roots` for `question`, or `None` when the
@@ -1078,6 +1147,8 @@ mod tests {
         assert!(content_role("x/notes.txt", "some words\nmore words\n") == Role::Doc);
         assert!(path_role("tests/run.sh") == Role::Test);
         assert!(path_role("docs/tests.md") == Role::Doc);
+        assert!(path_role("src/dial.test.tsx") == Role::Test);
+        assert!(path_role("src/Dial.tsx") == Role::Code);
     }
 
     #[test]
@@ -1088,6 +1159,22 @@ mod tests {
         assert!(!Intent::of("which file holds the backup list").value);
         assert!(Intent::of("what is the backup frequency").value);
         assert!(!Intent::of("what script is used for backups").value);
+        assert!(Intent::of("which owners may the tool write into").value);
+        assert!(Intent::of("which repository owners may the tool write into").value);
+        assert!(Intent::of("which repositories does the sync sweep").value);
+        assert!(!Intent::of("which assertions keep imports out").value);
+        assert!(!Intent::of("which parser derives a match").value);
+        assert!(!Intent::of("which unit schedules stalled checks").value);
+        assert!(!Intent::of("which process runs the backup").value);
+    }
+
+    #[test]
+    fn index_pages_take_the_directory_name() {
+        assert_eq!(filename_words("docs/garnet/index.md"), "garnet index");
+        assert_eq!(filename_words("docs/garnet/README.md"), "garnet README");
+        assert_eq!(filename_words("README.md"), "README");
+        assert_eq!(filename_words("docs/garnet/palette.md"), "palette");
+        assert_eq!(filename_words("src/react/index.ts"), "index");
     }
 
     #[test]
