@@ -140,7 +140,18 @@ run_tui() {
 
 run_fast() {
     az_lint="${AZ_LINT:-az-lint}"
-    if ! command -v "$az_lint" >/dev/null 2>&1; then
+    case "$az_lint" in
+        */*) ;;
+        *)
+            az_lint=$(command -v -- "$az_lint" 2>/dev/null) || az_lint=''
+            # An empty PATH entry can resolve to a bare filename.
+            case "$az_lint" in
+                */*) ;;
+                *) az_lint="./$az_lint" ;;
+            esac
+            ;;
+    esac
+    if [ ! -f "$az_lint" ] || [ ! -x "$az_lint" ]; then
         printf '%s\n' "FAIL az-lint is required. Install it from https://github.com/alphazede/az-lint or set AZ_LINT." >&2
         exit 127
     fi
